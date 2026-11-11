@@ -85,7 +85,7 @@ fn handle(
                 ErrorCode::Unsupported,
                 format!("unknown request type {ty:?}"),
             ),
-            Err(e @ (Error::Version(_) | Error::Invalid(_))) => {
+            Err(e @ (Error::UnsupportedVersion(_) | Error::Invalid(_))) => {
                 error(ErrorCode::BadRequest, e.to_string())
             }
             Err(_) => return,
