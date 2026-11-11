@@ -86,13 +86,15 @@ response and the connection stays open; a framing error closes it.
 {"v":1,"type":"error","code":"unsupported","message":"unknown request type \"reload\""}
 ```
 
-**Delivery.** Events are best effort and at-most-once. While disconnected, the
-guest holds its pending events (at most three per boot), so `started`
-survives a listener that starts after the VM. A failed write drops that event,
-and the guest retries the connection every 500 ms. On entrypoint exit the guest
-tries to deliver `exited` for up to 2 s, then reboots regardless. Events lost
-across listener restarts are tolerated: a `health` request is the source of
-truth.
+**Delivery.** Events are best effort. While disconnected, the guest holds its
+pending events (at most three per boot), so `started` survives a listener
+that starts after the VM. A failed write keeps the event pending, and the guest
+reconnects, retrying every 500 ms. On a Unix socket or vsock, a write to a
+closed peer fails outright, so the retry does not duplicate anything a host
+read. An event written into a connection the host then drops without reading
+it is lost. On entrypoint exit the guest tries to deliver `exited` for up to
+2 s, then reboots regardless. Lost events are tolerated: a `health` request is
+the source of truth.
 
 **Reserved for later**, named here so additions stay additive:
 
