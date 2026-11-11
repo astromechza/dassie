@@ -27,6 +27,9 @@ use dassie_proto::{
 /// Concurrent event connections served; a guest normally holds one.
 const MAX_CONNECTIONS: usize = 8;
 
+/// How long to wait when probing whether an existing socket is live.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
 const USAGE: &str = "usage:
   listener events <uds_path> [--until exited] [--timeout SECS]
   listener health <uds_path>
@@ -139,8 +142,17 @@ fn remove_stale_socket(path: &str) -> Result<(), String> {
         Ok(_) => {}
     }
     // Only a refused connection proves nobody is listening; any other error
-    // (e.g. permission denied) leaves the socket alone.
-    match UnixStream::connect(path) {
+    // (e.g. permission denied) leaves the socket alone. On Linux a connect to
+    // a live socket with a full accept queue blocks, so bound the probe.
+    let (tx, rx) = mpsc::channel();
+    let probe_path = path.to_owned();
+    thread::spawn(move || {
+        let _ = tx.send(UnixStream::connect(probe_path));
+    });
+    let probe = rx
+        .recv_timeout(PROBE_TIMEOUT)
+        .map_err(|_| format!("probe {path}: timed out; is another listener busy?"))?;
+    match probe {
         Ok(_) => Err(format!("{path} is in use by another listener")),
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
             fs::remove_file(path).map_err(|e| format!("remove stale {path}: {e}"))
