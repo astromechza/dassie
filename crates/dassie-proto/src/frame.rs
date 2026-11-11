@@ -14,7 +14,7 @@ use crate::{MAX_LINE, PROTOCOL_VERSION};
 
 /// Errors from sending or receiving a frame.
 ///
-/// After [`Error::Version`], [`Error::UnknownType`] or [`Error::Invalid`] the
+/// After [`Error::UnsupportedVersion`], [`Error::UnknownType`] or [`Error::Invalid`] the
 /// reader is positioned at the next frame and can keep going. After
 /// [`Error::Io`] or [`Error::LineTooLong`] the connection should be closed.
 #[derive(Debug)]
@@ -23,7 +23,7 @@ pub enum Error {
     /// The frame exceeds [`MAX_LINE`] bytes.
     LineTooLong,
     /// The frame carries a protocol version this build does not speak.
-    Version(u64),
+    UnsupportedVersion(u64),
     /// The frame has a `type` this message enum does not know.
     UnknownType(String),
     /// The frame is not valid JSON or does not match its type's fields.
@@ -35,7 +35,7 @@ impl fmt::Display for Error {
         match self {
             Self::Io(e) => write!(f, "i/o error: {e}"),
             Self::LineTooLong => write!(f, "frame exceeds {MAX_LINE} bytes"),
-            Self::Version(v) => write!(f, "unsupported protocol version {v}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported protocol version {v}"),
             Self::UnknownType(t) => write!(f, "unknown message type {t:?}"),
             Self::Invalid(e) => write!(f, "invalid message: {e}"),
         }
@@ -134,7 +134,7 @@ impl<R: BufRead> FrameReader<R> {
         };
         let header: Header = serde_json::from_slice(line).map_err(Error::Invalid)?;
         if header.v != u64::from(PROTOCOL_VERSION) {
-            return Err(Error::Version(header.v));
+            return Err(Error::UnsupportedVersion(header.v));
         }
         if !T::TYPES.contains(&header.ty.as_str()) {
             return Err(Error::UnknownType(header.ty));
@@ -265,7 +265,7 @@ mod tests {
     fn rejects_other_versions_and_missing_envelope() {
         assert!(matches!(
             decode::<Event>("{\"v\":2,\"type\":\"ready\"}\n"),
-            Err(Error::Version(2))
+            Err(Error::UnsupportedVersion(2))
         ));
         assert!(matches!(
             decode::<Event>("{\"type\":\"ready\"}\n"),

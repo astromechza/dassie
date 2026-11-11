@@ -174,7 +174,7 @@ fn log_events(conn_id: usize, conn: UnixStream, exited_tx: &mpsc::Sender<()>) {
             }
             Ok(None) => break,
             // Skippable: log and read the next frame.
-            Err(e @ (Error::Version(_) | Error::UnknownType(_) | Error::Invalid(_))) => {
+            Err(e @ (Error::UnsupportedVersion(_) | Error::UnknownType(_) | Error::Invalid(_))) => {
                 eprintln!("[conn {conn_id}] skipping frame: {e}");
             }
             Err(e) => {
