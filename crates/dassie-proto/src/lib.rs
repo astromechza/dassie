@@ -3,8 +3,9 @@
 //! Message types and framing for the vsock channels between `dassie-init` and
 //! the host. Must build for the static musl guest init, so the dependency
 //! budget is serde plus `serde_json` and no async runtime. Framing is generic
-//! over `Read + Write` so transports can be swapped in tests. The wire format
-//! is specified in ADR 0004.
+//! so transports can be swapped in tests: [`FrameWriter`] takes any `Write`,
+//! [`FrameReader`] any `BufRead` (wrap streams such as `UnixStream` in a
+//! `BufReader`). The wire format is specified in ADR 0004.
 //!
 //! Two channels, both carried over Firecracker's vsock device:
 //!
