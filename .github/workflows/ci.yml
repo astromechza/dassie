@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       # Installs the channel, components and targets from rust-toolchain.toml.
       - name: Install toolchain
@@ -30,11 +32,57 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Aliases from .cargo/config.toml; clippy also type-checks both targets.
+      - name: Clippy (x86_64 musl)
+        run: cargo lint-x86
+
+      - name: Clippy (aarch64 musl)
+        run: cargo lint-arm
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
       - name: Test
         run: cargo test --workspace
 
-      - name: Check musl targets
-        run: cargo check --workspace --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain
+        run: rustup toolchain install
+
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2,cargo-shear@1.14.0
+
+      # Advisories, licenses, duplicate/wildcard deps and sources (deny.toml).
+      - name: cargo-deny
+        run: cargo deny check
+
+      - name: Unused dependencies
+        run: cargo shear
+
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: zizmor@1.32.0
+
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: zizmor
+        run: zizmor --format=github .github
+        env:
+          GH_TOKEN: ${{ github.token }}

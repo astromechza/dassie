@@ -1,0 +1,5 @@
+# Lint the Linux-only code from macOS. Clippy only type-checks, so no Linux
+# linker is needed. CI runs the same aliases.
+[alias]
+lint-x86 = "clippy --workspace --all-targets --target x86_64-unknown-linux-musl -- -D warnings"
+lint-arm = "clippy --workspace --all-targets --target aarch64-unknown-linux-musl -- -D warnings"

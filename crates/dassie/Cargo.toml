@@ -3,5 +3,9 @@ name = "dassie"
 description = "Dassie host daemon and CLI: reconciles desired state into systemd units and Caddy config"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[lints]
+workspace = true
