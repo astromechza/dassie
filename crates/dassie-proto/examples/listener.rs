@@ -138,10 +138,15 @@ fn remove_stale_socket(path: &str) -> Result<(), String> {
         }
         Ok(_) => {}
     }
-    if UnixStream::connect(path).is_ok() {
-        return Err(format!("{path} is in use by another listener"));
+    // Only a refused connection proves nobody is listening; any other error
+    // (e.g. permission denied) leaves the socket alone.
+    match UnixStream::connect(path) {
+        Ok(_) => Err(format!("{path} is in use by another listener")),
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            fs::remove_file(path).map_err(|e| format!("remove stale {path}: {e}"))
+        }
+        Err(e) => Err(format!("probe {path}: {e}")),
     }
-    fs::remove_file(path).map_err(|e| format!("remove stale {path}: {e}"))
 }
 
 fn log_events(conn_id: usize, conn: UnixStream, exited_tx: &mpsc::Sender<()>) {
