@@ -1,0 +1,7 @@
+[package]
+name = "dassie-proto"
+description = "Dassie host <-> guest protocol types and framing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
