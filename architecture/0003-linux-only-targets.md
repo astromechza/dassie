@@ -31,8 +31,9 @@ Cannot run on macOS: Firecracker and the jailer, systemd and D-Bus, TAP and
 network namespaces, guest-side vsock, and all of `dassie-init`.
 
 Portable: unit, Caddy and Firecracker config rendering; SQLite; the CLI socket;
-the host-side vsock listener (Firecracker exposes it as a plain Unix socket,
-`<uds_path>_<port>`); the Caddy admin API. `dassie-image` is only partly
+the host-side vsock listener (for guest-initiated connections the host creates
+and listens on a plain Unix socket at `<uds_path>_<port>`, and Firecracker
+connects to it); the Caddy admin API. `dassie-image` is only partly
 portable: unpacking OCI layers onto APFS loses ownership, device nodes and
 xattrs, so rootfs assembly must not go through a macOS directory.
 
