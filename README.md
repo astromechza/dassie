@@ -1,8 +1,10 @@
 # dassie
 
 A small, personal micro-VM app host for a single Linux machine. A daemon turns
-desired state into plain systemd units: one Caddy unit plus one Firecracker
-microVM per app, each running a single container. systemd, not the daemon,
+desired state into plain systemd units: one Caddy unit plus a unit per
+Firecracker microVM, each VM running a single container. An app can have
+several VMs at once, such as blue and green during a deploy or replicas for
+high availability. systemd, not the daemon,
 keeps everything alive, so a reboot or daemon crash returns to the same steady
 state. The daemon exists for high availability and blue/green deploys via Caddy
 route changes.
