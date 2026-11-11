@@ -11,7 +11,8 @@ uses Linux syscalls and `AF_VSOCK`. Development happens on an Apple Silicon
 macOS machine, which has none of these. Production hosts are most likely
 x86_64; a local Linux VM on Apple Silicon is aarch64 and can run Firecracker
 only with nested virtualisation (M3 or later, macOS 15 or later). Standard
-GitHub Actions Linux runners are x86_64 and expose `/dev/kvm`.
+GitHub Actions Linux runners are x86_64 and have `/dev/kvm`, but the runner
+user needs a udev rule (or chmod) granting access before Firecracker can open it.
 
 ## Decision
 
