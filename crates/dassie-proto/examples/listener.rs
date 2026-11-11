@@ -12,15 +12,20 @@
 //! `CONNECT 1025` handshake, send one control request and print the response.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::ExitCode;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use std::{env, fs, io, thread};
 
 use dassie_proto::{
     CONTROL_PORT, EVENTS_PORT, Error, Event, FrameReader, FrameWriter, Request, Response,
 };
+
+/// Concurrent event connections served; a guest normally holds one.
+const MAX_CONNECTIONS: usize = 8;
 
 const USAGE: &str = "usage:
   listener events <uds_path> [--until exited] [--timeout SECS]
@@ -78,21 +83,27 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
 /// `exited` event, or failure once `timeout` elapses.
 fn events(uds: &str, until_exited: bool, timeout: Option<Duration>) -> Result<ExitCode, String> {
     let path = format!("{uds}_{EVENTS_PORT}");
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("remove stale {path}: {e}")),
-    }
+    remove_stale_socket(&path)?;
     let listener = UnixListener::bind(&path).map_err(|e| format!("bind {path}: {e}"))?;
     eprintln!("listening on {path}");
 
     let (exited_tx, exited_rx) = mpsc::channel();
+    let active = Arc::new(AtomicUsize::new(0));
     thread::spawn(move || {
         for (n, conn) in listener.incoming().enumerate() {
             match conn {
+                // A guest uses one connection at a time; refuse a flood
+                // before it costs a thread.
+                Ok(_) if active.load(Ordering::SeqCst) >= MAX_CONNECTIONS => {
+                    eprintln!("[conn {n}] refused: {MAX_CONNECTIONS} connections already open");
+                }
                 Ok(conn) => {
-                    let exited_tx = exited_tx.clone();
-                    thread::spawn(move || log_events(n, conn, &exited_tx));
+                    active.fetch_add(1, Ordering::SeqCst);
+                    let (exited_tx, active) = (exited_tx.clone(), Arc::clone(&active));
+                    thread::spawn(move || {
+                        log_events(n, conn, &exited_tx);
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    });
                 }
                 Err(e) => eprintln!("accept: {e}"),
             }
@@ -114,6 +125,23 @@ fn events(uds: &str, until_exited: bool, timeout: Option<Duration>) -> Result<Ex
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(e) => Err(format!("no exited event: {e}")),
     }
+}
+
+/// Removes a socket left behind by a previous run. Refuses a path that is not
+/// a socket or that another listener is still serving.
+fn remove_stale_socket(path: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("stat {path}: {e}")),
+        Ok(meta) if !meta.file_type().is_socket() => {
+            return Err(format!("{path} exists and is not a socket"));
+        }
+        Ok(_) => {}
+    }
+    if UnixStream::connect(path).is_ok() {
+        return Err(format!("{path} is in use by another listener"));
+    }
+    fs::remove_file(path).map_err(|e| format!("remove stale {path}: {e}"))
 }
 
 fn log_events(conn_id: usize, conn: UnixStream, exited_tx: &mpsc::Sender<()>) {
