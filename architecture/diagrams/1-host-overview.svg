@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Dassie: one host</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <style>
+      .t { font-size: 14px; font-weight: 600; fill: #0f172a; }
+      .s { font-size: 11.5px; fill: #475569; }
+      .m { font-size: 11px; fill: #334155; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .lbl { font-size: 11px; fill: #475569; }
+      .built { stroke: #334155; stroke-width: 1.5; }
+      .plan { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .ln { stroke: #475569; stroke-width: 1.5; fill: none; }
+      .lnp { stroke: #64748b; stroke-width: 1.5; fill: none; stroke-dasharray: 6 4; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="600" rx="14" fill="#ffffff"/>
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">Dassie on one host</text>
+
+  <!-- legend -->
+  <line x1="700" y1="32" x2="736" y2="32" class="built"/>
+  <text x="744" y="36" class="s">built (M0)</text>
+  <line x1="830" y1="32" x2="866" y2="32" class="plan"/>
+  <text x="874" y="36" class="s">planned (M1+)</text>
+
+  <!-- CLI -->
+  <rect x="30" y="70" width="190" height="46" rx="8" fill="#f8fafc" class="plan"/>
+  <text x="125" y="98" text-anchor="middle" class="t">dassie CLI</text>
+  <line x1="125" y1="116" x2="125" y2="148" class="lnp" marker-end="url(#a)"/>
+  <text x="134" y="137" class="lbl">Unix socket</text>
+
+  <!-- daemon -->
+  <rect x="30" y="150" width="190" height="150" rx="10" fill="#eef2ff" class="plan"/>
+  <text x="125" y="178" text-anchor="middle" class="t">dassie daemon</text>
+  <text x="125" y="198" text-anchor="middle" class="s">reconcile loop</text>
+  <text x="125" y="226" text-anchor="middle" class="s">one path for create,</text>
+  <text x="125" y="242" text-anchor="middle" class="s">update and recover</text>
+  <text x="125" y="276" text-anchor="middle" class="s" font-style="italic">outside the data path</text>
+
+  <!-- SQLite -->
+  <line x1="125" y1="300" x2="125" y2="338" class="lnp" marker-start="url(#a)" marker-end="url(#a)"/>
+  <rect x="30" y="340" width="190" height="64" rx="10" fill="#f1f5f9" class="plan"/>
+  <text x="125" y="366" text-anchor="middle" class="t">SQLite (WAL)</text>
+  <text x="125" y="386" text-anchor="middle" class="s">apps · operations journal</text>
+  <text x="125" y="426" text-anchor="middle" class="s">intent lives here</text>
+
+  <!-- files on disk -->
+  <rect x="300" y="70" width="200" height="112" rx="10" fill="#fefce8" class="plan"/>
+  <text x="400" y="94" text-anchor="middle" class="t">Files on disk</text>
+  <text x="314" y="118" class="m">/etc/systemd/system/*</text>
+  <text x="314" y="138" class="m">caddy.json (autosave off)</text>
+  <text x="314" y="158" class="m">vms/&lt;id&gt;/config.json</text>
+  <text x="400" y="200" text-anchor="middle" class="s">what runs lives here</text>
+  <path d="M220,165 L298,165" class="lnp" marker-end="url(#a)"/>
+  <text x="226" y="158" class="lbl">render, write</text>
+  <path d="M500,126 L558,126" class="lnp" marker-end="url(#a)"/>
+  <text x="506" y="119" class="lbl">loads</text>
+
+  <!-- daemon -> systemd / caddy control -->
+  <path d="M220,240 L558,240" class="lnp" marker-end="url(#a)"/>
+  <text x="389" y="232" text-anchor="middle" class="lbl">D-Bus + Caddy admin: reload, start, verify</text>
+
+  <!-- clients -->
+  <rect x="30" y="482" width="190" height="54" rx="10" fill="#f8fafc" class="built"/>
+  <text x="125" y="514" text-anchor="middle" class="t">Clients</text>
+
+  <!-- systemd -->
+  <rect x="560" y="56" width="412" height="520" rx="14" fill="#f8fafc" class="built"/>
+  <text x="578" y="82" class="t">systemd</text>
+  <text x="646" y="82" class="s">keeps it all alive · WantedBy= on boot</text>
+
+  <!-- fc@app-blue (built) -->
+  <rect x="580" y="98" width="180" height="340" rx="10" fill="#ffffff" class="built"/>
+  <text x="670" y="120" text-anchor="middle" class="m" font-weight="600">fc@app-blue.service</text>
+  <rect x="592" y="132" width="156" height="38" rx="7" fill="#f1f5f9" class="built"/>
+  <text x="670" y="156" text-anchor="middle" class="t" font-size="13">firecracker</text>
+  <rect x="592" y="180" width="156" height="226" rx="9" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="604" y="198" font-size="11" font-weight="600" fill="#047857">microVM</text>
+  <rect x="604" y="208" width="132" height="34" rx="6" fill="#ffffff" class="built"/>
+  <text x="670" y="230" text-anchor="middle" class="s">guest kernel 6.18</text>
+  <rect x="604" y="252" width="132" height="58" rx="6" fill="#ffffff" stroke="#059669" stroke-width="2"/>
+  <text x="670" y="276" text-anchor="middle" class="t" font-size="13">dassie-init</text>
+  <text x="670" y="294" text-anchor="middle" class="s">PID 1 · shared initramfs</text>
+  <rect x="604" y="320" width="132" height="58" rx="6" fill="#ffffff" class="built"/>
+  <text x="670" y="344" text-anchor="middle" class="t" font-size="13">app entrypoint</text>
+  <text x="670" y="362" text-anchor="middle" class="s">OCI image → ext4</text>
+  <text x="670" y="398" text-anchor="middle" font-size="10.5" fill="#047857">exit → reboot → restart</text>
+  <text x="670" y="428" text-anchor="middle" class="s">Restart=always · 5 / 60 s</text>
+
+  <!-- fc@app-green (planned) -->
+  <rect x="776" y="98" width="180" height="340" rx="10" fill="#ffffff" class="plan"/>
+  <text x="866" y="120" text-anchor="middle" class="m" font-weight="600">fc@app-green.service</text>
+  <rect x="788" y="132" width="156" height="38" rx="7" fill="#f1f5f9" class="plan"/>
+  <text x="866" y="156" text-anchor="middle" class="t" font-size="13">firecracker</text>
+  <rect x="788" y="180" width="156" height="226" rx="9" fill="#f0fdf4" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="800" y="198" font-size="11" font-weight="600" fill="#047857">microVM</text>
+  <rect x="800" y="208" width="132" height="34" rx="6" fill="#ffffff" class="plan"/>
+  <text x="866" y="230" text-anchor="middle" class="s">guest kernel 6.18</text>
+  <rect x="800" y="252" width="132" height="58" rx="6" fill="#ffffff" class="plan"/>
+  <text x="866" y="276" text-anchor="middle" class="t" font-size="13">dassie-init</text>
+  <text x="866" y="294" text-anchor="middle" class="s">same initramfs</text>
+  <rect x="800" y="320" width="132" height="58" rx="6" fill="#ffffff" class="plan"/>
+  <text x="866" y="344" text-anchor="middle" class="t" font-size="13">app entrypoint</text>
+  <text x="866" y="362" text-anchor="middle" class="s">new version</text>
+  <text x="866" y="428" text-anchor="middle" class="s">during a deploy (M4)</text>
+
+  <!-- caddy -->
+  <rect x="580" y="480" width="376" height="62" rx="10" fill="#fff7ed" class="plan"/>
+  <text x="768" y="506" text-anchor="middle" class="t">caddy.service</text>
+  <text x="768" y="526" text-anchor="middle" class="s">hostname → VM IP · route swap for blue/green</text>
+  <path d="M670,480 L670,440" class="lnp" marker-end="url(#a)"/>
+  <text x="678" y="466" class="lbl">TAP</text>
+  <path d="M866,480 L866,440" stroke="#94a3b8" stroke-width="1.5" fill="none" stroke-dasharray="2 4" marker-end="url(#a)"/>
+  <text x="874" y="466" class="lbl">after health gate</text>
+  <!-- vsock -->
+  <path d="M220,282 L602,282" stroke="#059669" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-start="url(#ag)" marker-end="url(#ag)"/>
+  <text x="389" y="274" text-anchor="middle" font-size="11" fill="#047857">vsock: events, health, stop</text>
+
+  <!-- clients arrow -->
+  <path d="M220,509 L578,509" class="lnp" marker-end="url(#a)"/>
+  <text x="389" y="501" text-anchor="middle" class="lbl">HTTPS</text>
+</svg>

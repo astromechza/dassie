@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Host and guest channels over vsock</title>
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4f46e5"/>
+    </marker>
+    <style>
+      .t { font-size: 14px; font-weight: 600; fill: #0f172a; }
+      .h { font-size: 15px; font-weight: 700; fill: #0f172a; }
+      .s { font-size: 11.5px; fill: #475569; }
+      .m { font-size: 11px; fill: #334155; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .mg { font-size: 11px; fill: #047857; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .mb { font-size: 11px; fill: #4338ca; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .col { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.2; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="560" rx="14" fill="#ffffff"/>
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">Host ↔ guest over vsock</text>
+  <text x="30" y="60" class="s">Newline-delimited JSON, one object per line, each with a "v" field (ADR 0004). Each VM has its own socket path, so events carry no VM id.</text>
+
+  <!-- columns -->
+  <rect x="30" y="80" width="280" height="300" rx="12" class="col"/>
+  <text x="170" y="106" text-anchor="middle" class="h">Host</text>
+  <text x="170" y="124" text-anchor="middle" class="s">listener example today, daemon in M2</text>
+
+  <rect x="360" y="80" width="280" height="300" rx="12" class="col"/>
+  <text x="500" y="106" text-anchor="middle" class="h">Firecracker</text>
+  <text x="500" y="124" text-anchor="middle" class="s">vsock device ↔ Unix sockets</text>
+
+  <rect x="690" y="80" width="280" height="300" rx="12" class="col"/>
+  <text x="830" y="106" text-anchor="middle" class="h">Guest</text>
+  <text x="830" y="124" text-anchor="middle" class="s">dassie-init</text>
+
+  <!-- events lane -->
+  <rect x="50" y="146" width="240" height="62" rx="9" class="box"/>
+  <text x="170" y="170" text-anchor="middle" class="t">event listener</text>
+  <text x="170" y="190" text-anchor="middle" class="m">binds &lt;uds&gt;_1024</text>
+
+  <rect x="710" y="146" width="240" height="62" rx="9" fill="#ffffff" stroke="#059669" stroke-width="1.8"/>
+  <text x="830" y="170" text-anchor="middle" class="t">reporter</text>
+  <text x="830" y="190" text-anchor="middle" class="m">connects CID 2, port 1024</text>
+
+  <path d="M708,177 L292,177" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#g)"/>
+  <rect x="400" y="164" width="200" height="26" rx="13" fill="#ecfdf5" stroke="#059669" stroke-width="1"/>
+  <text x="500" y="181" text-anchor="middle" font-size="11.5" font-weight="600" fill="#047857">events · guest → host</text>
+  <text x="500" y="226" text-anchor="middle" class="s">held while no listener is connected;</text>
+  <text x="500" y="242" text-anchor="middle" class="s">retried after a failed write</text>
+
+  <!-- control lane -->
+  <rect x="50" y="276" width="240" height="78" rx="9" class="box"/>
+  <text x="170" y="300" text-anchor="middle" class="t">control client</text>
+  <text x="170" y="320" text-anchor="middle" class="m">connects &lt;uds&gt;</text>
+  <text x="170" y="338" text-anchor="middle" class="m">writes "CONNECT 1025\n"</text>
+
+  <rect x="710" y="276" width="240" height="78" rx="9" fill="#ffffff" stroke="#4f46e5" stroke-width="1.8"/>
+  <text x="830" y="300" text-anchor="middle" class="t">control server</text>
+  <text x="830" y="320" text-anchor="middle" class="m">listens on port 1025</text>
+  <text x="830" y="338" text-anchor="middle" class="s">health · stop</text>
+
+  <path d="M292,300 L708,300" stroke="#4f46e5" stroke-width="2" fill="none" marker-end="url(#b)"/>
+  <path d="M708,330 L292,330" stroke="#4f46e5" stroke-width="2" fill="none" stroke-dasharray="6 4" marker-end="url(#b)"/>
+  <rect x="400" y="288" width="200" height="26" rx="13" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
+  <text x="500" y="305" text-anchor="middle" font-size="11.5" font-weight="600" fill="#4338ca">request · host → guest</text>
+  <rect x="400" y="318" width="200" height="26" rx="13" fill="#eef2ff" stroke="#4f46e5" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="500" y="335" text-anchor="middle" font-size="11.5" font-weight="600" fill="#4338ca">response</text>
+
+  <!-- message reference -->
+  <rect x="30" y="400" width="460" height="134" rx="12" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="48" y="424" class="t" fill="#047857">Events (port 1024)</text>
+  <text x="48" y="448" class="mg">{"v":1,"type":"started","pid":42}</text>
+  <text x="48" y="468" class="mg">{"v":1,"type":"ready"}</text>
+  <text x="48" y="488" class="mg">{"v":1,"type":"exited","code":3}</text>
+  <text x="48" y="508" class="mg">{"v":1,"type":"exited","signal":9}</text>
+  <text x="48" y="526" class="s">A new started also means the VM rebooted.</text>
+
+  <rect x="510" y="400" width="460" height="134" rx="12" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="528" y="424" class="t" fill="#4338ca">Control (port 1025)</text>
+  <text x="528" y="448" class="mb">→ {"v":1,"type":"health"}</text>
+  <text x="528" y="468" class="mb">← {"v":1,"type":"health","state":"ready","pid":42}</text>
+  <text x="528" y="488" class="mb">→ {"v":1,"type":"stop","timeout_ms":5000}</text>
+  <text x="528" y="508" class="mb">← {"v":1,"type":"health","state":"stopping","pid":42}</text>
+  <text x="528" y="526" class="s">health is the source of truth; lost events are tolerated.</text>
+</svg>
