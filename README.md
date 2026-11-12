@@ -71,8 +71,9 @@ cargo +nightly fuzz run roundtrip -- -max_total_time=60 -max_len=131072
 
 - `recv` feeds arbitrary bytes to `FrameReader::recv` as `Event`, `Request`
   and `Response`. It checks that nothing panics, that only EOF and
-  `LineTooLong` stop the stream, and that any accepted frame matches what
-  `FrameWriter` would send (ADR 0004).
+  `LineTooLong` stop the stream, and that an accepted frame carries the `v`
+  and `type` that `FrameWriter` sends for the decoded value, which must
+  round-trip (ADR 0004). Unknown fields the reader ignores are not compared.
 - `roundtrip` generates messages with the `arbitrary` feature of
   `dassie-proto`. It checks that every frame `FrameWriter::send` emits decodes
   back to the same value.
