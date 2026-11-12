@@ -100,15 +100,18 @@ impl Guest {
     /// Starts the supervisor for `argv`. Events go to `<dir>/events.sock`,
     /// which the test may or may not be listening on.
     fn start(argv: &[&str], ready_port: Option<u16>) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let spec = RunSpec {
+        Self::start_spec(RunSpec {
             argv: argv.iter().map(|s| (*s).to_owned()).collect(),
             env: vec![("PATH".into(), "/usr/bin:/bin".into())],
             user: None,
             workdir: "/".into(),
             ready_port,
             stop_timeout: Duration::from_secs(10),
-        };
+        })
+    }
+
+    fn start_spec(spec: RunSpec) -> Self {
+        let dir = tempfile::tempdir().unwrap();
         let events_path = dir.path().join("events.sock");
         let control_listener = UnixListener::bind(dir.path().join("control.sock")).unwrap();
         let (control_tx, control_rx) = mpsc::channel();
@@ -345,11 +348,20 @@ fn ready_precedes_exit_for_a_fast_entrypoint() {
 
 #[test]
 fn oversized_stop_timeout_does_not_panic() {
-    let guest = Guest::start(&["sleep", "30"], None);
+    // `u64::MAX` seconds (`dassie.stop_timeout`) overflows `Instant`;
+    // `u64::MAX` milliseconds would not.
+    let guest = Guest::start_spec(RunSpec {
+        argv: vec!["sleep".into(), "30".into()],
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        user: None,
+        workdir: "/".into(),
+        ready_port: None,
+        stop_timeout: Duration::from_secs(u64::MAX),
+    });
     let host = guest.listen();
     assert!(matches!(host.next(), Event::Started { .. }));
     assert_eq!(host.next(), Event::Ready);
-    guest.control().request(&stop(u64::MAX));
+    guest.control().request(&Request::Stop { timeout_ms: None });
     assert_eq!(
         host.next(),
         Event::Exited {
