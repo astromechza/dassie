@@ -26,7 +26,9 @@ ExecStart=/usr/local/bin/firecracker --no-api --id %i --config-file /var/lib/das
 # entrypoint, reboots once it exits, and Firecracker exits. systemd kills
 # whatever is left as soon as ExecStop returns, so wait for Firecracker.
 # If the request fails, return at once and let systemd kill the VM.
-ExecStop=/bin/sh -c '/usr/local/bin/dassie-listener stop /run/dassie/%i.vsock && exec tail --pid=$$MAINPID -f /dev/null'
+# systemd also runs ExecStop after Firecracker exits on its own (guest
+# reboot); MAINPID is then empty and there is nothing to stop.
+ExecStop=/bin/sh -c '[ -n "$$MAINPID" ] || exit 0; /usr/local/bin/dassie-listener stop /run/dassie/%i.vsock && exec tail --pid=$$MAINPID -f /dev/null'
 TimeoutStopSec=30
 # Entrypoint exit -> guest reboot -> Firecracker exits 0 -> restart.
 Restart=always
