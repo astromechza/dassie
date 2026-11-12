@@ -20,8 +20,9 @@
 
 use std::error::Error;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, fs, thread};
@@ -54,10 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(dir) = uds.parent() {
         fs::create_dir_all(dir)?;
     }
-    match fs::remove_file(&uds) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
-    }
+    remove_stale_socket(&uds)?;
     let control_listener = FirecrackerMux(UnixListener::bind(&uds)?);
     eprintln!("supervise: control on {}", uds.display());
 
@@ -107,6 +105,29 @@ fn parse_args(args: &[String]) -> Option<(PathBuf, PathBuf, String)> {
         }
     }
     Some((PathBuf::from(uds), root?, cmdline))
+}
+
+/// Removes a socket left behind by a previous run. Refuses a path that is not
+/// a socket or that another process is still serving; only a refused connect
+/// proves the socket is stale.
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(meta) if !meta.file_type().is_socket() => {
+            let msg = format!("{} exists and is not a socket", path.display());
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, msg));
+        }
+        Ok(_) => {}
+    }
+    match UnixStream::connect(path) {
+        Ok(_) => {
+            let msg = format!("{} is in use by another process", path.display());
+            Err(io::Error::new(io::ErrorKind::AddrInUse, msg))
+        }
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path),
+        Err(e) => Err(e),
+    }
 }
 
 fn reap(pid: u32, control: &mpsc::Sender<Control>) {
