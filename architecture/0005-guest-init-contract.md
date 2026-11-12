@@ -73,6 +73,8 @@ port, `ready` follows `started`.
 
 - The app gets `/dev/null` as stdin. Its stdout and stderr are init's: the
   serial console, which reaches journald on the host.
+- The app starts with no signals blocked, even though init blocks its own
+  stop signals and SIGCHLD to receive them with `sigwait`.
 - A stop request sends SIGTERM to the app, then SIGKILL once the timeout passes:
   - a control-channel `stop` (ADR 0004) uses its `timeout_ms`, else the default;
   - SIGTERM or SIGINT to init (Ctrl-Alt-Del) uses the default.

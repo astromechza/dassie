@@ -23,6 +23,7 @@ use dassie_proto::{
     ErrorCode, Event, ExitStatus, FrameReader, FrameWriter, GuestState, HealthStatus, Request,
     Response,
 };
+use nix::sys::signal::{SigSet, Signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
 
@@ -136,7 +137,17 @@ impl Guest {
                 });
             }),
         };
-        let result = thread::spawn(move || supervisor::run(&spec, deps));
+        let result = thread::spawn(move || {
+            // Run like PID 1 does: with the stop signals and SIGCHLD blocked
+            // for `sigwait`. The entrypoint must still start with none
+            // blocked. This mask is per-thread, so parallel tests are fine.
+            let mut blocked = SigSet::empty();
+            for sig in [Signal::SIGTERM, Signal::SIGINT, Signal::SIGCHLD] {
+                blocked.add(sig);
+            }
+            blocked.thread_block().unwrap();
+            supervisor::run(&spec, deps)
+        });
         Self { dir, result }
     }
 
