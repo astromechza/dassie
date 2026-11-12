@@ -16,6 +16,16 @@
 //!   by one [`Response`]. The host connects to `<uds_path>`, sends
 //!   `CONNECT 1025\n` and reads `OK <port>\n` before speaking frames.
 
+// Parses bytes from the guest, which the host must treat as untrusted: no
+// panicking paths and no silent truncating casts.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation
+)]
+
 pub mod frame;
 pub mod message;
 

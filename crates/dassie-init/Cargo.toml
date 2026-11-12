@@ -3,6 +3,7 @@ name = "dassie-init"
 description = "Dassie guest PID 1: runs the container entrypoint inside a microVM"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
@@ -14,3 +15,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

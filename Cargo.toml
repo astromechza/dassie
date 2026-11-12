@@ -5,6 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 license = "MIT"
 publish = false
 
@@ -14,3 +15,28 @@ nix = { version = "0.31", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+
+# Shared lint policy. Every crate opts in with `[lints] workspace = true`.
+# Cargo does not allow per-crate additions next to `workspace = true`, so
+# per-crate exceptions or extra strictness go in `#![...]` at the crate root.
+# CI runs clippy with `-D warnings`, so "warn" here fails CI.
+[workspace.lints.rust]
+# Crates that need unsafe opt in with `#![allow(unsafe_code)]` at the root.
+unsafe_code = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+let_underscore_drop = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+# Selected restriction lints.
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"

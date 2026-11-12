@@ -11,6 +11,9 @@
 //! `health` and `stop` connect to `<uds_path>`, do Firecracker's
 //! `CONNECT 1025` handshake, send one control request and print the response.
 
+// A CLI: stdout is its output.
+#![allow(clippy::print_stdout)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -36,7 +39,7 @@ const USAGE: &str = "usage:
   listener stop   <uds_path> [--timeout-ms N]";
 
 fn main() -> ExitCode {
-    match run(env::args().skip(1).collect()) {
+    match run(&env::args().skip(1).collect::<Vec<_>>()) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("listener: {e}");
@@ -45,8 +48,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<ExitCode, String> {
-    let (cmd, uds, flags) = match args.as_slice() {
+fn run(args: &[String]) -> Result<ExitCode, String> {
+    let (cmd, uds, flags) = match args {
         [cmd, uds, flags @ ..] => (cmd.as_str(), uds.as_str(), flags),
         _ => return Err(USAGE.into()),
     };
@@ -147,7 +150,8 @@ fn remove_stale_socket(path: &str) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     let probe_path = path.to_owned();
     thread::spawn(move || {
-        let _ = tx.send(UnixStream::connect(probe_path));
+        // If the receiver already timed out, dropping the result closes the stream.
+        drop(tx.send(UnixStream::connect(probe_path)));
     });
     let probe = rx
         .recv_timeout(PROBE_TIMEOUT)
