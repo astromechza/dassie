@@ -9,7 +9,8 @@ keeps everything alive, so a reboot or daemon crash returns to the same steady
 state. The daemon exists for high availability and blue/green deploys via Caddy
 route changes.
 
-Status: early scaffolding, nothing runs yet.
+Status: M0 in progress. `dassie-init` boots as PID 1 in a Firecracker microVM
+under a hand-written systemd unit; there is no daemon yet.
 
 ## Crates
 
@@ -22,6 +23,21 @@ Status: early scaffolding, nothing runs yet.
 | [`dassie-init`](crates/dassie-init) | Guest PID 1 (static musl) |
 
 Design decisions are recorded in [architecture/](architecture/).
+
+## Guest assets
+
+[`guest/`](guest/) holds the scripts that build the guest kernel, the shared
+initramfs and a test app rootfs, plus the hand-written
+[`fc@.service`](guest/systemd/fc@.service) and its
+[runbook](guest/systemd/README.md) (ADR 0006). They run on Linux:
+
+```sh
+guest/kernel/build.sh x86_64   # target/guest/x86_64/vmlinux
+guest/initramfs.sh x86_64      # target/guest/x86_64/initramfs.cpio.gz
+guest/rootfs.sh x86_64         # target/guest/x86_64/rootfs.ext4
+guest/firecracker.sh x86_64    # target/guest/x86_64/firecracker
+guest/smoke-test.sh x86_64     # boot once, expect started, ready, exited
+```
 
 ## Development
 
@@ -54,7 +70,8 @@ untrusted guest input) also deny `unwrap`, `expect`, `panic!` and indexing at
 their crate roots.
 
 CI also runs [actionlint](https://github.com/rhysd/actionlint) and
-[zizmor](https://docs.zizmor.sh) on `.github/`.
+[zizmor](https://docs.zizmor.sh) on `.github/`, `shellcheck` on `guest/`,
+and a `kvm-boot` job that runs the guest smoke test on an x86_64 KVM runner.
 
 ### Fuzzing
 

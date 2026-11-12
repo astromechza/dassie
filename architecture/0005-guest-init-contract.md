@@ -92,8 +92,8 @@ messages, so it runs as an ordinary process in tests, as ADR 0003 requires. The
 Linux-only PID-1 layer turns signals into those messages and reaps every
 child with `waitpid(-1)`. It also does the mounts, chroot and reboot.
 
-The shared-initramfs and switch-root layout is a separate decision. It lands
-with the code that implements it.
+The shared-initramfs and switch-root layout is a separate decision, recorded
+in [ADR 0006](0006-guest-assets-layout.md).
 
 ## Consequences
 

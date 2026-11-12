@@ -14,7 +14,12 @@
 )]
 
 #[cfg(target_os = "linux")]
-fn main() {}
+mod pid1;
+
+#[cfg(target_os = "linux")]
+fn main() {
+    pid1::main()
+}
 
 #[cfg(not(target_os = "linux"))]
 fn main() {

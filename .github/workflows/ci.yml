@@ -133,7 +133,72 @@ jobs:
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
 
+      - name: shellcheck
+        run: shellcheck -x guest/*.sh guest/kernel/*.sh
+
       - name: zizmor
         run: zizmor --format=github .github
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Boots the x86_64 guest under Firecracker on KVM and checks the lifecycle
+  # events (guest/smoke-test.sh). The drills in guest/systemd/README.md stay
+  # manual.
+  kvm-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Outside target/, so rust-cache does not pick up the kernel build tree.
+      - name: Set guest output dir
+        run: echo "OUT=$RUNNER_TEMP/guest/x86_64" >> "$GITHUB_ENV"
+
+      # The kernel only changes with guest/kernel/ (pins, fragments, script).
+      - name: Restore guest kernel
+        id: kernel
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/guest/x86_64/vmlinux
+          key: guest-kernel-x86_64-${{ hashFiles('guest/kernel/**', 'guest/lib.sh') }}
+
+      - name: Build guest kernel
+        if: steps.kernel.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bc bison flex libelf-dev libssl-dev
+          guest/kernel/build.sh x86_64
+
+      # Saved straight away, so a failing boot does not mean a rebuild.
+      - name: Save guest kernel
+        if: steps.kernel.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/guest/x86_64/vmlinux
+          key: ${{ steps.kernel.outputs.cache-primary-key }}
+
+      - name: Build initramfs and rootfs
+        run: |
+          guest/initramfs.sh x86_64
+          guest/rootfs.sh x86_64
+
+      - name: Install Firecracker
+        run: guest/firecracker.sh x86_64
+
+      # Runners have /dev/kvm, but only root can open it by default.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Boot smoke test
+        run: guest/smoke-test.sh x86_64

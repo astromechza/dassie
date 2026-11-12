@@ -1,0 +1,18 @@
+{
+  "architecture": "@ARCH@",
+  "os": "linux",
+  "config": {
+    "User": "app",
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "PORT=8080"
+    ],
+    "Entrypoint": ["/usr/local/bin/testapp"],
+    "Cmd": null,
+    "WorkingDir": "/home/app",
+    "ExposedPorts": { "8080/tcp": {} },
+    "Labels": null
+  },
+  "rootfs": { "type": "layers", "diff_ids": [] },
+  "history": [{ "created_by": "guest/rootfs.sh test image" }]
+}

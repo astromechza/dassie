@@ -5,6 +5,7 @@
 //! process on any Unix and are unit-tested on a macOS dev machine (ADR 0003).
 //! The Linux-only PID-1 layer in `main.rs` composes them.
 
+pub mod boot;
 pub mod config;
 pub mod control;
 pub mod reporter;
