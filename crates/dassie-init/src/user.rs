@@ -31,6 +31,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[derive(Debug)]
 struct PasswdEntry {
     name: String,
     uid: u32,
@@ -39,7 +40,7 @@ struct PasswdEntry {
 }
 
 /// Parsed `/etc/passwd` and `/etc/group`. Malformed lines are skipped.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Accounts {
     users: Vec<PasswdEntry>,
     groups: Vec<(String, u32)>,

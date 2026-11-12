@@ -152,7 +152,7 @@ struct Env(Vec<(String, String)>);
 impl Env {
     fn set(&mut self, key: &str, value: &str) {
         match self.0.iter_mut().find(|(k, _)| k == key) {
-            Some(entry) => entry.1 = value.to_owned(),
+            Some(entry) => value.clone_into(&mut entry.1),
             None => self.0.push((key.to_owned(), value.to_owned())),
         }
     }
@@ -391,7 +391,7 @@ mod tests {
             split_cmdline(" a  b=\"c d\" \"e f\"=g h\n"),
             ["a", "b=c d", "e f=g", "h"]
         );
-        assert!(split_cmdline("   ").is_empty());
+        assert_eq!(split_cmdline("   "), Vec::<String>::new());
     }
 
     #[test]

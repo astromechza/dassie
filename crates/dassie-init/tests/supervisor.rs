@@ -1,6 +1,12 @@
 //! Supervisor end-to-end on any Unix: Unix sockets stand in for vsock, and a
 //! per-test `waitpid(pid)` thread stands in for PID 1's reaper.
 
+// `allow-unwrap-in-tests` only covers `#[test]` fns, not this file's harness
+// helpers; panicking on setup failure is what a test harness should do.
+#![allow(clippy::unwrap_used)]
+// Fire-and-forget sends and socket cleanup in the harness.
+#![allow(let_underscore_drop)]
+
 use std::io::{self, BufReader, Write};
 use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -124,7 +130,7 @@ impl Guest {
             control: (control_tx, control_rx),
             on_spawn: Box::new(move |pid| {
                 thread::spawn(move || {
-                    let status = waitpid(Pid::from_raw(pid as i32), None).unwrap();
+                    let status = waitpid(Pid::from_raw(i32::try_from(pid).unwrap()), None).unwrap();
                     let (pid, status) = supervisor::exit_status(status).unwrap();
                     let _ = reaper_tx.send(Control::ChildExited { pid, status });
                 });

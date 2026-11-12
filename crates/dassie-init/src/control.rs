@@ -3,7 +3,7 @@
 use std::io::{self, BufReader, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -58,19 +58,19 @@ fn handle(
     status: &Mutex<HealthStatus>,
     control: &mpsc::Sender<Control>,
 ) {
-    let current = || *status.lock().unwrap_or_else(|e| e.into_inner());
+    let current = || *status.lock().unwrap_or_else(PoisonError::into_inner);
     let mut reader = FrameReader::new(BufReader::new(reader));
     let mut writer = FrameWriter::new(writer);
     loop {
         let response = match reader.recv::<Request>() {
-            Ok(None) => return,
             Ok(Some(Request::Health)) => Response::Health(current()),
             Ok(Some(Request::Stop { timeout_ms })) => {
                 let (reply_tx, reply_rx) = mpsc::channel();
-                let _ = control.send(Control::Stop {
+                // If the supervisor is gone, answer from the shared status.
+                drop(control.send(Control::Stop {
                     timeout: timeout_ms.map(Duration::from_millis),
                     reply: Some(reply_tx),
-                });
+                }));
                 Response::Health(
                     reply_rx
                         .recv_timeout(STOP_ACK_TIMEOUT)
@@ -88,7 +88,8 @@ fn handle(
             Err(e @ (Error::UnsupportedVersion(_) | Error::Invalid(_))) => {
                 error(ErrorCode::BadRequest, e.to_string())
             }
-            Err(_) => return,
+            // EOF, or a framing error that leaves the stream unusable.
+            Ok(None) | Err(_) => return,
         };
         if writer.send(&response).is_err() {
             return;

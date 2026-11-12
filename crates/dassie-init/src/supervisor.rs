@@ -5,13 +5,14 @@
 //! messages, so the PID-1 layer feeds it from a sigwait/reaper thread and
 //! tests feed it directly. That keeps it runnable as an ordinary process.
 
+use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,7 @@ const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 const PROBE_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Inputs to the supervisor loop.
+#[derive(Debug)]
 pub enum Control {
     /// Stop the entrypoint: SIGTERM now, SIGKILL after `timeout` (the spec's
     /// `stop_timeout` when `None`). Ignored once stopping. `reply`, if given,
@@ -59,6 +61,12 @@ pub struct Deps {
     pub on_spawn: Box<dyn FnOnce(u32) + Send>,
 }
 
+impl fmt::Debug for Deps {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Deps").finish_non_exhaustive()
+    }
+}
+
 /// Spawns the entrypoint and supervises it until it exits. Returns its exit
 /// status once `exited` has been reported, or has had its chance to be.
 pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
@@ -71,12 +79,11 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
 
     // With no readiness port, `ready` follows `started` directly, so a
     // fast-exiting entrypoint still reports it before `exited`.
-    let mut state = match spec.ready_port {
-        Some(_) => GuestState::Starting,
-        None => {
-            reporter.send(Event::Ready);
-            GuestState::Ready
-        }
+    let mut state = if spec.ready_port.is_some() {
+        GuestState::Starting
+    } else {
+        reporter.send(Event::Ready);
+        GuestState::Ready
     };
     let status = Arc::new(Mutex::new(HealthStatus { state, pid }));
     control::serve(
@@ -91,7 +98,7 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
     }
 
     let set_state = |state| {
-        let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
         s.state = state;
         *s
     };
@@ -134,9 +141,9 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
                 pid: exited,
                 status,
             }) if exited == pid => break status,
-            Ok(Control::ChildExited { .. }) => {}
-            // The deadline is handled at the top of the loop.
-            Err(RecvTimeoutError::Timeout) => {}
+            // Orphan exits are ignored; the deadline is handled at the top of
+            // the loop.
+            Ok(Control::ChildExited { .. }) | Err(RecvTimeoutError::Timeout) => {}
             // We hold a sender ourselves, so this cannot happen.
             Err(RecvTimeoutError::Disconnected) => unreachable!("control channel closed"),
         }
@@ -155,10 +162,13 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
 /// Returns `None` for stop/continue notifications.
 pub fn exit_status(status: WaitStatus) -> Option<(u32, ExitStatus)> {
     match status {
-        WaitStatus::Exited(pid, code) => Some((pid.as_raw() as u32, ExitStatus::Code(code))),
-        WaitStatus::Signaled(pid, sig, _) => {
-            Some((pid.as_raw() as u32, ExitStatus::Signal(sig as i32)))
+        WaitStatus::Exited(pid, code) => {
+            Some((u32::try_from(pid.as_raw()).ok()?, ExitStatus::Code(code)))
         }
+        WaitStatus::Signaled(pid, sig, _) => Some((
+            u32::try_from(pid.as_raw()).ok()?,
+            ExitStatus::Signal(sig as i32),
+        )),
         _ => None,
     }
 }
@@ -184,7 +194,11 @@ fn spawn(spec: &RunSpec) -> io::Result<u32> {
 }
 
 fn signal(pid: u32, sig: Signal) {
-    match kill(Pid::from_raw(pid as i32), sig) {
+    let Ok(raw) = i32::try_from(pid) else {
+        eprintln!("dassie-init: pid {pid} out of range");
+        return;
+    };
+    match kill(Pid::from_raw(raw), sig) {
         Ok(()) | Err(Errno::ESRCH) => {}
         Err(e) => eprintln!("dassie-init: kill {pid} {sig}: {e}"),
     }
@@ -197,7 +211,8 @@ fn probe(port: u16, control: mpsc::Sender<Control>, done: Arc<AtomicBool>) {
     thread::spawn(move || {
         while !done.load(Ordering::Relaxed) {
             if TcpStream::connect_timeout(&addr, PROBE_INTERVAL).is_ok() {
-                let _ = control.send(Control::Ready);
+                // The supervisor may already be done; nothing to do then.
+                drop(control.send(Control::Ready));
                 return;
             }
             thread::sleep(PROBE_INTERVAL);

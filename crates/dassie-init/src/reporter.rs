@@ -21,6 +21,7 @@ enum Msg {
 
 /// Handle to the reporter thread. Dropping it stops the thread once it is
 /// idle.
+#[derive(Debug)]
 pub struct Reporter {
     tx: mpsc::Sender<Msg>,
 }
@@ -34,7 +35,8 @@ impl Reporter {
 
     /// Queues an event; never blocks.
     pub fn send(&self, event: Event) {
-        let _ = self.tx.send(Msg::Event(event));
+        // The thread only exits once this handle is dropped.
+        drop(self.tx.send(Msg::Event(event)));
     }
 
     /// Waits up to `timeout` for every queued event to be written. Returns
@@ -156,7 +158,7 @@ mod tests {
         reporter.send(Event::Started { pid: 1 });
         reporter.send(Event::Ready);
         assert!(!reporter.flush(Duration::from_millis(100)));
-        assert!(fake.lines().is_empty());
+        assert_eq!(fake.lines(), Vec::<String>::new());
 
         *fake.up.lock().unwrap() = true;
         assert!(reporter.flush(Duration::from_secs(2)));
