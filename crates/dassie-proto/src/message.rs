@@ -14,6 +14,7 @@ pub trait Message: Serialize + for<'de> Deserialize<'de> {
 
 /// Guest -> host lifecycle event, sent on the events channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Event {
@@ -38,6 +39,7 @@ impl Message for Event {
 
 /// How the entrypoint ended. On the wire exactly one of `code` or `signal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(try_from = "RawExitStatus", into = "RawExitStatus")]
 pub enum ExitStatus {
     /// Exited normally with this code.
@@ -83,6 +85,7 @@ impl From<ExitStatus> for RawExitStatus {
 
 /// Host -> guest request on the control channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Request {
@@ -103,6 +106,7 @@ impl Message for Request {
 
 /// Guest -> host response on the control channel, one per request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Response {
@@ -122,6 +126,7 @@ impl Message for Response {
 
 /// Body of a `health` response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct HealthStatus {
     pub state: GuestState,
     /// Entrypoint PID inside the guest.
@@ -130,6 +135,7 @@ pub struct HealthStatus {
 
 /// Lifecycle state of the entrypoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(rename_all = "snake_case")]
 pub enum GuestState {
     /// Spawned, not yet ready.
@@ -144,6 +150,7 @@ pub enum GuestState {
 
 /// Why a request could not be served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Unknown request `type` (e.g. a newer host talking to an older guest).

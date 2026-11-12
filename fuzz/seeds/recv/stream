@@ -1,0 +1,10 @@
+{"v":1,"type":"started","pid":42}
+{"v":1,"type":"ready"}
+{"v":1,"type":"exited","code":3}
+{"v":1,"type":"exited","signal":9}
+{"v":1,"type":"health"}
+{"v":1,"type":"stop","timeout_ms":5000}
+{"v":1,"type":"reload"}
+{"v":1,"type":"health","state":"ready","pid":42}
+{"v":1,"type":"error","code":"unsupported","message":"unknown request type \"reload\""}
+{"v":2,"type":"ready"}

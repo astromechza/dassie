@@ -146,6 +146,10 @@ impl<R: BufRead> FrameReader<R> {
             .map_err(Error::Invalid)
     }
 
+    pub fn get_ref(&self) -> &R {
+        &self.inner
+    }
+
     pub fn into_inner(self) -> R {
         self.inner
     }
