@@ -45,16 +45,17 @@ need:
 
 **Kernel.** A 6.18 LTS kernel uses Firecracker's
 `microvm-kernel-ci-<arch>-6.18.config`, merged with `guest/kernel/dassie.config`
-and a per-arch fragment. `build.sh` fails if `olddefconfig` drops any fragment
-option. The fragment states what init and the host contract rely on:
+for both architectures. `build.sh` fails if `olddefconfig` drops any option in
+the fragment. The fragment states what init and the host contract rely on:
 
 - initrd (gzip), devtmpfs, proc, sysfs;
 - the virtio-mmio transport, virtio-blk, virtio-net and vsock;
 - ext4 and the 8250 serial console;
 - `IP_PNP`.
 
-The x86_64 fragment adds the i8042 keyboard, so Firecracker's Ctrl-Alt-Del
-reaches the guest.
+Firecracker's config has no i8042 keyboard, so its x86_64-only Ctrl-Alt-Del
+action does not reach the guest. Graceful stop goes through the control
+channel's `stop` on both architectures (ADR 0004).
 
 **Boot args.** `console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw`, plus
 the per-VM `dassie.*` args and `ip=` when the VM has a NIC.
@@ -76,7 +77,7 @@ After that, init:
 
 - brings `lo` up, and `eth0` if it exists, with the kernel `ip=` arg supplying
   its address;
-- disables Ctrl-Alt-Del, so it arrives as SIGINT;
+- disables the Ctrl-Alt-Del reboot, so any Ctrl-Alt-Del arrives as SIGINT;
 - runs the supervisor (ADR 0005).
 
 The initramfs is not emptied after the switch. It holds one small binary.

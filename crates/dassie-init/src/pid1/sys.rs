@@ -1,19 +1,28 @@
-//! Early mounts and the switch from the initramfs into the app rootfs
-//! (ADR 0006).
+//! The PID-1 layer's system calls: early mounts and the switch-root
+//! (ADR 0006), interface bring-up, and the vsock transports (ADR 0004).
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::mem;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use dassie_init::boot::RootSpec;
+use dassie_init::control::ControlListener;
 use nix::errno::Errno;
 use nix::libc;
 use nix::mount::{MsFlags, mount};
+use nix::sys::socket::{
+    AddressFamily, Backlog, SockFlag, SockType, VsockAddr, accept4, bind, connect, listen, socket,
+};
 use nix::unistd::{chdir, chroot, dup2_stderr, dup2_stdin, dup2_stdout};
 
 use super::Result;
+
+// Mounts and switch-root.
 
 const NEW_ROOT: &str = "/newroot";
 /// Mounts carried over from the initramfs into the app rootfs.
@@ -124,4 +133,107 @@ fn wait_for(device: &str) -> Result<()> {
         thread::sleep(Duration::from_millis(50));
     }
     Ok(())
+}
+
+// Network interfaces. Addresses come from the kernel: loopback gets
+// 127.0.0.1 when it goes up, and `eth0` gets its address from the `ip=`
+// cmdline arg during boot.
+
+/// Sets `IFF_UP` on the interface, keeping its other flags.
+pub(super) fn interface_up(name: &str) -> Result<()> {
+    set_up(name).map_err(|e| format!("bring up {name}: {e}").into())
+}
+
+#[allow(unsafe_code)]
+fn set_up(name: &str) -> io::Result<()> {
+    let sock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?;
+    // SAFETY: `ifreq` is plain old data (a name array and a union of
+    // integers and sockaddrs), for which all-zero bytes are valid.
+    let mut req: libc::ifreq = unsafe { mem::zeroed() };
+    let bytes = name.as_bytes();
+    if bytes.len() >= req.ifr_name.len() || bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bad interface name",
+        ));
+    }
+    for (dst, &src) in req.ifr_name.iter_mut().zip(bytes) {
+        *dst = libc::c_char::from_ne_bytes([src]);
+    }
+
+    ioctl(&sock, libc::SIOCGIFFLAGS, &mut req)?;
+    // SAFETY: SIOCGIFFLAGS filled in the `ifru_flags` member.
+    let flags = unsafe { req.ifr_ifru.ifru_flags };
+    req.ifr_ifru.ifru_flags =
+        flags | libc::c_short::try_from(libc::IFF_UP).map_err(io::Error::other)?;
+    ioctl(&sock, libc::SIOCSIFFLAGS, &mut req)
+}
+
+#[allow(unsafe_code)]
+fn ioctl(sock: &impl AsRawFd, request: libc::c_ulong, req: &mut libc::ifreq) -> io::Result<()> {
+    let request = libc::Ioctl::try_from(request).map_err(io::Error::other)?;
+    // SAFETY: both requests take a pointer to an `ifreq`, which `req` is for
+    // the duration of the call, and the fd is an open socket.
+    let res = unsafe { libc::ioctl(sock.as_raw_fd(), request, std::ptr::from_mut(req)) };
+    if res < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+// vsock transports for the supervisor: the events connector and the control
+// listener. Connections are wrapped in [`File`], which reads and writes the
+// socket fd with plain `read(2)`/`write(2)`; that is all the framing needs.
+
+/// The host's CID as seen from the guest.
+pub(super) const HOST_CID: u32 = libc::VMADDR_CID_HOST;
+
+fn stream() -> io::Result<OwnedFd> {
+    Ok(socket(
+        AddressFamily::Vsock,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?)
+}
+
+/// Opens a connection to `port` on `cid`. Firecracker forwards it to the
+/// host socket `<uds_path>_<port>`, and resets it if nothing listens there.
+pub(super) fn vsock_connect(cid: u32, port: u32) -> io::Result<Box<dyn Write + Send>> {
+    let fd = stream()?;
+    connect(fd.as_raw_fd(), &VsockAddr::new(cid, port))?;
+    Ok(Box::new(File::from(fd)))
+}
+
+/// Accepts host-initiated connections on a guest port.
+#[derive(Debug)]
+pub(super) struct VsockListener(OwnedFd);
+
+impl VsockListener {
+    pub(super) fn bind(port: u32) -> Result<Self> {
+        let setup = || -> io::Result<OwnedFd> {
+            let fd = stream()?;
+            bind(fd.as_raw_fd(), &VsockAddr::new(libc::VMADDR_CID_ANY, port))?;
+            listen(&fd, Backlog::new(8)?)?;
+            Ok(fd)
+        };
+        Ok(Self(setup().map_err(|e| {
+            format!("listen on vsock port {port}: {e}")
+        })?))
+    }
+}
+
+impl ControlListener for VsockListener {
+    #[allow(unsafe_code)]
+    fn accept(&self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        let raw = accept4(self.0.as_raw_fd(), SockFlag::SOCK_CLOEXEC)?;
+        // SAFETY: accept4 just returned this fd, and nothing else owns it.
+        let conn = File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+        Ok((Box::new(conn.try_clone()?), Box::new(conn)))
+    }
 }

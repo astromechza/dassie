@@ -7,13 +7,7 @@
 //! PID 1 must never exit: the kernel panics if it does. Every outcome,
 //! including errors and panics, ends in [`shutdown`].
 
-mod mount;
-// One ioctl to set interface flags.
-#[allow(unsafe_code)]
-mod net;
-// Taking ownership of the fd `accept4` returns.
-#[allow(unsafe_code)]
-mod vsock;
+mod sys;
 
 use std::error::Error;
 use std::path::Path;
@@ -49,17 +43,17 @@ fn run() -> Result<ExitStatus> {
     // entrypoint with an empty mask.
     let signals = block_signals()?;
 
-    mount::early()?;
-    mount::reopen_console()?;
+    sys::early()?;
+    sys::reopen_console()?;
     let cmdline =
         fs::read_to_string("/proc/cmdline").map_err(|e| format!("read /proc/cmdline: {e}"))?;
     let root = RootSpec::from_cmdline(&cmdline);
-    mount::switch_root(&root)?;
+    sys::switch_root(&root)?;
 
-    net::up("lo")?;
+    sys::interface_up("lo")?;
     // A NIC is optional; the kernel `ip=` arg has already set its address.
     if Path::new("/sys/class/net/eth0").exists() {
-        net::up("eth0")?;
+        sys::interface_up("eth0")?;
     }
     // Ctrl-Alt-Del becomes SIGINT to PID 1 instead of an immediate reboot.
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;
@@ -70,8 +64,8 @@ fn run() -> Result<ExitStatus> {
     let (control_tx, control_rx) = mpsc::channel();
     handle_signals(signals, control_tx.clone());
     let deps = Deps {
-        connect: Box::new(|| vsock::connect(vsock::HOST_CID, EVENTS_PORT)),
-        control_listener: Box::new(vsock::Listener::bind(CONTROL_PORT)?),
+        connect: Box::new(|| sys::vsock_connect(sys::HOST_CID, EVENTS_PORT)),
+        control_listener: Box::new(sys::VsockListener::bind(CONTROL_PORT)?),
         control: (control_tx, control_rx),
         on_spawn: Box::new(|pid| eprintln!("dassie-init: entrypoint pid {pid}")),
     };

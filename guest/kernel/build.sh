@@ -3,9 +3,8 @@
 #
 #   guest/kernel/build.sh [x86_64|aarch64]
 #
-# Starts from Firecracker's recommended guest config, merges the fragments in
-# this directory, and checks that every fragment option survived
-# `olddefconfig`. Outputs $OUT/vmlinux (x86_64) or $OUT/Image (aarch64).
+# Starts from Firecracker's recommended guest config, merges dassie.config
+# over it, and checks that every option in it survived `olddefconfig`. Outputs $OUT/vmlinux (x86_64) or $OUT/Image (aarch64).
 #
 # Needs: make, gcc, flex, bison, bc, libelf-dev, curl, sha256sum. Builds for
 # the host arch; set CROSS_COMPILE (e.g. aarch64-linux-gnu-) to cross-build.
@@ -32,8 +31,7 @@ case "$ARCH" in
 esac
 
 here=$(cd "$(dirname "$0")" && pwd)
-fragments=("$here/dassie.config")
-[[ -f "$here/dassie-$ARCH.config" ]] && fragments+=("$here/dassie-$ARCH.config")
+fragment="$here/dassie.config"
 
 tarball=$(fetch "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz" "$KERNEL_SHA256")
 base_config=$(fetch "$FC_CONFIG_URL" "$FC_CONFIG_SHA256")
@@ -47,22 +45,20 @@ fi
 
 kmake() { make -C "$src" ARCH="$KARCH" CROSS_COMPILE="${CROSS_COMPILE:-}" "$@"; }
 
-log "configuring from $(basename "$FC_CONFIG_URL") + ${fragments[*]##*/}"
+log "configuring from $(basename "$FC_CONFIG_URL") + dassie.config"
 cp "$base_config" "$src/.config"
-(cd "$src" && ARCH="$KARCH" scripts/kconfig/merge_config.sh -m .config "${fragments[@]}" >/dev/null)
+(cd "$src" && ARCH="$KARCH" scripts/kconfig/merge_config.sh -m .config "$fragment" >/dev/null)
 kmake olddefconfig >/dev/null
 
 # Fail if a dependency silently dropped a required option.
 missing=0
-for frag in "${fragments[@]}"; do
-  while IFS= read -r line; do
-    [[ "$line" =~ ^CONFIG_ ]] || continue
-    if ! grep -qxF "$line" "$src/.config"; then
-      echo "kernel config: $line did not survive olddefconfig" >&2
-      missing=1
-    fi
-  done <"$frag"
-done
+while IFS= read -r line; do
+  [[ "$line" =~ ^CONFIG_ ]] || continue
+  if ! grep -qxF "$line" "$src/.config"; then
+    echo "kernel config: $line did not survive olddefconfig" >&2
+    missing=1
+  fi
+done <"$fragment"
 ((missing == 0)) || exit 1
 
 log "building $TARGET"
