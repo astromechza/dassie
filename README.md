@@ -76,6 +76,12 @@ CI also runs [actionlint](https://github.com/rhysd/actionlint) and
 [zizmor](https://docs.zizmor.sh) on `.github/`, `shellcheck` on `guest/`,
 and a `kvm-boot` job that runs the guest smoke test on an x86_64 KVM runner.
 
+Workflows reference actions by release tag; `.github/workflows/actions.lock`
+pins each tag, and every transitive action, to a verified commit. After
+changing any `uses:`, run `gh actions-lock` (from
+[gh-actions-lock](https://github.com/github/gh-actions-lock)) and commit the
+lockfile; CI runs `gh actions-lock --verify`. Dependabot updates both.
+
 ### Fuzzing
 
 `fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets
