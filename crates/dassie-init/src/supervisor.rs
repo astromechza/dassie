@@ -69,10 +69,16 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
     (deps.on_spawn)(pid);
     reporter.send(Event::Started { pid });
 
-    let status = Arc::new(Mutex::new(HealthStatus {
-        state: GuestState::Starting,
-        pid,
-    }));
+    // With no readiness port, `ready` follows `started` directly, so a
+    // fast-exiting entrypoint still reports it before `exited`.
+    let mut state = match spec.ready_port {
+        Some(_) => GuestState::Starting,
+        None => {
+            reporter.send(Event::Ready);
+            GuestState::Ready
+        }
+    };
+    let status = Arc::new(Mutex::new(HealthStatus { state, pid }));
     control::serve(
         deps.control_listener,
         Arc::clone(&status),
@@ -80,11 +86,8 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
     );
 
     let probe_done = Arc::new(AtomicBool::new(false));
-    match spec.ready_port {
-        Some(port) => probe(port, control_tx.clone(), Arc::clone(&probe_done)),
-        None => {
-            let _ = control_tx.send(Control::Ready);
-        }
+    if let Some(port) = spec.ready_port {
+        probe(port, control_tx.clone(), Arc::clone(&probe_done));
     }
 
     let set_state = |state| {
@@ -92,10 +95,15 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
         s.state = state;
         *s
     };
-    let mut state = GuestState::Starting;
     let mut kill_at: Option<Instant> = None;
 
     let exit = loop {
+        // Check the deadline first so a stream of messages cannot postpone
+        // SIGKILL.
+        if kill_at.is_some_and(|at| Instant::now() >= at) {
+            signal(pid, Signal::SIGKILL);
+            kill_at = None;
+        }
         let msg = match kill_at {
             Some(at) => control_rx.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => control_rx
@@ -115,7 +123,8 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
                     state = GuestState::Stopping;
                     set_state(state);
                     signal(pid, Signal::SIGTERM);
-                    kill_at = Some(Instant::now() + timeout.unwrap_or(spec.stop_timeout));
+                    // A grace period too long for `Instant` means no SIGKILL.
+                    kill_at = Instant::now().checked_add(timeout.unwrap_or(spec.stop_timeout));
                 }
                 if let Some(reply) = reply {
                     let _ = reply.send(set_state(state));
@@ -126,10 +135,8 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
                 status,
             }) if exited == pid => break status,
             Ok(Control::ChildExited { .. }) => {}
-            Err(RecvTimeoutError::Timeout) => {
-                signal(pid, Signal::SIGKILL);
-                kill_at = None;
-            }
+            // The deadline is handled at the top of the loop.
+            Err(RecvTimeoutError::Timeout) => {}
             // We hold a sender ourselves, so this cannot happen.
             Err(RecvTimeoutError::Disconnected) => unreachable!("control channel closed"),
         }

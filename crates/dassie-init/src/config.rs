@@ -223,7 +223,10 @@ impl Cmdline {
                     let (k, v) = value.split_once('=').ok_or_else(bad)?;
                     out.env.push((k.to_owned(), v.to_owned()));
                 }
-                "dassie.port" => out.port = Some(value.parse().map_err(|_| bad())?),
+                "dassie.port" => match value.parse() {
+                    Ok(0) | Err(_) => return Err(bad()),
+                    Ok(port) => out.port = Some(port),
+                },
                 "dassie.stop_timeout" => {
                     let secs = value.parse().map_err(|_| bad())?;
                     out.stop_timeout = Some(Duration::from_secs(secs));
@@ -373,6 +376,7 @@ mod tests {
     fn bad_cmdline_values_are_errors() {
         for cmdline in [
             "dassie.port=http",
+            "dassie.port=0",
             "dassie.stop_timeout=-1",
             "dassie.env=NOEQUALS",
         ] {

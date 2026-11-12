@@ -327,3 +327,34 @@ fn events_survive_a_late_and_a_restarted_host() {
     );
     guest.wait();
 }
+
+#[test]
+fn ready_precedes_exit_for_a_fast_entrypoint() {
+    let guest = Guest::start(&["sh", "-c", "exit 4"], None);
+    let host = guest.listen();
+    assert!(matches!(host.next(), Event::Started { .. }));
+    assert_eq!(host.next(), Event::Ready);
+    assert_eq!(
+        host.next(),
+        Event::Exited {
+            status: ExitStatus::Code(4)
+        }
+    );
+    assert_eq!(guest.wait(), ExitStatus::Code(4));
+}
+
+#[test]
+fn oversized_stop_timeout_does_not_panic() {
+    let guest = Guest::start(&["sleep", "30"], None);
+    let host = guest.listen();
+    assert!(matches!(host.next(), Event::Started { .. }));
+    assert_eq!(host.next(), Event::Ready);
+    guest.control().request(&stop(u64::MAX));
+    assert_eq!(
+        host.next(),
+        Event::Exited {
+            status: ExitStatus::Signal(15)
+        }
+    );
+    assert_eq!(guest.wait(), ExitStatus::Signal(15));
+}
