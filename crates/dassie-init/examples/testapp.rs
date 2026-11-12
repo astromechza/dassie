@@ -52,7 +52,11 @@ fn respond(mut conn: &TcpStream) -> std::io::Result<()> {
     conn.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    // A client that closes without sending a request, like the readiness
+    // probe, gets no response.
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(());
+    }
     if line.starts_with("GET /crash ") {
         eprintln!("testapp: /crash requested, aborting");
         process::abort();
