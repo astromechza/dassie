@@ -10,6 +10,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+arbitrary = { version = "1", features = ["derive"] }
 dassie-proto = { path = "crates/dassie-proto" }
 nix = { version = "0.31", default-features = false }
 serde = { version = "1", features = ["derive"] }
