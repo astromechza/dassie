@@ -35,6 +35,9 @@ use nix::sys::signal::{SigSet, Signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
 
+/// How long to wait when probing whether an existing socket is live.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
 const USAGE: &str = "usage: supervise <uds_path> --root DIR [--cmdline \"dassie.k=v ...\"]";
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -120,7 +123,19 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
         }
         Ok(_) => {}
     }
-    match UnixStream::connect(path) {
+    // On Linux a connect to a live socket with a full accept queue blocks, so
+    // bound the probe; a timeout counts as "in use".
+    let (tx, rx) = mpsc::channel();
+    let probe_path = path.to_owned();
+    thread::spawn(move || drop(tx.send(UnixStream::connect(probe_path))));
+    let probe = rx.recv_timeout(PROBE_TIMEOUT).map_err(|_| {
+        let msg = format!(
+            "probe {}: timed out; is another process busy?",
+            path.display()
+        );
+        io::Error::new(io::ErrorKind::TimedOut, msg)
+    })?;
+    match probe {
         Ok(_) => {
             let msg = format!("{} is in use by another process", path.display());
             Err(io::Error::new(io::ErrorKind::AddrInUse, msg))
