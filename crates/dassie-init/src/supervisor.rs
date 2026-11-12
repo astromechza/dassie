@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use dassie_proto::{Event, ExitStatus, GuestState, HealthStatus};
 use nix::errno::Errno;
-use nix::sys::signal::{Signal, kill};
+use nix::sys::signal::{SigSet, Signal, kill};
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
 
@@ -188,9 +188,31 @@ fn spawn(spec: &RunSpec) -> io::Result<u32> {
     if let Some((uid, gid)) = spec.user {
         cmd.uid(uid).gid(gid);
     }
+    clear_signal_mask_on_exec(&mut cmd);
     // The child is reaped by whoever feeds `Control::ChildExited`, never via
     // `Child::wait`; dropping the handle neither waits nor kills.
     Ok(cmd.spawn()?.id())
+}
+
+/// Makes the child start with no signals blocked.
+///
+/// A child inherits the signal mask of the thread that spawns it, and std does
+/// not reset it. PID 1 blocks SIGTERM, SIGINT and SIGCHLD to receive them with
+/// `sigwait`, so without this the entrypoint would start with SIGTERM blocked
+/// and every graceful stop would end in SIGKILL. Clearing the mask in the
+/// child after `fork` leaves the supervisor's own threads untouched.
+///
+/// This is the crate's only `unsafe`: std has no safe way to run code between
+/// `fork` and `exec`.
+#[allow(unsafe_code)]
+fn clear_signal_mask_on_exec(cmd: &mut Command) {
+    // SAFETY: the closure runs in the forked child before `exec`, where only
+    // async-signal-safe operations are allowed. It calls `sigemptyset` and
+    // `pthread_sigmask`, both async-signal-safe; it captures nothing and
+    // does not allocate (`Errno` converts to `io::Error` without allocating).
+    unsafe {
+        cmd.pre_exec(|| Ok(SigSet::empty().thread_set_mask()?));
+    }
 }
 
 fn signal(pid: u32, sig: Signal) {

@@ -1,0 +1,17 @@
+{
+  "architecture": "arm64",
+  "os": "linux",
+  "config": {
+    "Env": [
+      "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+      "GREETING=from the image"
+    ],
+    "Entrypoint": null,
+    "Cmd": ["python3", "-m", "http.server", "8000", "--bind", "127.0.0.1"],
+    "WorkingDir": "/tmp",
+    "ExposedPorts": { "8000/tcp": {} },
+    "Labels": null
+  },
+  "rootfs": { "type": "layers", "diff_ids": [] },
+  "history": [{ "created_by": "hand-written for the supervise example" }]
+}

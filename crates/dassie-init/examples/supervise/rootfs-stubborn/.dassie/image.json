@@ -1,0 +1,11 @@
+{
+  "architecture": "arm64",
+  "os": "linux",
+  "config": {
+    "Env": ["PATH=/usr/bin:/bin"],
+    "Cmd": ["sh", "-c", "trap 'echo ignoring SIGTERM' TERM; while :; do sleep 1; done"],
+    "WorkingDir": "/tmp"
+  },
+  "rootfs": { "type": "layers", "diff_ids": [] },
+  "history": [{ "created_by": "hand-written for the supervise example" }]
+}
