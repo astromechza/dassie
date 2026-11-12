@@ -73,6 +73,7 @@ struct Header {
 }
 
 /// Writes frames to `W`, flushing after each one.
+#[derive(Debug)]
 pub struct FrameWriter<W> {
     inner: W,
 }
@@ -103,6 +104,7 @@ impl<W: Write> FrameWriter<W> {
 }
 
 /// Reads frames from `R`.
+#[derive(Debug)]
 pub struct FrameReader<R> {
     inner: R,
     buf: Vec<u8>,
@@ -166,6 +168,16 @@ mod tests {
         FrameReader::new(Cursor::new(line.as_bytes())).recv()
     }
 
+    fn check<T: Message + PartialEq + fmt::Debug>(cases: &[(T, &str)]) {
+        for (msg, line) in cases {
+            assert_eq!(encode(msg), format!("{line}\n"));
+            assert_eq!(
+                decode::<T>(&format!("{line}\n")).unwrap().as_ref(),
+                Some(msg)
+            );
+        }
+    }
+
     /// The exact lines from ADR 0004; these guard the wire contract.
     #[test]
     fn wire_shapes() {
@@ -225,15 +237,6 @@ mod tests {
             ),
         ];
 
-        fn check<T: Message + PartialEq + fmt::Debug>(cases: &[(T, &str)]) {
-            for (msg, line) in cases {
-                assert_eq!(encode(msg), format!("{line}\n"));
-                assert_eq!(
-                    decode::<T>(&format!("{line}\n")).unwrap().as_ref(),
-                    Some(msg)
-                );
-            }
-        }
         check(&events);
         check(&requests);
         check(&responses);
