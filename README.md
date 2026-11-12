@@ -22,7 +22,10 @@ under a hand-written systemd unit; there is no daemon yet.
 | [`dassie-proto`](crates/dassie-proto) | Host <-> guest protocol over vsock |
 | [`dassie-init`](crates/dassie-init) | Guest PID 1 (static musl) |
 
-Design decisions are recorded in [architecture/](architecture/).
+Design decisions are recorded in [architecture/](architecture/), which also
+has diagrams of a VM's lifecycle and the vsock channels.
+
+![Dassie on one host: built (solid) and planned (dashed) parts](architecture/diagrams/1-host-overview.svg)
 
 ## Guest assets
 
