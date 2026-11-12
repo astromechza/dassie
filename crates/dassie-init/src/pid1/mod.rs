@@ -8,7 +8,11 @@
 //! including errors and panics, ends in [`shutdown`].
 
 mod mount;
+// One ioctl to set interface flags.
+#[allow(unsafe_code)]
 mod net;
+// Taking ownership of the fd `accept4` returns.
+#[allow(unsafe_code)]
 mod vsock;
 
 use std::error::Error;

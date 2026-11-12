@@ -20,8 +20,9 @@
 
 use std::error::Error;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, fs, thread};
@@ -33,6 +34,9 @@ use dassie_proto::{CONTROL_PORT, EVENTS_PORT};
 use nix::sys::signal::{SigSet, Signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
+
+/// How long to wait when probing whether an existing socket is live.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 const USAGE: &str = "usage: supervise <uds_path> --root DIR [--cmdline \"dassie.k=v ...\"]";
 
@@ -54,10 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(dir) = uds.parent() {
         fs::create_dir_all(dir)?;
     }
-    match fs::remove_file(&uds) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
-    }
+    remove_stale_socket(&uds)?;
     let control_listener = FirecrackerMux(UnixListener::bind(&uds)?);
     eprintln!("supervise: control on {}", uds.display());
 
@@ -107,6 +108,41 @@ fn parse_args(args: &[String]) -> Option<(PathBuf, PathBuf, String)> {
         }
     }
     Some((PathBuf::from(uds), root?, cmdline))
+}
+
+/// Removes a socket left behind by a previous run. Refuses a path that is not
+/// a socket or that another process is still serving; only a refused connect
+/// proves the socket is stale.
+fn remove_stale_socket(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(meta) if !meta.file_type().is_socket() => {
+            let msg = format!("{} exists and is not a socket", path.display());
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, msg));
+        }
+        Ok(_) => {}
+    }
+    // On Linux a connect to a live socket with a full accept queue blocks, so
+    // bound the probe; a timeout counts as "in use".
+    let (tx, rx) = mpsc::channel();
+    let probe_path = path.to_owned();
+    thread::spawn(move || drop(tx.send(UnixStream::connect(probe_path))));
+    let probe = rx.recv_timeout(PROBE_TIMEOUT).map_err(|_| {
+        let msg = format!(
+            "probe {}: timed out; is another process busy?",
+            path.display()
+        );
+        io::Error::new(io::ErrorKind::TimedOut, msg)
+    })?;
+    match probe {
+        Ok(_) => {
+            let msg = format!("{} is in use by another process", path.display());
+            Err(io::Error::new(io::ErrorKind::AddrInUse, msg))
+        }
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path),
+        Err(e) => Err(e),
+    }
 }
 
 fn reap(pid: u32, control: &mpsc::Sender<Control>) {
