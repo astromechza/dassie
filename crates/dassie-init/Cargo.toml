@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 dassie-proto.workspace = true
-nix = { workspace = true, features = ["process", "signal"] }
+nix = { workspace = true, features = ["fs", "mount", "process", "reboot", "signal", "socket"] }
 serde.workspace = true
 serde_json.workspace = true
 

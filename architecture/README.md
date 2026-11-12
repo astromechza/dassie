@@ -12,3 +12,4 @@ same change that makes the decision. Start new ones from
 | [0003](0003-linux-only-targets.md) | Linux-only targets | Accepted |
 | [0004](0004-host-guest-wire-protocol.md) | Host <-> guest wire protocol | Accepted |
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted |
+| [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted |

@@ -242,7 +242,7 @@ impl Cmdline {
 
 /// Splits like the kernel does: on whitespace outside double quotes, with the
 /// quotes removed (`dassie.env="A=b c"` -> `dassie.env=A=b c`).
-fn split_cmdline(text: &str) -> Vec<String> {
+pub(crate) fn split_cmdline(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;

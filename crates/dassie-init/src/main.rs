@@ -12,9 +12,16 @@
     clippy::panic,
     clippy::indexing_slicing
 )]
+// Bringing interfaces up needs one ioctl; see `pid1::net`.
+#![allow(unsafe_code)]
 
 #[cfg(target_os = "linux")]
-fn main() {}
+mod pid1;
+
+#[cfg(target_os = "linux")]
+fn main() {
+    pid1::main()
+}
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
