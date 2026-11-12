@@ -8,7 +8,7 @@ updates:
       default-days: 7
 
   - package-ecosystem: cargo
-    directory: /
+    directories: [/, /fuzz]
     schedule:
       interval: weekly
     cooldown:

@@ -56,6 +56,33 @@ their crate roots.
 CI also runs [actionlint](https://github.com/rhysd/actionlint) and
 [zizmor](https://docs.zizmor.sh) on `.github/`.
 
+### Fuzzing
+
+`fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets
+for `dassie-proto`. It is a workspace of its own, so the stable checks above
+never build it. It needs nightly (`rustup toolchain install nightly`) and
+`cargo install --locked cargo-fuzz`.
+
+```sh
+cargo +nightly fuzz run recv fuzz/corpus/recv fuzz/seeds/recv -- \
+  -create_missing_dirs=1 -max_total_time=60 -max_len=131072 -dict=fuzz/proto.dict
+cargo +nightly fuzz run roundtrip -- -max_total_time=60 -max_len=131072
+```
+
+- `recv` feeds arbitrary bytes to `FrameReader::recv` as `Event`, `Request`
+  and `Response`. It checks that nothing panics, that only EOF and
+  `LineTooLong` stop the stream, and that any accepted frame matches what
+  `FrameWriter` would send (ADR 0004).
+- `roundtrip` generates messages with the `arbitrary` feature of
+  `dassie-proto`. It checks that every frame `FrameWriter::send` emits decodes
+  back to the same value.
+
+`-max_len` is above `MAX_LINE`, so oversized frames are reachable. Seeds from
+ADR 0004 live in `fuzz/seeds/` and are committed. New inputs go to
+`fuzz/corpus/`, which is ignored. Crashes are saved to `fuzz/artifacts/<target>/`.
+Replay one with `cargo +nightly fuzz run <target> <file>`. CI runs each target
+for 60 s on a pinned nightly and uploads crash inputs as an artifact.
+
 Tests that need KVM, Firecracker, systemd or TAP devices run on an x86_64 Linux
 GitHub Actions runner or in a local aarch64 Linux VM (Apple Silicon M3 or later
 with macOS 15 or later for nested virtualisation).
