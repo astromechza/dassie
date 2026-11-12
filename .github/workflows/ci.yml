@@ -103,11 +103,13 @@ jobs:
 
       # The cargo-fuzz release binary is musl and defaults --target to its
       # own triple, but sanitizers need the dynamically linked gnu target.
+      # Not every target has committed seeds, so create both corpus dirs.
       - name: Fuzz
-        run: >-
-          cargo fuzz run --target x86_64-unknown-linux-gnu
-          "$TARGET" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" --
-          -create_missing_dirs=1 -max_total_time=60 -max_len=131072 -dict=fuzz/proto.dict
+        run: |
+          mkdir -p "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
+          cargo fuzz run --target x86_64-unknown-linux-gnu \
+            "$TARGET" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" -- \
+            -max_total_time=60 -max_len=131072 -dict=fuzz/proto.dict
 
       - name: Upload crash inputs
         if: failure()
