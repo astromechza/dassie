@@ -12,7 +12,7 @@ mod sys;
 use std::error::Error;
 use std::path::Path;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs, panic, thread};
 
 use dassie_init::boot::RootSpec;
@@ -80,6 +80,7 @@ fn shutdown() -> ! {
         Ok(()) | Err(Errno::ESRCH) => {}
         Err(e) => eprintln!("dassie-init: kill stragglers: {e}"),
     }
+    wait_for_children(STRAGGLER_TIMEOUT);
     sync();
     let Err(e) = reboot::reboot(RebootMode::RB_AUTOBOOT);
     eprintln!("dassie-init: reboot: {e}");
@@ -87,6 +88,30 @@ fn shutdown() -> ! {
     loop {
         thread::sleep(Duration::from_secs(3600));
     }
+}
+
+/// How long shutdown waits for killed processes to die before `sync`.
+const STRAGGLER_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Waits until PID 1 has no children left, or `timeout` passes, so a process
+/// that was still writing cannot dirty the filesystem after `sync`. Every
+/// userspace process is a descendant of PID 1, and orphans are reparented to
+/// it, so ECHILD means they are all gone. The sigwait thread may reap some of
+/// them first; either way they are gone.
+fn wait_for_children(timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+            Err(Errno::ECHILD) => return,
+            Ok(WaitStatus::StillAlive) => thread::sleep(Duration::from_millis(10)),
+            Ok(_) | Err(Errno::EINTR) => {}
+            Err(e) => {
+                eprintln!("dassie-init: waitpid: {e}");
+                return;
+            }
+        }
+    }
+    eprintln!("dassie-init: processes still running after SIGKILL; syncing anyway");
 }
 
 fn block_signals() -> Result<SigSet> {

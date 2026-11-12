@@ -9,6 +9,8 @@
 #   CACHE_DIR  downloads cache, default ~/.cache/dassie
 
 set -euo pipefail
+# Keep errexit inside $(...), so a failure in `fetch` stops the caller.
+shopt -s inherit_errexit
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ARCH=${1:-$(uname -m)}
@@ -25,14 +27,19 @@ mkdir -p "$OUT" "$CACHE_DIR"
 log() { echo "==> $*" >&2; }
 
 # fetch URL SHA256 -> prints the cached path, downloading and verifying once.
+# Fails, printing nothing, if the download or the checksum fails.
 fetch() {
   local url=$1 sha=$2 dest
   dest="$CACHE_DIR/$(basename "$url")"
   if [[ ! -f "$dest" ]] || ! echo "$sha  $dest" | sha256sum -c --quiet - 2>/dev/null; then
     log "downloading $url"
-    curl -fsSL --retry 3 -o "$dest.tmp" "$url"
-    echo "$sha  $dest.tmp" | sha256sum -c --quiet -
-    mv "$dest.tmp" "$dest"
+    curl -fsSL --retry 3 -o "$dest.tmp" "$url" || return 1
+    if ! echo "$sha  $dest.tmp" | sha256sum -c --quiet -; then
+      rm -f "$dest.tmp"
+      echo "checksum mismatch for $url" >&2
+      return 1
+    fi
+    mv "$dest.tmp" "$dest" || return 1
   fi
   echo "$dest"
 }
