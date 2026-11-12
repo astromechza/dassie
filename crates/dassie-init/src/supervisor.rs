@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use dassie_proto::{Event, ExitStatus, GuestState, HealthStatus};
 use nix::errno::Errno;
-use nix::sys::signal::{Signal, kill};
+use nix::sys::signal::{SigSet, Signal, kill};
 use nix::sys::wait::WaitStatus;
 use nix::unistd::Pid;
 
@@ -173,7 +173,26 @@ pub fn exit_status(status: WaitStatus) -> Option<(u32, ExitStatus)> {
     }
 }
 
+/// Spawns the entrypoint from a short-lived thread with an empty signal mask.
+///
+/// A child inherits the signal mask of the thread that spawns it; std does
+/// not reset it. PID 1 blocks SIGTERM, SIGINT and SIGCHLD to receive them
+/// with `sigwait`, so spawning from such a thread would start the entrypoint
+/// with SIGTERM blocked and make every graceful stop end in SIGKILL. While
+/// the spawning thread runs unblocked, a stop signal sent to this process can
+/// be delivered to it; PID 1 has no default actions, so only non-PID-1
+/// callers (tests, the `supervise` example) could see that.
 fn spawn(spec: &RunSpec) -> io::Result<u32> {
+    let spec = spec.clone();
+    thread::spawn(move || {
+        SigSet::empty().thread_set_mask()?;
+        spawn_unmasked(&spec)
+    })
+    .join()
+    .map_err(|_| io::Error::other("spawn thread panicked"))?
+}
+
+fn spawn_unmasked(spec: &RunSpec) -> io::Result<u32> {
     let (program, args) = spec
         .argv
         .split_first()
