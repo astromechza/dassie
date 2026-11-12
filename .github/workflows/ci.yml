@@ -19,7 +19,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -27,7 +27,7 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Format
         run: cargo fmt --all --check
@@ -50,14 +50,14 @@ jobs:
   dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Install toolchain
         run: rustup toolchain install
 
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: cargo-deny@0.20.2,cargo-shear@1.14.0
 
@@ -83,7 +83,7 @@ jobs:
       CARGO_FUZZ_SHA256: b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -97,7 +97,7 @@ jobs:
           tar -xzf cargo-fuzz.tar.gz -C "$HOME/.cargo/bin" cargo-fuzz
           rm cargo-fuzz.tar.gz
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: fuzz
 
@@ -113,7 +113,7 @@ jobs:
 
       - name: Upload crash inputs
         if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts
@@ -122,11 +122,11 @@ jobs:
   workflows:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: zizmor@1.32.0
 
@@ -141,6 +141,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # Fails when .github/workflows/actions.lock is out of sync with the
+      # workflows or a locked commit no longer verifies upstream.
+      - name: Verify actions.lock
+        run: |
+          gh extension install github/gh-actions-lock --pin v0.4.1
+          gh actions-lock --verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # Boots the x86_64 guest under Firecracker on KVM and checks the lifecycle
   # events (guest/smoke-test.sh). The drills in guest/systemd/README.md stay
   # manual.
@@ -148,14 +157,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Install toolchain
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@v2.9.3
 
       # Outside target/, so rust-cache does not pick up the kernel build tree.
       - name: Set guest output dir
@@ -164,7 +173,7 @@ jobs:
       # The kernel only changes with guest/kernel/ (pins, fragments, script).
       - name: Restore guest kernel
         id: kernel
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ runner.temp }}/guest/x86_64/vmlinux
           key: guest-kernel-x86_64-${{ hashFiles('guest/kernel/**', 'guest/lib.sh') }}
@@ -179,7 +188,7 @@ jobs:
       # Saved straight away, so a failing boot does not mean a rebuild.
       - name: Save guest kernel
         if: steps.kernel.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: ${{ runner.temp }}/guest/x86_64/vmlinux
           key: ${{ steps.kernel.outputs.cache-primary-key }}
