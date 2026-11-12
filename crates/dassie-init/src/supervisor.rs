@@ -173,26 +173,7 @@ pub fn exit_status(status: WaitStatus) -> Option<(u32, ExitStatus)> {
     }
 }
 
-/// Spawns the entrypoint from a short-lived thread with an empty signal mask.
-///
-/// A child inherits the signal mask of the thread that spawns it; std does
-/// not reset it. PID 1 blocks SIGTERM, SIGINT and SIGCHLD to receive them
-/// with `sigwait`, so spawning from such a thread would start the entrypoint
-/// with SIGTERM blocked and make every graceful stop end in SIGKILL. While
-/// the spawning thread runs unblocked, a stop signal sent to this process can
-/// be delivered to it; PID 1 has no default actions, so only non-PID-1
-/// callers (tests, the `supervise` example) could see that.
 fn spawn(spec: &RunSpec) -> io::Result<u32> {
-    let spec = spec.clone();
-    thread::spawn(move || {
-        SigSet::empty().thread_set_mask()?;
-        spawn_unmasked(&spec)
-    })
-    .join()
-    .map_err(|_| io::Error::other("spawn thread panicked"))?
-}
-
-fn spawn_unmasked(spec: &RunSpec) -> io::Result<u32> {
     let (program, args) = spec
         .argv
         .split_first()
@@ -207,9 +188,31 @@ fn spawn_unmasked(spec: &RunSpec) -> io::Result<u32> {
     if let Some((uid, gid)) = spec.user {
         cmd.uid(uid).gid(gid);
     }
+    clear_signal_mask_on_exec(&mut cmd);
     // The child is reaped by whoever feeds `Control::ChildExited`, never via
     // `Child::wait`; dropping the handle neither waits nor kills.
     Ok(cmd.spawn()?.id())
+}
+
+/// Makes the child start with no signals blocked.
+///
+/// A child inherits the signal mask of the thread that spawns it, and std does
+/// not reset it. PID 1 blocks SIGTERM, SIGINT and SIGCHLD to receive them with
+/// `sigwait`, so without this the entrypoint would start with SIGTERM blocked
+/// and every graceful stop would end in SIGKILL. Clearing the mask in the
+/// child after `fork` leaves the supervisor's own threads untouched.
+///
+/// This is the crate's only `unsafe`: std has no safe way to run code between
+/// `fork` and `exec`.
+#[allow(unsafe_code)]
+fn clear_signal_mask_on_exec(cmd: &mut Command) {
+    // SAFETY: the closure runs in the forked child before `exec`, where only
+    // async-signal-safe operations are allowed. It calls `sigemptyset` and
+    // `pthread_sigmask`, both async-signal-safe; it captures nothing and
+    // does not allocate (`Errno` converts to `io::Error` without allocating).
+    unsafe {
+        cmd.pre_exec(|| Ok(SigSet::empty().thread_set_mask()?));
+    }
 }
 
 fn signal(pid: u32, sig: Signal) {
