@@ -302,6 +302,16 @@ fn unknown_and_bad_requests_get_errors() {
         code(send("{\"v\":9,\"type\":\"health\"}\n")),
         ErrorCode::BadRequest
     );
+    // Requests that fit a frame (`MAX_LINE`, 65536 bytes) but whose echo
+    // would push the error response past it still get an error response.
+    let unknown = format!("{{\"v\":1,\"type\":\"{}\"}}\n", "x".repeat(65_500));
+    let bad_field = format!(
+        "{{\"v\":1,\"type\":\"stop\",\"timeout_ms\":\"{}\"}}\n",
+        "x".repeat(65_480)
+    );
+    assert!(unknown.len() <= 65_536 && bad_field.len() <= 65_536);
+    assert_eq!(code(send(&unknown)), ErrorCode::Unsupported);
+    assert_eq!(code(send(&bad_field)), ErrorCode::BadRequest);
     // The connection is still usable.
     assert!(matches!(
         send("{\"v\":1,\"type\":\"health\"}\n"),

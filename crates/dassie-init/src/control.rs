@@ -97,6 +97,18 @@ fn handle(
     }
 }
 
-fn error(code: ErrorCode, message: String) -> Response {
+/// Longest `message` in an error response, in bytes. Messages can echo
+/// request text, so this keeps the response well within `MAX_LINE`.
+const MAX_ERROR_MESSAGE: usize = 1024;
+
+fn error(code: ErrorCode, mut message: String) -> Response {
+    if message.len() > MAX_ERROR_MESSAGE {
+        let mut end = MAX_ERROR_MESSAGE;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        message.push_str("...");
+    }
     Response::Error { code, message }
 }

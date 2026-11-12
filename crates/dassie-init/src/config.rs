@@ -133,15 +133,17 @@ pub fn build(image_json: &str, cmdline: &str, accounts: &Accounts) -> Result<Run
     })
 }
 
-/// `ExposedPorts` keys are `PORT[/PROTO]`; a missing proto means tcp.
+/// `ExposedPorts` keys are `PORT[/PROTO]`; a missing proto means tcp. Port 0
+/// is skipped, as for `dassie.port`: nothing can be probed there.
 fn lowest_tcp_port(exposed: &BTreeMap<String, serde_json::Value>) -> Option<u16> {
     exposed
         .keys()
         .filter_map(|key| match key.split_once('/') {
-            None => key.parse().ok(),
+            None => key.parse::<u16>().ok(),
             Some((port, "tcp")) => port.parse().ok(),
             Some(_) => None,
         })
+        .filter(|&port| port != 0)
         .min()
 }
 
@@ -360,6 +362,8 @@ mod tests {
             (r#"{"9000/tcp":{},"8080/tcp":{},"53/udp":{}}"#, Some(8080)),
             (r#"{"80":{}}"#, Some(80)),
             (r#"{"53/udp":{}}"#, None),
+            (r#"{"0/tcp":{},"8080/tcp":{}}"#, Some(8080)),
+            (r#"{"0":{}}"#, None),
             ("{}", None),
         ];
         for (ports, want) in cases {
