@@ -4,7 +4,8 @@
 #   guest/kernel/build.sh [x86_64|aarch64]
 #
 # Starts from Firecracker's recommended guest config, merges dassie.config
-# over it, and checks that every option in it survived `olddefconfig`. Outputs $OUT/vmlinux (x86_64) or $OUT/Image (aarch64).
+# over it, and fails unless every option in it survived `olddefconfig`.
+# Outputs $OUT/vmlinux (x86_64) or $OUT/Image (aarch64).
 #
 # Needs: make, gcc, flex, bison, bc, libelf-dev, curl, sha256sum. Builds for
 # the host arch; set CROSS_COMPILE (e.g. aarch64-linux-gnu-) to cross-build.

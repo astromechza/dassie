@@ -13,7 +13,8 @@ same change that makes the decision. Start new ones from
 | [0004](0004-host-guest-wire-protocol.md) | Host <-> guest wire protocol | Accepted |
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted |
 | [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted |
-| [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted |
+| [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009) |
+| [0009](0009-read-only-rootfs-format-erofs.md) | Read-only rootfs format: erofs | Accepted |
 
 ## Diagrams
 
@@ -36,6 +37,7 @@ outside the data path (ADR 0002).
 ![Host and guest over vsock](diagrams/3-vsock-channels.svg)
 
 **From OCI image to rootfs.** Two passes over the layers, then
-`mkfs.ext4 -d -`: one read-only, digest-named file per image (ADR 0007).
+`mkfs.erofs --tar=f`: one read-only, digest-named file per image (ADR 0007,
+ADR 0009).
 
 ![From OCI image to rootfs](diagrams/4-image-build.svg)

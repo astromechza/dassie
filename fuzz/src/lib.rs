@@ -36,20 +36,33 @@ pub fn flatten(layers: &[&[u8]], config: &[u8]) -> Result<Vec<u8>, Flatten> {
 
 /// Parses the flattened stream and panics unless:
 ///
+/// - the first entry is the root (`./`), a `0755 root:root` directory, and
+///   no other entry is the root;
 /// - no path is absolute or contains `..`, and none appears twice;
 /// - every entry's parent directory appears earlier;
 /// - every hard link's target appears earlier and is not a directory;
 /// - `.dassie` and `.dassie/image.json` (holding `config`) are the last two
 ///   entries, and nothing else lives under `.dassie`.
 ///
-/// Returns every other entry by normalised path.
+/// Returns every other entry, root aside, by normalised path.
 pub fn check_output(out: &[u8], config: &[u8]) -> BTreeMap<Vec<u8>, Kind> {
     let mut entries = Vec::new();
     let mut archive = Archive::new(out);
     for entry in archive.entries().expect("output is a tar stream") {
         let mut entry = entry.expect("output entry parses");
         let path = normalise(&entry.path_bytes());
-        let ty = entry.header().entry_type();
+        let header = entry.header();
+        let ty = header.entry_type();
+        if entries.is_empty() {
+            assert!(
+                path.is_empty()
+                    && ty == EntryType::Directory
+                    && header.mode().ok() == Some(0o755)
+                    && header.uid().ok() == Some(0)
+                    && header.gid().ok() == Some(0),
+                "output does not start with a 0755 root:root root"
+            );
+        }
         let kind = match ty {
             EntryType::Directory => Kind::Dir,
             EntryType::Regular | EntryType::Continuous => {
@@ -64,10 +77,11 @@ pub fn check_output(out: &[u8], config: &[u8]) -> BTreeMap<Vec<u8>, Kind> {
         entries.push((path, kind));
     }
 
+    entries.remove(0);
     let mut seen = HashSet::new();
     let mut dirs = HashSet::new();
     for (path, kind) in &entries {
-        assert!(!path.is_empty(), "output has a root entry: {entries:?}");
+        assert!(!path.is_empty(), "output has a second root entry: {entries:?}");
         assert!(seen.insert(path.clone()), "{} appears twice", show(path));
         if let Some(parent) = parent(path) {
             assert!(
