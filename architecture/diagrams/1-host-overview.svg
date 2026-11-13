@@ -128,7 +128,7 @@
   <rect x="300" y="318" width="200" height="104" rx="10" fill="#fefce8" class="built"/>
   <text x="400" y="342" text-anchor="middle" class="t">Images on disk</text>
   <text x="314" y="366" class="m">images/ (OCI layout)</text>
-  <text x="314" y="386" class="m">rootfs/sha256-….ext4</text>
+  <text x="314" y="386" class="m">rootfs/sha256-….erofs</text>
   <text x="400" y="408" text-anchor="middle" class="s">dassie-image (ADR 0007)</text>
   <path d="M220,296 L298,340" class="lnp" marker-end="url(#a)"/>
   <text x="252" y="306" class="lbl">pull, build</text>

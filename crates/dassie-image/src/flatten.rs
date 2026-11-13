@@ -5,8 +5,8 @@
 //! 1. [`Tree::scan`] reads headers only and works out which entry wins at each
 //!    path, applying whiteouts the way overlayfs does: a whiteout removes
 //!    what lower layers put there, never what its own layer adds.
-//! 2. [`Tree::emit`] writes every winning directory first (sorted, so parents
-//!    precede children, which `mkfs.ext4 -d` requires), then re-reads the
+//! 2. [`Tree::emit`] writes the root (`./`, `0755 root`), then every winning
+//!    directory (sorted, so parents precede children), then re-reads the
 //!    layers and copies each winning non-directory in layer order, which
 //!    keeps hard link targets ahead of their links. `/.dassie/image.json` goes
 //!    last.
@@ -30,12 +30,9 @@ pub(crate) const DASSIE_DIR: &str = ".dassie";
 const WHITEOUT: &str = ".wh.";
 const OPAQUE: &str = ".wh..wh..opq";
 
-/// The ext4 block size: the size estimate rounds to it, and `build` passes it
-/// to mkfs (`-b`). It is pinned rather than left to mke2fs, whose choice
-/// depends on the filesystem size and the host's `mke2fs.conf`, so the
-/// estimate and the result agree on every host. 4096 also matches the
-/// guest's page size.
-pub(crate) const BLOCK_SIZE: u64 = 4096;
+/// The root's mode. Images' own root entries are ignored: every rootfs gets
+/// `0755 root`, so no image can make `/` writable by its app user.
+const ROOT_MODE: u32 = 0o755;
 
 #[derive(Debug)]
 pub enum Error {
@@ -109,25 +106,14 @@ enum Kind {
         target: PathBuf,
         target_source: Source,
     },
-    Other {
-        size: u64,
-    },
+    /// Files, symlinks and special files: copied from the layer in pass 2.
+    Other,
 }
 
 #[derive(Debug, Clone)]
 struct Node {
     source: Source,
     kind: Kind,
-}
-
-/// What the flattened filesystem needs, for sizing it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Stats {
-    /// Entries, each one inode (hard links share one; counted anyway).
-    pub entries: u64,
-    /// Data bytes rounded up to whole blocks, plus a block per directory and
-    /// per symlink or special file.
-    pub bytes: u64,
 }
 
 /// The winning entry at every path, after all layers are applied.
@@ -214,7 +200,7 @@ impl Tree {
                     _ => Step::Put {
                         path,
                         index,
-                        kind: Kind::Other { size: entry.size() },
+                        kind: Kind::Other,
                     },
                 }),
             }
@@ -261,30 +247,22 @@ impl Tree {
         Ok(())
     }
 
-    /// Checks hard links still point at what they linked to, and sizes the
-    /// result.
-    pub fn finish(&self) -> Result<Stats, Error> {
-        let mut stats = Stats::default();
+    /// Checks hard links still point at what they linked to.
+    pub fn finish(&self) -> Result<(), Error> {
         for (path, node) in &self.nodes {
-            stats.entries += 1;
-            stats.bytes += match &node.kind {
-                Kind::Dir { .. } => BLOCK_SIZE,
-                Kind::Other { size } => size.div_ceil(BLOCK_SIZE).max(1) * BLOCK_SIZE,
-                Kind::Hardlink {
-                    target,
-                    target_source,
-                } => {
-                    if self.nodes.get(target).map(|t| t.source) != Some(*target_source) {
-                        return Err(Error::LinkTargetChanged {
-                            path: path.clone(),
-                            target: target.clone(),
-                        });
-                    }
-                    0
-                }
-            };
+            if let Kind::Hardlink {
+                target,
+                target_source,
+            } = &node.kind
+                && self.nodes.get(target).map(|t| t.source) != Some(*target_source)
+            {
+                return Err(Error::LinkTargetChanged {
+                    path: path.clone(),
+                    target: target.clone(),
+                });
+            }
         }
-        Ok(stats)
+        Ok(())
     }
 
     /// Pass 2: writes the flattened tar to `out`. `open(i)` must return layer
@@ -296,6 +274,11 @@ impl Tree {
         out: W,
     ) -> Result<W, Error> {
         let mut tar = Builder::new(out);
+        // mkfs.erofs makes a root with no entry `0777`.
+        let mut root = owned_header(EntryType::Directory, ROOT_MODE, 0);
+        root.set_path("./")?;
+        root.set_cksum();
+        tar.append(&root, io::empty())?;
         for (path, node) in &self.nodes {
             match &node.kind {
                 Kind::Dir { header, pax } => {
@@ -304,7 +287,7 @@ impl Tree {
                     append_pax(&mut tar, pax)?;
                     tar.append_data(&mut header, path, io::empty())?;
                 }
-                Kind::Hardlink { .. } | Kind::Other { .. } => {}
+                Kind::Hardlink { .. } | Kind::Other => {}
             }
         }
         for layer in 0..self.layers {
@@ -329,7 +312,7 @@ impl Tree {
                         append_pax(&mut tar, &pax)?;
                         tar.append_link(&mut header, &path, target)?;
                     }
-                    Kind::Other { .. } => {
+                    Kind::Other => {
                         append_pax(&mut tar, &pax)?;
                         if header.entry_type() == EntryType::Symlink {
                             let target = entry.link_name()?.unwrap_or_default().into_owned();
@@ -418,7 +401,7 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
         return Ok(Action::Skip);
     }
     let Some(path) = normalise(&entry.path()?)? else {
-        // The root itself: mkfs owns it.
+        // The root itself: `emit` writes its own.
         return Ok(Action::Skip);
     };
     if path.starts_with(DASSIE_DIR) {
@@ -426,8 +409,8 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
     }
     // tar only hands over PAX and GNU long name headers as entries when it
     // does not recognise the header's format, so it has not applied them.
-    // Copied out, mkfs's libarchive might, and read a different archive from
-    // the one checked here. `pax` would also consume their data.
+    // Copied out, mkfs might, and read a different archive from the one
+    // checked here. `pax` would also consume their data.
     if entry_type.is_gnu_sparse()
         || entry_type.is_pax_local_extensions()
         || entry_type.is_gnu_longname()
@@ -592,7 +575,15 @@ pub(crate) mod tests {
         xattrs: Vec<(String, Vec<u8>)>,
     }
 
+    /// The flattened output after its root entry, which every output starts
+    /// with (see [`root_comes_first_and_ignores_the_images`]).
     fn flatten(layers: &[Vec<u8>], config: &[u8]) -> Result<Vec<Out>, Error> {
+        let mut out = flatten_all(layers, config)?;
+        assert_eq!(out.remove(0).path, "./");
+        Ok(out)
+    }
+
+    fn flatten_all(layers: &[Vec<u8>], config: &[u8]) -> Result<Vec<Out>, Error> {
         let mut tree = Tree::new();
         for l in layers {
             tree.scan(l.as_slice())?;
@@ -905,19 +896,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stats_count_blocks() {
+    fn root_comes_first_and_ignores_the_images() {
         let layer = Layer::default()
-            .dir("d", 0o755, 0)
-            .file("d/small", "x", 0o644, 0)
+            .dir("./", 0o777, 1000)
+            .file("a", "x", 0o644, 0)
             .tar();
-        let mut tree = Tree::new();
-        tree.scan(layer.as_slice()).unwrap();
+        let out = flatten_all(&[layer], b"{}").unwrap();
+        assert_eq!(paths(&out), ["./", "a", ".dassie", ".dassie/image.json"]);
+        let root = &out[0];
         assert_eq!(
-            tree.finish().unwrap(),
-            Stats {
-                entries: 2,
-                bytes: 2 * BLOCK_SIZE
-            }
+            (root.kind, root.mode, root.uid, root.gid),
+            (EntryType::Directory, 0o755, 0, 0)
         );
     }
 }

@@ -30,17 +30,20 @@ guest/firecracker.sh x86_64
 cargo build --release -p dassie-proto --example listener
 ```
 
-Install them, plus one instance called `test`:
+Install them, plus one instance called `test`. The rootfs goes in once, read-only,
+under `/var/lib/dassie/rootfs/`. Every instance attaches that same file as a
+read-only drive, and the guest writes only to a tmpfs overlay
+([ADR 0006](../../architecture/0006-guest-assets-layout.md)):
 
 ```sh
 G=target/guest/x86_64
 sudo install -m 0755 $G/firecracker /usr/local/bin/firecracker
 sudo install -m 0755 target/release/examples/listener /usr/local/bin/dassie-listener
-sudo install -d /var/lib/dassie/guest /var/lib/dassie/vms/test /run/dassie
+sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test /run/dassie
 sudo install -m 0644 $G/vmlinux $G/initramfs.cpio.gz /var/lib/dassie/guest/
-sudo install -m 0644 $G/rootfs.ext4 /var/lib/dassie/vms/test/
+sudo install -m 0444 $G/rootfs.erofs /var/lib/dassie/rootfs/test.erofs
 guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
-  /var/lib/dassie/vms/test/rootfs.ext4 /run/dassie/test.vsock "dassie.instance=test" |
+  /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock "dassie.instance=test" |
   sudo tee /var/lib/dassie/vms/test/config.json
 sudo install -m 0644 guest/systemd/fc@.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -83,7 +86,7 @@ sudo ip tuntap add tap0 mode tap
 sudo ip addr add 172.16.0.1/24 dev tap0
 sudo ip link set tap0 up
 FC_TAP=tap0 guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
-  /var/lib/dassie/vms/test/rootfs.ext4 /run/dassie/test.vsock \
+  /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock \
   "dassie.instance=test ip=172.16.0.2::172.16.0.1:255.255.255.0::eth0:off" |
   sudo tee /var/lib/dassie/vms/test/config.json
 sudo systemctl restart fc@test
@@ -108,8 +111,8 @@ curl http://172.16.0.2:8080/crash
 ```
 
 `/crash` makes the testapp abort, so it dies of SIGABRT. Without a NIC, put
-`dassie.env=EXIT_AFTER=20` into the config's extra boot args instead. The
-testapp then exits 0 on its own every 20 s.
+`dassie.env=CRASH_AFTER=20` into the config's extra boot args instead. The
+testapp then aborts on its own 20 s after every start.
 
 **Expected:**
 
@@ -174,6 +177,44 @@ sudo reboot
 shows the guest console. A listener started afterwards still receives
 `Started` and `Ready`, because the guest held them. To clean up, run
 `sudo systemctl disable --now fc@test`.
+
+### 5. Two VMs share one rootfs, and writes vanish on restart
+
+Add a second instance on the same rootfs file. Use different vsock sockets
+and no NIC, and make it crash every 20 s:
+
+```sh
+sudo install -d /var/lib/dassie/vms/test2
+guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
+  /var/lib/dassie/rootfs/test.erofs /run/dassie/test2.vsock \
+  "dassie.instance=test2 dassie.env=CRASH_AFTER=20" |
+  sudo tee /var/lib/dassie/vms/test2/config.json
+sha256sum /var/lib/dassie/rootfs/test.erofs
+sudo systemctl start fc@test fc@test2
+sudo ls -l /proc/$(systemctl show -p MainPID --value fc@test)/fd \
+  /proc/$(systemctl show -p MainPID --value fc@test2)/fd | grep test.erofs
+```
+
+At startup, testapp creates `/tmp/testapp.boot` on its root filesystem. If
+the file is already there, testapp exits 1, because the overlay should have
+discarded it.
+
+**Expected:**
+
+- Both VMs reach `Ready`, and both Firecracker processes hold the same
+  `test.erofs` open.
+- Each boot of `fc@test2` logs `testapp: / is 0755 root` and
+  `testapp: clean root, write ok`. After `CRASH_AFTER=20 elapsed, aborting`
+  and the restart, the next boot logs `clean root` again, not `stale write
+  from a previous boot`.
+- `sha256sum` of the rootfs is unchanged after any number of restarts.
+- To clean up, run `sudo systemctl stop fc@test2`.
+
+Leave `is_read_only: true` in the config, even though the file is `0444`.
+Firecracker run as root opens a drive read-write unless the config says
+otherwise. dassie-init mounts it read-only either way, but a root process in
+the guest could still write `/dev/vda` directly, and so the file every VM
+shares.
 
 ### Bonus: the start limit
 

@@ -1,7 +1,8 @@
-//! Builds a real ext4 with `mkfs.ext4 -d -` and inspects it with `debugfs`.
+//! Builds a real erofs with `mkfs.erofs --tar=f` and inspects it with
+//! `dump.erofs`.
 //!
-//! Ignored by default: it needs e2fsprogs 1.47.1 or later with libarchive,
-//! which CI's Ubuntu lacks. Run on a Linux box (e.g. the lima VM) with
+//! Ignored by default: it needs erofs-utils 1.8 or later, which CI's Ubuntu
+//! lacks. Run on a Linux box (e.g. the lima VM) with
 //! `cargo test -p dassie-image -- --ignored`.
 
 #![cfg(target_os = "linux")]
@@ -80,23 +81,24 @@ fn layout(root: &Path) {
     fs::write(root.join("index.json"), index.to_string()).unwrap();
 }
 
-/// The output of one `debugfs -R` request against `image`.
-fn debugfs(image: &Path, request: &str) -> String {
-    let out = Command::new("debugfs")
-        .args(["-R", request])
+/// What `dump.erofs` prints for `args` against `image`.
+fn dump(image: &Path, args: &[&str]) -> String {
+    let out = Command::new("dump.erofs")
+        .args(args)
         .arg(image)
         .output()
         .unwrap();
+    assert!(out.status.success(), "dump.erofs {args:?}: {out:?}");
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 fn stat(image: &Path, path: &str) -> String {
-    debugfs(image, &format!("stat {path}"))
+    dump(image, &[&format!("--path={path}")])
 }
 
 #[test]
-#[ignore = "needs mkfs.ext4 >= 1.47.1 with libarchive, and debugfs"]
-fn builds_ext4_with_ownership_and_reuses_it() {
+#[ignore = "needs mkfs.erofs and dump.erofs from erofs-utils >= 1.8"]
+fn builds_erofs_with_ownership_and_reuses_it() {
     let store_dir = tempfile::tempdir().unwrap();
     layout(store_dir.path());
     let store = Store::open(store_dir.path()).unwrap();
@@ -106,28 +108,30 @@ fn builds_ext4_with_ownership_and_reuses_it() {
     let path = build(&store, &image, out.path(), &Options::default())
         .unwrap()
         .path;
+    assert!(path.to_string_lossy().ends_with(".v3.erofs"), "{path:?}");
     let meta = fs::metadata(&path).unwrap();
     assert_eq!(meta.permissions().mode() & 0o777, 0o444);
 
+    // The flattener's root, not mkfs.erofs's default `0777`.
+    let root = stat(&path, "/");
+    assert!(root.contains("Uid: 0   Gid: 0  Access: 0755"), "{root}");
     let home = stat(&path, "/home/app");
-    assert!(home.contains("Mode:  0700"), "{home}");
-    assert!(home.contains("User:  1000"), "{home}");
+    assert!(
+        home.contains("Uid: 1000   Gid: 1000  Access: 0700"),
+        "{home}"
+    );
     let data = stat(&path, "/srv/data");
-    assert!(
-        data.contains("User:   101") && data.contains("Group:   101"),
-        "{data}"
-    );
-    // File capabilities survive. (mke2fs 1.47.2 drops `user.*` and
-    // `trusted.*` xattrs from tar input; see ADR 0007.)
-    let xattrs = debugfs(&path, "ea_list /srv/data");
-    assert!(
-        xattrs.contains("security.capability (2) = 01 02"),
-        "{xattrs}"
-    );
-    assert!(stat(&path, "/usr/bin/tool").contains("Mode:  04755"));
-    assert!(stat(&path, "/lib").contains("Fast link dest: \"usr/lib\""));
+    assert!(data.contains("Uid: 101   Gid: 101  Access: 0640"), "{data}");
+    // File capabilities survive (dump.erofs shows only their size).
+    assert!(!data.contains("Xattr size: 0"), "{data}");
+    assert_eq!(dump(&path, &["--path=/srv/data", "--cat"]), "data");
+    // dump.erofs prints only the permission bits; the setuid bit is kept
+    // (checked by mounting it, which needs root).
+    let tool = stat(&path, "/usr/bin/tool");
+    assert!(tool.contains("Access: 0755"), "{tool}");
+    assert!(stat(&path, "/lib").contains("symlink"));
     let config = stat(&path, "/.dassie/image.json");
-    assert!(config.contains("Size: 36"), "{config}");
+    assert!(config.contains("Size: 36 "), "{config}");
 
     // A second build is a no-op.
     let mtime = meta.modified().unwrap();

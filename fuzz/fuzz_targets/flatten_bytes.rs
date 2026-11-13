@@ -1,7 +1,8 @@
 //! Feeds arbitrary bytes to the flattener as a single layer. Any input may be
 //! rejected, but nothing may panic, and an accepted layer must flatten to a
-//! well-formed stream (parents first, no duplicates, hard links after their
-//! targets, `/.dassie/image.json` last) and the same bytes every time.
+//! well-formed stream (a `0755 root` root first, parents before children, no
+//! duplicates, hard links after their targets, `/.dassie/image.json` last)
+//! and the same bytes every time.
 
 #![no_main]
 

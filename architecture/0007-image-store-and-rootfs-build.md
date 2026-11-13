@@ -74,6 +74,11 @@ hex>.v<N>.ext4`.
 
 Layers may be uncompressed or gzip. zstd is rejected for now.
 
+_Superseded by [ADR 0009](0009-read-only-rootfs-format-erofs.md): the
+artefact is now `.v3.erofs`, built with `mkfs.erofs --tar=f`, and the
+flattener emits a `0755 root` root entry. **Build** and **Why ext4, for
+now** below record the ext4 build as it was._
+
 **Build.** The stream goes to `mkfs.ext4 -b 4096 -E root_owner=0:0 -d -` on
 stdin.
 
@@ -91,7 +96,7 @@ guest would share disk between images. It would also hit Firecracker's drive
 and MMIO limits on deep images, couple snapshots to many files, and save
 little next to the blob store.
 
-**Why ext4, for now.** ext4 was assumed from the start (ADR 0002's crate
+**Why ext4, for now.** _(Superseded by ADR 0009.)_ ext4 was assumed from the start (ADR 0002's crate
 table, then ADR 0006's test rootfs and kernel fragment) rather than chosen
 against alternatives. This records the choice:
 

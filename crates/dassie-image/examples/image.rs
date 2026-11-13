@@ -12,8 +12,8 @@
 //!
 //! `build` takes that digest or name, or a name given to
 //! `skopeo copy docker://… oci:<store>:<name>`. It prints the path of the
-//! read-only ext4 artefact, building it only if it does not exist yet. It
-//! needs `mkfs.ext4` from e2fsprogs 1.47.1 or later with libarchive.
+//! read-only erofs artefact, building it only if it does not exist yet. It
+//! needs `mkfs.erofs` from erofs-utils 1.8 or later.
 
 // A CLI: stdout is its output.
 #![allow(clippy::print_stdout)]

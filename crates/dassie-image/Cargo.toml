@@ -1,6 +1,6 @@
 [package]
 name = "dassie-image"
-description = "Builds ext4 guest root filesystems from OCI images"
+description = "Builds erofs guest root filesystems from OCI images"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
