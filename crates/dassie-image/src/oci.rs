@@ -9,7 +9,6 @@ use serde::Deserialize;
 
 use crate::Digest;
 
-#[cfg(test)]
 pub(crate) const OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 
 /// Annotation `skopeo copy … oci:DIR:NAME` sets on the `index.json` entry.

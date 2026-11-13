@@ -253,6 +253,48 @@ fn refuses_before_downloading() {
 }
 
 #[test]
+fn local_resolution_checks_layers_and_types_the_descriptor() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::init(dir.path()).unwrap();
+    let put = |bytes: &[u8]| {
+        let d = Digest::of(bytes);
+        store.put(&d, bytes.len() as u64, bytes).unwrap();
+        d
+    };
+    let config = br#"{"os":"linux","architecture":"arm64"}"#;
+    // OCI manifests may omit `mediaType`; skopeo-imported ones can be zstd.
+    let manifest = |layer_type: &str| {
+        let m = serde_json::to_vec(&json!({
+            "schemaVersion": 2,
+            "config": { "mediaType": "c", "digest": put(config).to_string(), "size": config.len() },
+            "layers": [{ "mediaType": layer_type, "digest": put(b"l").to_string(), "size": 1 }],
+        }))
+        .unwrap();
+        put(&m)
+    };
+    let client = Client::plain_http();
+    let arm64 = Platform::new("linux", "arm64");
+
+    let zstd = manifest("application/vnd.oci.image.layer.v1.tar+zstd");
+    let err = client
+        .pull(&store, &reference(&fake, &format!("@{zstd}")), &arm64)
+        .unwrap_err();
+    assert!(matches!(err, Error::UnsupportedLayer(..)), "{err}");
+
+    let tar = manifest(TAR);
+    let pulled = client
+        .pull(&store, &reference(&fake, &format!("@{tar}")), &arm64)
+        .unwrap();
+    assert_eq!((pulled.digest, pulled.blobs_fetched), (tar, 0));
+    assert_eq!(fake.count("/"), 0);
+    let index: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.path().join("index.json")).unwrap()).unwrap();
+    assert_eq!(index["manifests"][0]["mediaType"], OCI_MANIFEST);
+    assert_eq!(index["manifests"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn parses_bearer_challenges() {
     let p = parse_bearer(
         r#"Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:a/b:pull,push""#,

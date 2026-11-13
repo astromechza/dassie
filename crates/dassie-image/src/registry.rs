@@ -18,7 +18,7 @@ use ureq::http::Response;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::digest::Digest;
-use crate::oci::{Compression, Descriptor, Manifest, Platform};
+use crate::oci::{Compression, Descriptor, Manifest, OCI_MANIFEST, Platform};
 use crate::reference::Reference;
 use crate::store::{self, MAX_DEPTH, MAX_JSON, Node, Store, check_platform};
 
@@ -206,12 +206,13 @@ fn local(
     {
         return Ok(None);
     }
+    check_layers(&image.manifest)?;
     // The resolved manifest, which differs from `digest` if a layout written
     // by `skopeo copy --all` holds the index too.
     let size = std::fs::metadata(store.blob_path(&image.digest)).map_or(0, |m| m.len());
     store.set_ref(
         name,
-        &descriptor(&image.manifest.media_type, &image.digest, size),
+        &descriptor(media_type(&image.manifest, ""), &image.digest, size),
     )?;
     Ok(Some(Pulled {
         digest: image.digest,
@@ -220,6 +221,31 @@ fn local(
         bytes_fetched: 0,
         blobs_present: image.manifest.layers.len() + 1,
     }))
+}
+
+/// Refuses a manifest with layers the build cannot unpack (zstd, foreign).
+fn check_layers(manifest: &Manifest) -> Result<(), Error> {
+    match manifest
+        .layers
+        .iter()
+        .find(|l| Compression::of_layer(&l.media_type).is_none())
+    {
+        Some(l) => Err(Error::UnsupportedLayer(
+            l.digest.clone(),
+            l.media_type.clone(),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A manifest's media type for its `index.json` descriptor, which must have
+/// one: the body's field, else the response's `Content-Type`, else OCI's.
+/// An OCI manifest may omit the field; a Docker v2 one never does.
+fn media_type<'a>(manifest: &'a Manifest, content_type: &'a str) -> &'a str {
+    [manifest.media_type.as_str(), content_type]
+        .into_iter()
+        .find(|t| !t.is_empty())
+        .unwrap_or(OCI_MANIFEST)
 }
 
 /// An `index.json` entry for a manifest.
@@ -270,14 +296,7 @@ impl Session<'_> {
             blobs_present: 0,
         };
         // Refuse before downloading anything that could not be built.
-        for layer in &manifest.layers {
-            if Compression::of_layer(&layer.media_type).is_none() {
-                return Err(Error::UnsupportedLayer(
-                    layer.digest.clone(),
-                    layer.media_type.clone(),
-                ));
-            }
-        }
+        check_layers(manifest)?;
         if manifest.config.size > MAX_JSON {
             let path = store.blob_path(&manifest.config.digest);
             return Err(store::Error::TooLarge(path).into());
@@ -291,11 +310,7 @@ impl Session<'_> {
 
         let size = bytes.len() as u64;
         store.put(&pulled.digest, size, bytes)?;
-        let media_type = if manifest.media_type.is_empty() {
-            content_type
-        } else {
-            &manifest.media_type
-        };
+        let media_type = media_type(manifest, content_type);
         store.set_ref(&pulled.name, &descriptor(media_type, &pulled.digest, size))?;
         Ok(pulled)
     }
