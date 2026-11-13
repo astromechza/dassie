@@ -74,7 +74,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [recv, roundtrip]
+        include:
+          - target: recv
+            dict: proto.dict
+          - target: roundtrip
+            dict: proto.dict
+          - target: flatten_model
+            dict: ""
+          - target: flatten_bytes
+            dict: tar.dict
     env:
       # cargo-fuzz needs nightly. Pinned so the job does not drift; overrides
       # rust-toolchain.toml for every cargo call in this job.
@@ -82,6 +90,7 @@ jobs:
       CARGO_FUZZ_VERSION: 0.13.2
       CARGO_FUZZ_SHA256: b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c
       TARGET: ${{ matrix.target }}
+      DICT: ${{ matrix.dict }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -109,7 +118,7 @@ jobs:
           mkdir -p "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
           cargo fuzz run --target x86_64-unknown-linux-gnu \
             "$TARGET" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" -- \
-            -max_total_time=60 -max_len=131072 -dict=fuzz/proto.dict
+            -max_total_time=60 -max_len=131072 ${DICT:+"-dict=fuzz/$DICT"}
 
       - name: Upload crash inputs
         if: failure()

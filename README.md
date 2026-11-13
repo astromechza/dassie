@@ -100,7 +100,7 @@ lockfile; CI runs `gh actions-lock --verify`. Dependabot updates both.
 ### Fuzzing
 
 `fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets
-for `dassie-proto`. It is a workspace of its own, so the stable checks above
+for `dassie-proto` and the `dassie-image` flattener. It is a workspace of its own, so the stable checks above
 never build it. It needs nightly (`rustup toolchain install nightly`) and
 `cargo install --locked cargo-fuzz`.
 
@@ -108,6 +108,9 @@ never build it. It needs nightly (`rustup toolchain install nightly`) and
 cargo +nightly fuzz run recv fuzz/corpus/recv fuzz/seeds/recv -- \
   -create_missing_dirs=1 -max_total_time=60 -max_len=131072 -dict=fuzz/proto.dict
 cargo +nightly fuzz run roundtrip -- -max_total_time=60 -max_len=131072
+cargo +nightly fuzz run flatten_model -- -max_total_time=60 -max_len=131072
+cargo +nightly fuzz run flatten_bytes fuzz/corpus/flatten_bytes fuzz/seeds/flatten_bytes -- \
+  -create_missing_dirs=1 -max_total_time=60 -max_len=131072 -dict=fuzz/tar.dict
 ```
 
 - `recv` feeds arbitrary bytes to `FrameReader::recv` as `Event`, `Request`
@@ -118,9 +121,22 @@ cargo +nightly fuzz run roundtrip -- -max_total_time=60 -max_len=131072
 - `roundtrip` generates messages with the `arbitrary` feature of
   `dassie-proto`. It checks that every frame `FrameWriter::send` emits decodes
   back to the same value.
+- `flatten_model` generates 1–4 layers of directories, files, symlinks, hard
+  links, whiteouts and opaque markers over the names `a`, `b`, `c` and
+  `.dassie`, up to three deep, so paths collide often. Only a dangling or
+  replaced hard link may fail. Otherwise the output must hold every parent
+  before its children, no path twice, hard links after their non-directory
+  targets, no `..` or absolute paths, and `.dassie/image.json` last and
+  alone under `.dassie`. The same input must give the same bytes, and the
+  same entries as a naive reference model of the OCI layer rules (ADR 0007):
+  each layer's whiteouts hide only lower layers, then its entries apply in
+  tar order.
+- `flatten_bytes` feeds arbitrary bytes to the flattener as one layer. It may
+  reject them, but must not panic, and anything it accepts must meet the
+  same output invariants.
 
 `-max_len` is above `MAX_LINE`, so oversized frames are reachable. Seeds from
-ADR 0004 live in `fuzz/seeds/` and are committed. New inputs go to
+ADR 0004 and small layer tars live in `fuzz/seeds/` and are committed. New inputs go to
 `fuzz/corpus/`, which is ignored. Crashes are saved to `fuzz/artifacts/<target>/`.
 Replay one with `cargo +nightly fuzz run <target> <file>`. CI runs each target
 for 60 s on a pinned nightly and uploads crash inputs as an artifact.
