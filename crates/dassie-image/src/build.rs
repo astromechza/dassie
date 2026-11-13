@@ -20,7 +20,7 @@ use crate::store::{self, Image, Store};
 
 /// Bumped whenever the builder would produce a different filesystem from the
 /// same image, so old artefacts are never reused or overwritten.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// mkfs's own clock, as seconds since the epoch, so the same image always
 /// builds to the same bytes.
