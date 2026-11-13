@@ -24,9 +24,9 @@
 
   <!-- legend -->
   <line x1="700" y1="32" x2="736" y2="32" class="built"/>
-  <text x="744" y="36" class="s">built (M0)</text>
-  <line x1="830" y1="32" x2="866" y2="32" class="plan"/>
-  <text x="874" y="36" class="s">planned (M1+)</text>
+  <text x="744" y="36" class="s">built</text>
+  <line x1="800" y1="32" x2="836" y2="32" class="plan"/>
+  <text x="844" y="36" class="s">planned</text>
 
   <!-- CLI -->
   <rect x="30" y="70" width="190" height="46" rx="8" fill="#f8fafc" class="plan"/>
@@ -88,7 +88,7 @@
   <text x="670" y="294" text-anchor="middle" class="s">PID 1 · shared initramfs</text>
   <rect x="604" y="320" width="132" height="58" rx="6" fill="#ffffff" class="built"/>
   <text x="670" y="344" text-anchor="middle" class="t" font-size="13">app entrypoint</text>
-  <text x="670" y="362" text-anchor="middle" class="s">OCI image → ext4</text>
+  <text x="670" y="362" text-anchor="middle" class="s">from the image rootfs</text>
   <text x="670" y="398" text-anchor="middle" font-size="10.5" fill="#047857">exit → reboot → restart</text>
   <text x="670" y="428" text-anchor="middle" class="s">Restart=always · 5 / 60 s</text>
 
@@ -124,4 +124,14 @@
   <!-- clients arrow -->
   <path d="M220,509 L578,509" class="lnp" marker-end="url(#a)"/>
   <text x="389" y="501" text-anchor="middle" class="lbl">HTTPS</text>
+  <!-- image store (M1 slice A); last, so its arrow draws over the systemd card -->
+  <rect x="300" y="318" width="200" height="104" rx="10" fill="#fefce8" class="built"/>
+  <text x="400" y="342" text-anchor="middle" class="t">Images on disk</text>
+  <text x="314" y="366" class="m">images/ (OCI layout)</text>
+  <text x="314" y="386" class="m">rootfs/sha256-….ext4</text>
+  <text x="400" y="408" text-anchor="middle" class="s">dassie-image (ADR 0007)</text>
+  <path d="M220,296 L298,340" class="lnp" marker-end="url(#a)"/>
+  <text x="252" y="306" class="lbl">pull, build</text>
+  <path d="M500,376 L578,376" class="ln" marker-end="url(#a)"/>
+  <text x="506" y="368" class="lbl">root drive</text>
 </svg>

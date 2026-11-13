@@ -34,3 +34,8 @@ outside the data path (ADR 0002).
 (ADR 0004).
 
 ![Host and guest over vsock](diagrams/3-vsock-channels.svg)
+
+**From OCI image to rootfs.** Two passes over the layers, then
+`mkfs.ext4 -d -`: one read-only, digest-named file per image (ADR 0007).
+
+![From OCI image to rootfs](diagrams/4-image-build.svg)
