@@ -76,8 +76,9 @@ forwarding on the host, such as Docker's. The reverse does not hold. A drop
 in any base chain on a hook is final, so a host whose iptables `FORWARD`
 policy is `DROP` (Docker sets this) drops VM traffic too. Such a host must
 accept `dt*` traffic in iptables, for example in Docker's `DOCKER-USER`
-chain. Both firewalls must then accept a packet, so the policy here still
-applies. The runbook gives the rules.
+chain. Both firewalls must then accept a packet, so the isolation rules here
+still apply. Any egress restriction in that chain must sit above the accept
+rules. The runbook gives the rules.
 
 **DNS comes from `dassie.dns=<ip>[,<ip>]` on the cmdline (ADR 0005).** Init
 writes `/etc/resolv.conf` from it. `net-env.sh` defaults to public resolvers

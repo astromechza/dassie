@@ -83,15 +83,30 @@ and `nftables` on the host.
 
 Every other firewall on the host must also let VM traffic through: a drop in
 any forward chain is final, whatever `dassie.nft` says. Check with
-`sudo iptables -S FORWARD`. If the policy is `-P FORWARD DROP`, as Docker
-sets it, accept the TAPs in Docker's `DOCKER-USER` chain (or in `FORWARD`
-without Docker). The `inet dassie` table still enforces isolation, because
-both firewalls must accept a packet:
+`sudo iptables -S FORWARD`. If the policy is `-P FORWARD DROP`, accept the
+TAPs in iptables.
+
+On a Docker host, which sets that policy, use Docker's `DOCKER-USER` chain.
+First check what is already there with `sudo iptables -S DOCKER-USER`. These
+inserts go to the top of the chain, so they bypass any existing DROP or REJECT
+for `dt+` traffic. Re-insert above them any rule that must still restrict
+guest egress.
 
 ```sh
 sudo iptables -I DOCKER-USER -i dt+ -j ACCEPT
 sudo iptables -I DOCKER-USER -o dt+ -j ACCEPT
 ```
+
+On a host without Docker, add the same rules to `FORWARD`:
+
+```sh
+sudo iptables -I FORWARD -i dt+ -j ACCEPT
+sudo iptables -I FORWARD -o dt+ -j ACCEPT
+```
+
+The `inet dassie` table still rejects VM → VM and VM → host traffic and
+drops unsolicited traffic into VMs, because both firewalls must accept a
+packet. Egress, though, is then filtered by `dassie.nft` alone.
 
 These rules do not survive a reboot. Persist them the way the host manages
 iptables, for example with `iptables-persistent`.
