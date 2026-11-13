@@ -127,10 +127,10 @@
   <text x="866" y="497" text-anchor="middle" class="m">dt00002 · 10.88.0.4/31</text>
 
   <!-- caddy -->
-  <rect x="580" y="538" width="376" height="56" rx="10" fill="#fff7ed" class="plan"/>
+  <rect x="580" y="538" width="376" height="56" rx="10" fill="#fff7ed" class="built"/>
   <text x="768" y="561" text-anchor="middle" class="t">caddy.service</text>
-  <text x="768" y="580" text-anchor="middle" class="s">hostname → guest IP · route swap for blue/green</text>
-  <path d="M670,538 L670,514" class="lnp" marker-end="url(#a)"/>
+  <text x="768" y="580" text-anchor="middle" class="s">hostname → guest IP · tls internal · admin on a socket</text>
+  <path d="M670,538 L670,514" class="ln" marker-end="url(#a)"/>
   <path d="M866,538 L866,514" stroke="#94a3b8" stroke-width="1.5" fill="none" stroke-dasharray="2 4" marker-end="url(#a)"/>
   <text x="874" y="530" class="lbl">after health gate</text>
 
@@ -145,7 +145,7 @@
   <text x="389" y="274" text-anchor="middle" font-size="11" fill="#047857">vsock: events, health, stop</text>
 
   <!-- clients arrow -->
-  <path d="M220,567 L578,567" class="lnp" marker-end="url(#a)"/>
+  <path d="M220,567 L578,567" class="ln" marker-end="url(#a)"/>
   <text x="389" y="559" text-anchor="middle" class="lbl">HTTPS</text>
   <!-- image store (M1 slice A); last, so its arrow draws over the systemd card -->
   <rect x="300" y="318" width="200" height="104" rx="10" fill="#fefce8" class="built"/>

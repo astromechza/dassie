@@ -75,8 +75,8 @@
   <text x="484" y="198" class="m">default via uplink gw</text>
 
   <!-- caddy -->
-  <rect x="470" y="300" width="160" height="50" rx="8" fill="#fff7ed" class="plan"/>
-  <text x="550" y="321" text-anchor="middle" font-size="12.5" font-weight="600" fill="#0f172a">caddy (slice E)</text>
+  <rect x="470" y="300" width="160" height="50" rx="8" fill="#fff7ed" class="built"/>
+  <text x="550" y="321" text-anchor="middle" font-size="12.5" font-weight="600" fill="#0f172a">caddy</text>
   <text x="550" y="338" text-anchor="middle" class="s">or curl, on the host</text>
 
   <!-- nft -->

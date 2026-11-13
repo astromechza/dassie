@@ -16,6 +16,7 @@ same change that makes the decision. Start new ones from
 | [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009) |
 | [0008](0008-guest-networking.md) | Guest networking | Accepted |
 | [0009](0009-read-only-rootfs-format-erofs.md) | Read-only rootfs format: erofs | Accepted |
+| [0010](0010-ingress-through-caddy.md) | Ingress through Caddy | Accepted |
 
 ## Diagrams
 
@@ -23,7 +24,8 @@ Hand-written SVGs in [diagrams/](diagrams/). Update them in the same change as
 the ADR or code they describe. Solid lines are built; dashed lines are planned.
 
 **The host.** The daemon writes files and drives systemd and Caddy, but stays
-outside the data path (ADR 0002).
+outside the data path (ADR 0002). Caddy proxies HTTPS to each VM's guest
+address (ADR 0010).
 
 ![Dassie on one host](diagrams/1-host-overview.svg)
 

@@ -135,7 +135,7 @@
   <!-- host-originated -->
   <rect x="30" y="414" width="320" height="140" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
   <text x="44" y="438" class="h" fill="#1d4ed8">from the host to a VM</text>
-  <text x="44" y="458" class="s">caddy (slice E), curl, debugging tools</text>
+  <text x="44" y="458" class="s">caddy, curl, debugging tools</text>
   <text x="44" y="480" class="s">output: no dassie rules, so allowed</text>
   <text x="44" y="498" class="s">postrouting: out on a dt*, so not masqueraded</text>
   <text x="44" y="516" class="s">the VM's replies come back through input as</text>
