@@ -183,6 +183,31 @@ fn pulls_through_token_challenge_and_index_then_dedups() {
 }
 
 #[test]
+fn corrupt_stored_manifest_is_repaired_on_pull() {
+    let fake = Fake::start();
+    let (_, arm_d) = multi_arch(&fake);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::init(dir.path()).unwrap();
+    let client = Client::plain_http();
+    let arm64 = Platform::new("linux", "arm64");
+    client
+        .pull(&store, &reference(&fake, ":v1"), &arm64)
+        .unwrap();
+
+    let good = fs::read(store.blob_path(&arm_d)).unwrap();
+    fs::write(store.blob_path(&arm_d), &good[..good.len() / 2]).unwrap();
+    // Pinned: the local path sees the damage and falls back to the network.
+    let pinned = reference(&fake, &format!("@{arm_d}"));
+    let pulled = client.pull(&store, &pinned, &arm64).unwrap();
+    assert_eq!((pulled.digest, pulled.blobs_fetched), (arm_d.clone(), 0));
+    assert_eq!(fs::read(store.blob_path(&arm_d)).unwrap(), good);
+    assert_eq!(
+        store.image(&pinned.to_string(), &arm64).unwrap().digest,
+        arm_d
+    );
+}
+
+#[test]
 fn tampered_blob_is_rejected_and_not_stored() {
     let fake = Fake::start();
     let manifest = image(&fake, "arm64", &[(TAR, b"layer-B")]);

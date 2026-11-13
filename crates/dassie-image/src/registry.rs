@@ -381,7 +381,12 @@ impl Session<'_> {
         }
 
         let size = bytes.len() as u64;
-        store.put(&pulled.digest, size, bytes)?;
+        if !store.put(&pulled.digest, size, bytes)? && store.read_small(&pulled.digest).is_err() {
+            // A stored copy that no longer matches (disk error, outside
+            // edit): replace it with the verified bytes before naming it.
+            store.remove_blob(&pulled.digest)?;
+            store.put(&pulled.digest, size, bytes)?;
+        }
         let media_type = media_type(manifest, content_type);
         store.set_ref(&pulled.name, &descriptor(media_type, &pulled.digest, size))?;
         Ok(pulled)

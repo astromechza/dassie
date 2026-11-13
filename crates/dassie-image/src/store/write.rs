@@ -46,6 +46,15 @@ impl Store {
         self.blob_path(digest).is_file()
     }
 
+    /// Removes a blob, e.g. one found corrupt. Absent is not an error.
+    pub(crate) fn remove_blob(&self, digest: &Digest) -> Result<(), Error> {
+        let path = self.blob_path(digest);
+        match fs::remove_file(&path) {
+            Err(e) if e.kind() != ErrorKind::NotFound => Err(Error::Io(path, e)),
+            _ => Ok(()),
+        }
+    }
+
     /// Streams `src` into the store as blob `digest`, which must be exactly
     /// `size` bytes. Returns `false`, without reading `src`, if the blob is
     /// already present.
