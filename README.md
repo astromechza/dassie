@@ -9,8 +9,9 @@ keeps everything alive, so a reboot or daemon crash returns to the same steady
 state. The daemon exists for high availability and blue/green deploys via Caddy
 route changes.
 
-Status: M0 in progress. `dassie-init` boots as PID 1 in a Firecracker microVM
-under a hand-written systemd unit; there is no daemon yet.
+Status: M1 in progress. `dassie-init` boots as PID 1 in a Firecracker microVM
+under a hand-written systemd unit, and `dassie-image` builds its rootfs from an
+OCI image. There is no daemon yet.
 
 ## Crates
 
@@ -41,6 +42,20 @@ guest/rootfs.sh x86_64         # target/guest/x86_64/rootfs.ext4
 guest/firecracker.sh x86_64    # target/guest/x86_64/firecracker
 guest/smoke-test.sh x86_64     # boot once, expect started, ready, exited
 ```
+
+To build a rootfs from a real OCI image instead (ADR 0007), copy the image into
+a local OCI layout and build it. This needs `mkfs.ext4` from e2fsprogs 1.47.1
+or later and the libarchive shared library (Debian: `libarchive13t64`):
+
+```sh
+skopeo copy docker://docker.io/nginxinc/nginx-unprivileged:alpine oci:$HOME/images:nginx
+cargo run -p dassie-image --example image -- build \
+  --store $HOME/images --out $HOME/rootfs nginx   # prints the .ext4 path
+```
+
+The artefact is read-only and named by manifest digest, and a rebuild of the
+same image is a no-op. `cargo test -p dassie-image -- --ignored` checks a real
+build on Linux.
 
 ## Development
 
