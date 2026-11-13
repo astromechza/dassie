@@ -80,10 +80,22 @@ impl From<store::Error> for Error {
 }
 
 /// Progress of a pull, reported to the callback given to
-/// [`Client::pull_with`] as it happens, once per config or layer blob.
+/// [`Client::pull_with`] as it happens: [`Planned`](Self::Planned) once,
+/// then events for the config and each layer blob in turn.
+///
+/// Overall progress is the sum of each blob's latest `done` (or its size,
+/// once `Present` or `Stored`) over the sum of the planned sizes.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum Event<'a> {
+    /// The platform manifest is resolved and these blobs are next, before
+    /// any is fetched. The pull can still fail after this (e.g. the config
+    /// names another platform).
+    Planned {
+        digest: &'a Digest,
+        config: &'a Descriptor,
+        layers: &'a [Descriptor],
+    },
     /// The blob is already in the store and will not be fetched.
     Present(&'a Descriptor),
     /// `done` of the blob's `size` bytes have arrived: first with `done` 0,
@@ -248,6 +260,11 @@ fn local(
         return Ok(None);
     }
     check_layers(&image.digest, &image.manifest)?;
+    on(Event::Planned {
+        digest: &image.digest,
+        config: &image.manifest.config,
+        layers: &image.manifest.layers,
+    });
     on(Event::Present(&image.manifest.config));
     for layer in &image.manifest.layers {
         on(Event::Present(layer));
@@ -351,6 +368,11 @@ impl Session<'_> {
             let path = store.blob_path(&manifest.config.digest);
             return Err(store::Error::TooLarge(path).into());
         }
+        (self.on)(Event::Planned {
+            digest: &pulled.digest,
+            config: &manifest.config,
+            layers: &manifest.layers,
+        });
         self.blob(store, &manifest.config, &mut pulled)?;
         let config = store.read_small(&manifest.config.digest)?;
         check_platform(&pulled.digest, &config, platform)?;

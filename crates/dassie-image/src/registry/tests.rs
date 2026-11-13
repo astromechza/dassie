@@ -67,6 +67,15 @@ fn event(e: Event<'_>) -> String {
         Event::Present(d) => format!("present {}", short(d)),
         Event::Fetching { blob, done } => format!("fetching {} {done}", short(blob)),
         Event::Stored(d) => format!("stored {}", short(d)),
+        Event::Planned {
+            digest,
+            config,
+            layers,
+        } => {
+            let bytes = config.size + layers.iter().map(|l| l.size).sum::<u64>();
+            let hex = &digest.hex()[..8];
+            format!("planned {hex} {} blobs {bytes} bytes", layers.len() + 1)
+        }
     }
 }
 
@@ -113,6 +122,14 @@ fn pulls_through_token_challenge_and_index_then_dedups() {
     assert!(!store.has_blob(&amd_d));
 
     // A re-pull by tag fetches the manifests again, but no blobs.
+    // The plan comes first, with the whole image's size.
+    let config_len = r#"{"os":"linux","architecture":"arm64"}"#.len();
+    let plan = format!(
+        "planned {} 3 blobs {} bytes",
+        &arm_d.hex()[..8],
+        config_len + 4 + 7
+    );
+    assert_eq!(events.first(), Some(&plan));
     // Each blob: fetching from 0, up to its size, then stored.
     let size = |s: &str| s.len() as u64;
     for (blob, len) in [(config, size(config)), ("base", 4), ("arm-top", 7)] {
@@ -142,7 +159,8 @@ fn pulls_through_token_challenge_and_index_then_dedups() {
         events.iter().filter(|e| e.starts_with("present")).count(),
         3
     );
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.first(), Some(&plan));
+    assert_eq!(events.len(), 4);
     assert_eq!(again.digest, arm_d);
     assert_eq!((again.blobs_fetched, again.blobs_present), (0, 3));
     assert_eq!(fake.count("/storage/"), 3);

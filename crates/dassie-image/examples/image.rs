@@ -75,10 +75,20 @@ fn pull(store: PathBuf, platform: &Platform, reference: &str) -> Result<(), Stri
     let reference: Reference = reference.parse().map_err(|e| format!("{e}"))?;
     let store = Store::init(store).map_err(|e| e.to_string())?;
     // One line per fetched blob; a progress bar would hook in here too.
-    let mut on = |e: Event<'_>| {
-        if let Event::Stored(blob) = e {
+    let mut on = |e: Event<'_>| match e {
+        Event::Planned {
+            digest,
+            config,
+            layers,
+        } => {
+            let bytes = config.size + layers.iter().map(|l| l.size).sum::<u64>();
+            let blobs = layers.len() + 1;
+            eprintln!("{digest}: {blobs} blobs, {:.1} MiB", mib(bytes));
+        }
+        Event::Stored(blob) => {
             eprintln!("  stored {} ({:.1} MiB)", blob.digest, mib(blob.size));
         }
+        _ => {}
     };
     let pulled = Client::new()
         .pull_with(&store, &reference, platform, &mut on)

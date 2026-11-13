@@ -152,8 +152,10 @@ _Amended 2026-11-13, when slice B added the write side and the pull:_
   - Bounds: JSON bodies are capped at 4 MiB, a blob at its declared size,
     and a manifest at 128 layers (Docker has long refused more than 127).
     The total image size is not capped yet.
-  - `Client::pull_with` reports each blob as present, fetching (bytes so
-    far) or stored, for progress display.
+  - `Client::pull_with` reports the plan (the resolved manifest and every
+    blob's size) before any download, then each blob as present, fetching
+    (bytes so far) or stored, so a caller can show progress for the whole
+    image.
 - **References** follow Docker's rules. The first component is a registry
   only if it contains `.` or `:` or is `localhost`; otherwise it is
   `docker.io` (API host `registry-1.docker.io`), where a one-component name
