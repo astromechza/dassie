@@ -423,7 +423,7 @@ impl Session<'_> {
         store.put(&desc.digest, desc.size, body)?;
         (self.on)(Event::Stored(desc));
         pulled.blobs_fetched += 1;
-        pulled.bytes_fetched += desc.size;
+        pulled.bytes_fetched = pulled.bytes_fetched.saturating_add(desc.size);
         Ok(())
     }
 

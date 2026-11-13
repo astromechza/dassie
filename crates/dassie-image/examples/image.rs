@@ -81,7 +81,10 @@ fn pull(store: PathBuf, platform: &Platform, reference: &str) -> Result<(), Stri
             config,
             layers,
         } => {
-            let bytes = config.size + layers.iter().map(|l| l.size).sum::<u64>();
+            // Sizes come from the registry: never trust them to add up.
+            let bytes = layers
+                .iter()
+                .fold(config.size, |sum, l| sum.saturating_add(l.size));
             let blobs = layers.len() + 1;
             eprintln!("{digest}: {blobs} blobs, {:.1} MiB", mib(bytes));
         }
