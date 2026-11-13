@@ -283,6 +283,7 @@ impl Tree {
             match &node.kind {
                 Kind::Dir { header, pax } => {
                     let mut header = header.as_ref().clone();
+                    clear_gnu_times(&mut header);
                     header.set_size(0);
                     append_pax(&mut tar, pax)?;
                     tar.append_data(&mut header, path, io::empty())?;
@@ -305,6 +306,7 @@ impl Tree {
                 }
                 let pax = pax(&mut entry)?;
                 let mut header = entry.header().clone();
+                clear_gnu_times(&mut header);
                 match &node.kind {
                     Kind::Dir { .. } => {}
                     Kind::Hardlink { target, .. } => {
@@ -475,6 +477,17 @@ fn append_pax<W: Write>(tar: &mut Builder<W>, pax: &[(String, Vec<u8>)]) -> io::
         return Ok(());
     }
     tar.append_pax_extensions(pax.iter().map(|(k, v)| (k.as_str(), v.as_slice())))
+}
+
+/// Zeroes a GNU header's `atime` and `ctime`. They sit where a ustar header
+/// has its `prefix`, and mkfs.erofs (1.8.6) reads that field as a path
+/// prefix whatever the format, so `bin/app` with an atime of `1` would land
+/// at `00000000001/bin/app`. Neither time reaches the filesystem anyway.
+fn clear_gnu_times(header: &mut Header) {
+    if let Some(gnu) = header.as_gnu_mut() {
+        gnu.atime = [0; 12];
+        gnu.ctime = [0; 12];
+    }
 }
 
 /// A root-owned header with a fixed mtime, so builds are reproducible.
@@ -908,5 +921,41 @@ pub(crate) mod tests {
             (root.kind, root.mode, root.uid, root.gid),
             (EntryType::Directory, 0o755, 0, 0)
         );
+    }
+
+    #[test]
+    fn gnu_access_and_change_times_are_cleared() {
+        let mut tar = Builder::new(Vec::new());
+        for (t, path, data) in [
+            (EntryType::Directory, "bin", &b""[..]),
+            (EntryType::Regular, "bin/app", &b"x"[..]),
+        ] {
+            let mut h = Header::new_gnu();
+            h.set_entry_type(t);
+            h.set_mode(0o755);
+            h.set_size(data.len() as u64);
+            let gnu = h.as_gnu_mut().unwrap();
+            gnu.atime = *b"00000000001\0";
+            gnu.ctime = *b"00000000002\0";
+            tar.append_data(&mut h, path, data).unwrap();
+        }
+        let layer = tar.into_inner().unwrap();
+
+        let mut tree = Tree::new();
+        tree.scan(layer.as_slice()).unwrap();
+        tree.finish().unwrap();
+        let out = tree
+            .emit(|_| Ok(layer.as_slice()), b"{}", Vec::new())
+            .unwrap();
+        let mut archive = Archive::new(out.as_slice());
+        let mut seen = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            if let Some(gnu) = entry.header().as_gnu() {
+                assert_eq!((gnu.atime, gnu.ctime), ([0; 12], [0; 12]));
+            }
+            seen.push(entry.path().unwrap().to_string_lossy().into_owned());
+        }
+        assert_eq!(seen[1..3], ["bin", "bin/app"]);
     }
 }
