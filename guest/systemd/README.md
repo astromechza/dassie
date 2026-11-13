@@ -81,6 +81,21 @@ table holds the policy for all of them
 ([ADR 0008](../../architecture/0008-guest-networking.md)). Needs `iproute2`
 and `nftables` on the host.
 
+Every other firewall on the host must also let VM traffic through: a drop in
+any forward chain is final, whatever `dassie.nft` says. Check with
+`sudo iptables -S FORWARD`. If the policy is `-P FORWARD DROP`, as Docker
+sets it, accept the TAPs in Docker's `DOCKER-USER` chain (or in `FORWARD`
+without Docker). The `inet dassie` table still enforces isolation, because
+both firewalls must accept a packet:
+
+```sh
+sudo iptables -I DOCKER-USER -i dt+ -j ACCEPT
+sudo iptables -I DOCKER-USER -o dt+ -j ACCEPT
+```
+
+These rules do not survive a reboot. Persist them the way the host manages
+iptables, for example with `iptables-persistent`.
+
 Install the host units, then give `test` index 1 (TAP `dt1`, guest
 `10.88.0.3`). The index must be unique among running VMs:
 
@@ -192,7 +207,8 @@ by `fc@test`, and `curl http://10.88.0.3:8080/` answers again.
 `active (running)` via `WantedBy=multi-user.target`. The journal for this boot
 shows the guest console. A listener started afterwards still receives
 `Started` and `Ready`, because the guest held them. To clean up, run
-`sudo systemctl disable --now fc@test`.
+`sudo systemctl disable --now fc@test`. With networking, also run
+`sudo systemctl stop dassie-tap@test`, because the TAP outlives the VM.
 
 ### Bonus: the start limit
 
@@ -208,7 +224,8 @@ config, then run `sudo systemctl reset-failed fc@test` and
 
 Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
 Set them up as for `test` above, with their own directory, `net.env` and
-config. The testapp's `/dial?addr=HOST:PORT` opens a TCP connection from inside
+config. `a` reuses `test`'s index, and starting its TAP would delete `test`'s
+live `dt1`, so first run `sudo systemctl stop fc@test dassie-tap@test`. The testapp's `/dial?addr=HOST:PORT` opens a TCP connection from inside
 the guest and reports the result:
 
 ```sh

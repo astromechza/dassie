@@ -6,7 +6,9 @@
 # 10.88.0.0/16. Rules match the TAP name pattern and named sets, never one
 # VM, so the rule count stays fixed however many VMs run. Every base chain
 # accepts by default, so other forwarding on the host (Docker, libvirt) is
-# untouched; only traffic to or from a dt* TAP is filtered.
+# untouched; only traffic to or from a dt* TAP is filtered. The reverse does
+# not hold: another firewall's forward drop (Docker's iptables FORWARD
+# policy) also drops VM traffic. See README.md next to this file.
 
 # Declare, then delete, then define: an atomic replace that also works when
 # the table does not exist yet.
