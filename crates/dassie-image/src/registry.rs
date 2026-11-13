@@ -395,8 +395,7 @@ impl Session<'_> {
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.split(';').next().unwrap_or_default().trim().to_owned())
-            .unwrap_or_default();
+            .map_or_default(|v| v.split(';').next().unwrap_or_default().trim().to_owned());
         let bytes = read_json(resp, &url)?;
         Ok((bytes, media_type))
     }
