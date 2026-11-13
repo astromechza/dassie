@@ -89,9 +89,34 @@ stdin.
 **Not one drive per layer.** Stacking per-layer drives with overlayfs in the
 guest would share disk between images. It would also hit Firecracker's drive
 and MMIO limits on deep images, couple snapshots to many files, and save
-little next to the blob store. erofs (`mkfs.erofs --tar`) is left open as a
-drop-in for ext4: the root is read-only, and init already honours
-`rootfstype=`.
+little next to the blob store.
+
+**Why ext4, for now.** ext4 was assumed from the start (ADR 0002's crate
+table, then ADR 0006's test rootfs and kernel fragment) rather than chosen
+against alternatives. This records the choice:
+
+| | ext4 | erofs | squashfs |
+| --- | --- | --- | --- |
+| Writable | yes | no | no |
+| In the guest kernel | yes, pinned | no: `CONFIG_EROFS_FS` is unset in Firecracker's config | yes, with xattrs |
+| Built from a tar on stdin, without root | `mkfs.ext4 -d -` | `mkfs.erofs --tar` | `sqfstar` |
+| Compression | none | lz4/lzma, plus dedup | yes; costlier random reads |
+| Sized | estimated up front, with a journal and spare metadata | to its content | to its content |
+| Reproducible | through the fake-time and UUID options | by design | with options |
+
+ext4 wins for slice A for one reason: until slice C adds the read-only root
+plus overlay, the guest boots the root drive read-write, and only ext4 can
+do that. The kernel and init already support it, and `debugfs` lets tests
+inspect the result.
+
+Once the root is read-only, ext4's advantages mostly go and its costs stay:
+no compression, a journal that does nothing, a size guessed in advance, and
+`user.*` xattrs dropped. erofs is built for read-only container images. Its
+main cost is one kernel option. **Revisit at slice C:** measure ext4 against
+erofs on a real image (artefact size, build time, boot to `ready`), and
+record the outcome in a new ADR that supersedes this section. A swap is
+cheap: the format version and extension in the artefact name keep old and
+new files apart, and init already honours `rootfstype=`.
 
 **Scope in M1 slice A.** Only the read side of the store is built. The
 registry pull writes blobs and `index.json` (slice B).
