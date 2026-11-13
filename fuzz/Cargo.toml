@@ -1,6 +1,6 @@
 [package]
 name = "dassie-fuzz"
-description = "cargo-fuzz targets for dassie-proto framing and the dassie-image flattener"
+description = "cargo-fuzz targets for dassie-proto framing, the dassie-image flattener and dassie-init config loading"
 version = "0.0.0"
 edition = "2024"
 license = "MIT"
@@ -12,6 +12,7 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
 dassie-image = { path = "../crates/dassie-image" }
+dassie-init = { path = "../crates/dassie-init" }
 dassie-proto = { path = "../crates/dassie-proto", features = ["arbitrary"] }
 libfuzzer-sys = "0.4"
 serde_json = "1"
@@ -46,6 +47,13 @@ bench = false
 [[bin]]
 name = "flatten_bytes"
 path = "fuzz_targets/flatten_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "init_config"
+path = "fuzz_targets/init_config.rs"
 test = false
 doc = false
 bench = false

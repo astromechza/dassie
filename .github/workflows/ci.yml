@@ -83,6 +83,8 @@ jobs:
             dict: ""
           - target: flatten_bytes
             dict: tar.dict
+          - target: init_config
+            dict: init.dict
     env:
       # cargo-fuzz needs nightly. Pinned so the job does not drift; overrides
       # rust-toolchain.toml for every cargo call in this job.

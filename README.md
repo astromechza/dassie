@@ -99,8 +99,10 @@ their crate roots.
 
 CI also runs [actionlint](https://github.com/rhysd/actionlint) and
 [zizmor](https://docs.zizmor.sh) on `.github/`, `shellcheck` on `guest/`,
-the `guest/net-env-test.sh` known-answer test for VM addressing, and a
-`kvm-boot` job that runs the guest smoke test on an x86_64 KVM runner.
+the `guest/net-env-test.sh` known-answer test for VM addressing, a
+`net-policy` job that runs `guest/net-policy-test.sh` (the nft policy
+against fake VMs in network namespaces), and a `kvm-boot` job that runs the
+guest smoke test on an x86_64 KVM runner.
 
 Workflows reference actions by release tag; `.github/workflows/actions.lock`
 pins each tag, and every transitive action, to a verified commit. After
@@ -116,7 +118,8 @@ unless already in `Cargo.lock`. The comment there shows how to take an urgent fi
 ### Fuzzing
 
 `fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets
-for `dassie-proto` and the `dassie-image` flattener. It is a workspace of its own, so the stable checks above
+for `dassie-proto`, the `dassie-image` flattener and `dassie-init`'s config
+loading. It is a workspace of its own, so the stable checks above
 never build it. It needs nightly (`rustup toolchain install nightly`) and
 `cargo install --locked cargo-fuzz`.
 
@@ -127,6 +130,8 @@ cargo +nightly fuzz run roundtrip -- -max_total_time=60 -max_len=131072
 cargo +nightly fuzz run flatten_model -- -max_total_time=60 -max_len=131072
 cargo +nightly fuzz run flatten_bytes fuzz/corpus/flatten_bytes fuzz/seeds/flatten_bytes -- \
   -create_missing_dirs=1 -max_total_time=60 -max_len=131072 -dict=fuzz/tar.dict
+cargo +nightly fuzz run init_config fuzz/corpus/init_config fuzz/seeds/init_config -- \
+  -create_missing_dirs=1 -max_total_time=60 -max_len=131072 -dict=fuzz/init.dict
 ```
 
 - `recv` feeds arbitrary bytes to `FrameReader::recv` as `Event`, `Request`
@@ -150,9 +155,15 @@ cargo +nightly fuzz run flatten_bytes fuzz/corpus/flatten_bytes fuzz/seeds/flatt
 - `flatten_bytes` feeds arbitrary bytes to the flattener as one layer. It may
   reject them, but must not panic, and anything it accepts must meet the
   same output invariants.
+- `init_config` feeds `dassie-init` the image config JSON, kernel cmdline,
+  `/etc/passwd` and `/etc/group`, split on NUL bytes (ADR 0005). The image
+  config is untrusted and this runs in PID 1, so nothing may panic. An
+  accepted spec must have a non-empty argv, no readiness port 0, each env key
+  once with `PATH` and `HOME` set, and at most 3 `dassie.dns` resolvers, each
+  written as one `nameserver` line of `resolv.conf`.
 
 `-max_len` is above `MAX_LINE`, so oversized frames are reachable. Seeds from
-ADR 0004 and small layer tars live in `fuzz/seeds/` and are committed. New inputs go to
+ADR 0004, small layer tars and sample boot inputs live in `fuzz/seeds/` and are committed. New inputs go to
 `fuzz/corpus/`, which is ignored. Crashes are saved to `fuzz/artifacts/<target>/`.
 Replay one with `cargo +nightly fuzz run <target> <file>`. CI runs each target
 for 60 s on a pinned nightly and uploads crash inputs as an artifact.
