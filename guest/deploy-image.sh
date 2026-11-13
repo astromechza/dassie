@@ -135,30 +135,9 @@ put() {
   "${sudo[@]}" sync "$(dirname "$2")"
 }
 
-dir=$vms/$name
-vm_changed=0
-for f in net.env config.json; do
-  same "$stage/$f" "$dir/$f" || vm_changed=1
-done
-
-unit=fc@$name.service
-if ((vm_changed)); then
-  # Stop before replacing net.env: the TAP unit's ExecStop reads it to find
-  # the TAP to delete. The TAP goes with the VM (StopWhenUnneeded).
-  "${sudo[@]}" systemctl stop "$unit"
-  "${sudo[@]}" install -d -m 0755 "$dir"
-  "${sudo[@]}" sync "$vms"
-  for f in net.env config.json; do put "$stage/$f" "$dir/$f"; done
-fi
-if [[ -n "$hostname" ]]; then
-  same "$stage/route.env" "$dir/route.env" || put "$stage/route.env" "$dir/route.env"
-else
-  "${sudo[@]}" rm -f "$dir/route.env"
-fi
-# Enabled, so it comes back after a host reboot. A no-op on a running VM.
-"${sudo[@]}" systemctl enable --quiet --now dassie-net.service "$unit"
-
-# --- Caddy: one route per VM with a route.env (ADR 0010).
+# --- Caddy: one route per VM with a route.env (ADR 0010). Rendered from the
+# routes as this deploy will leave them, before any live file changes, so a
+# hostname another VM already has fails the deploy and changes nothing.
 # json_route NAME HOSTNAME DIAL -> one element of the server's routes.
 json_route() {
   cat <<EOF
@@ -172,14 +151,25 @@ EOF
 }
 
 render_caddy() {
-  local env vm host vm_port guest_ip sep="" routes=""
+  local env net vm host vm_port guest_ip sep="" routes=""
+  local -a names=("$name")
   local -A seen=()
   for env in "$vms"/*/route.env; do
+    [[ -e "$env" ]] && names+=("$(basename "$(dirname "$env")")")
+  done
+  # Sorted, so the same routes always render the same file.
+  mapfile -t names < <(printf '%s\n' "${names[@]}" | sort -u)
+  for vm in "${names[@]}"; do
+    # This VM's files come from the stage; the others' from disk.
+    if [[ "$vm" == "$name" ]]; then
+      env=$stage/route.env net=$stage/net.env
+    else
+      env=$vms/$vm/route.env net=$vms/$vm/net.env
+    fi
     [[ -e "$env" ]] || continue
-    vm=$(basename "$(dirname "$env")")
     host=$(get "$env" DASSIE_HOSTNAME "$host_re")
     vm_port=$(get "$env" DASSIE_PORT "$port_re")
-    guest_ip=$(get "$(dirname "$env")/net.env" DASSIE_GUEST_IP "^$ip4\$")
+    guest_ip=$(get "$net" DASSIE_GUEST_IP "^$ip4\$")
     [[ -z "${seen[$host]:-}" ]] || die "$host is routed to both ${seen[$host]} and $vm"
     seen[$host]=$vm
     routes+="$sep$(json_route "$vm" "$host" "$guest_ip:$vm_port")"
@@ -219,14 +209,55 @@ EOF
 }
 
 render_caddy >"$stage/caddy.json"
+
+dir=$vms/$name
+vm_changed=0
+for f in net.env config.json; do
+  same "$stage/$f" "$dir/$f" || vm_changed=1
+done
+
+unit=fc@$name.service
+if ((vm_changed)); then
+  # Stop before replacing net.env: the TAP unit's ExecStop reads it to find
+  # the TAP to delete. The TAP goes with the VM (StopWhenUnneeded).
+  "${sudo[@]}" systemctl stop "$unit"
+  "${sudo[@]}" install -d -m 0755 "$dir"
+  "${sudo[@]}" sync "$vms"
+  # Not one atomic switch: a power cut between these two renames can leave
+  # a new net.env beside an old config.json. Running the same deploy again
+  # sees the mismatch and rewrites both. M2 keeps this state in SQLite.
+  for f in net.env config.json; do put "$stage/$f" "$dir/$f"; done
+fi
+if [[ -n "$hostname" ]]; then
+  same "$stage/route.env" "$dir/route.env" || put "$stage/route.env" "$dir/route.env"
+else
+  "${sudo[@]}" rm -f "$dir/route.env"
+fi
+# Enabled, so it comes back after a host reboot. A no-op on a running VM.
+"${sudo[@]}" systemctl enable --quiet --now dassie-net.service "$unit"
+
+# --- Caddy: install the rendered config and apply it.
 "${sudo[@]}" systemctl enable --quiet caddy.service
 if same "$stage/caddy.json" "$caddy_json"; then
   caddy_changed=0
   "${sudo[@]}" systemctl start caddy.service
 else
   caddy_changed=1
+  "${sudo[@]}" rm -f "$caddy_json.prev"
+  if [[ -e "$caddy_json" ]]; then "${sudo[@]}" cp -p "$caddy_json" "$caddy_json.prev"; fi
   put "$stage/caddy.json" "$caddy_json"
-  "${sudo[@]}" systemctl reload-or-restart caddy.service
+  if ! "${sudo[@]}" systemctl reload-or-restart caddy.service; then
+    # A failed reload leaves Caddy on its old config. Put the old file back
+    # too, so the file says what Caddy runs and the next deploy retries.
+    if [[ -e "$caddy_json.prev" ]]; then
+      put "$caddy_json.prev" "$caddy_json"
+      "${sudo[@]}" rm -f "$caddy_json.prev"
+    else
+      "${sudo[@]}" rm -f "$caddy_json"
+    fi
+    die "caddy refused the new config and keeps the previous one; see journalctl -u caddy"
+  fi
+  "${sudo[@]}" rm -f "$caddy_json.prev"
 fi
 
 guest_ip=$(get "$dir/net.env" DASSIE_GUEST_IP "^$ip4\$")

@@ -208,7 +208,15 @@ curl --cacert caddy-root.crt https://web.localhost/
 - After editing it by hand, run `sudo systemctl reload caddy`. It loads the
   file through the admin API on `/run/caddy/admin.sock`, and keeps the old
   config if the new one fails.
-- The admin API listens only on that socket, never on TCP.
+- The admin API listens only on that socket, never on TCP. Caddy still logs
+  `admin endpoint on open interface; host checking disabled` for it: host
+  checking is for TCP listeners, and the warning is harmless here.
+- A new hostname's certificate is issued just after the reload. A request in
+  the same second may fail with a TLS `internal error` alert; retry.
+- If Caddy refuses a new config, `deploy-image.sh` puts the previous
+  `caddy.json` back and fails, so the file always says what Caddy runs.
+  Fix the cause and run the deploy again. A hostname that another VM
+  already has is refused before any file changes.
 - Caddy runs as a dynamic user. Its CA and certificates live in
   `/var/lib/caddy`, a link into `/var/lib/private`.
 - `deploy-image.sh` does not lock. Run one deploy at a time.
