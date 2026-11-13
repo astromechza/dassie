@@ -24,14 +24,15 @@
 
   <!-- legend -->
   <line x1="730" y1="32" x2="766" y2="32" class="built"/>
-  <text x="774" y="36" class="s">built (M1 A)</text>
+  <text x="774" y="36" class="s">built (M1 A, B)</text>
   <line x1="856" y1="32" x2="892" y2="32" class="plan"/>
   <text x="900" y="36" class="s">planned</text>
 
-  <!-- registry pull (planned) -->
-  <rect x="30" y="86" width="200" height="40" rx="8" fill="#f8fafc" class="plan"/>
-  <text x="130" y="111" text-anchor="middle" class="s">registry pull (slice B)</text>
-  <path d="M130,126 L130,148" class="lnp" marker-end="url(#a)"/>
+  <!-- registry pull (M1 slice B) -->
+  <rect x="30" y="80" width="200" height="46" rx="8" fill="#f8fafc" class="built"/>
+  <text x="130" y="99" text-anchor="middle" class="t" font-size="13">registry pull</text>
+  <text x="130" y="116" text-anchor="middle" class="s">missing blobs only, verified</text>
+  <path d="M130,126 L130,148" class="ln" marker-end="url(#a)"/>
   <text x="138" y="142" class="lbl">or skopeo copy</text>
 
   <!-- 1. OCI layout -->

@@ -1,18 +1,17 @@
 //! Builds the rootfs artefact for an image: flatten, then `mkfs.ext4 -d -`
 //! (ADR 0007).
 
-use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use flate2::read::MultiGzDecoder;
 
+use crate::atomic;
 use crate::digest::{Digest, VerifyingReader};
 use crate::flatten::{self, Tree};
 use crate::oci::{Compression, Descriptor};
@@ -40,10 +39,6 @@ const FAKE_TIME: &str = "1";
 
 /// The filesystem label.
 const LABEL: &str = "dassie";
-
-/// Numbers each build's temporary file, so concurrent builds of one image in
-/// one process never share it. The pid separates processes.
-static BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Room for ext4 metadata and the journal on top of the content estimate.
 const HEADROOM_MIB: u64 = 64;
@@ -158,27 +153,12 @@ pub fn build(
     let stats = tree.finish()?;
 
     fs::create_dir_all(out_dir).map_err(|e| Error::Io(out_dir.to_path_buf(), e))?;
-    let mut tmp_name = OsString::from(".");
-    tmp_name.push(path.file_name().unwrap_or_default());
-    let seq = BUILD_SEQ.fetch_add(1, Ordering::Relaxed);
-    tmp_name.push(format!(".tmp.{}.{seq}", std::process::id()));
-    let tmp = out_dir.join(tmp_name);
-
-    let result = mkfs(store, image, &tree, stats, &tmp, opts).and_then(|()| {
-        let io = |e| Error::Io(tmp.clone(), e);
-        let file = File::open(&tmp).map_err(io)?;
-        file.set_permissions(fs::Permissions::from_mode(0o444))
-            .map_err(io)?;
-        file.sync_all().map_err(io)?;
-        fs::rename(&tmp, &path).map_err(io)?;
-        File::open(out_dir)
-            .and_then(|d| d.sync_all())
-            .map_err(|e| Error::Io(out_dir.to_path_buf(), e))
-    });
-    if result.is_err() {
-        drop(fs::remove_file(&tmp));
-    }
-    result.map(|()| BuildOutput { path })
+    atomic::write_with(&path, Error::Io, |tmp| {
+        mkfs(store, image, &tree, stats, tmp, opts)?;
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o444))
+            .map_err(|e| Error::Io(tmp.to_path_buf(), e))
+    })?;
+    Ok(BuildOutput { path })
 }
 
 /// Runs `mkfs.ext4 -d -` on `tmp`, streaming the flattened tar to it.

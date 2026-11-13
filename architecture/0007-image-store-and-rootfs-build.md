@@ -121,6 +121,51 @@ new files apart, and init already honours `rootfstype=`.
 **Scope in M1 slice A.** Only the read side of the store is built. The
 registry pull writes blobs and `index.json` (slice B).
 
+_Amended 2026-11-13, when slice B added the write side and the pull:_
+
+- **Write side.** `Store::put` streams a blob into a temporary file in
+  `blobs/sha256/` while hashing it, reading at most its descriptor's size
+  plus one byte. It renames the file into place only if size and digest
+  match, and skips blobs already present. `Store::set_ref` replaces the
+  `index.json` entry of one name, writing the file to a temporary name and
+  renaming it. It keeps every other entry and field, so it shares a layout
+  with `skopeo`. Two concurrent pulls can still lose one name update; M2's
+  daemon serializes them.
+- **Pull order.** Config, layers, manifest, then the name, so the store
+  never names an image it cannot read. Unsupported layers (zstd) and the
+  wrong platform are refused before any layer is fetched. Blobs are stored
+  byte for byte as served, so a Docker v2 manifest stays Docker v2 and its
+  stored digest is the registry's.
+- **Client.** Our own sync client over ureq 3 and rustls, with no async
+  runtime. It sends anonymous requests and answers the bearer-token
+  challenge Docker Hub and GHCR use, renewing the token once per request on
+  a 401. Blob redirects to a CDN are followed with the token dropped.
+  - Roots come from the host's certificate store through
+    `rustls-platform-verifier`, not ureq's bundled `webpki-roots`
+    (CDLA-Permissive-2.0, outside the license allow list).
+  - The crypto provider is `rustls-graviola`: pure Rust and assembly for
+    x86_64 and aarch64, our only targets. ring and aws-lc-rs both compile C
+    in their build scripts, which would need a musl C cross toolchain just to
+    run clippy on macOS and in CI. It is younger than ring; swapping
+    providers later is a one-line change.
+  - Timeouts cover connect, response and each read. There are no retries.
+  - Bounds: JSON bodies are capped at 4 MiB, a blob at its declared size,
+    and a manifest at 128 layers (Docker has long refused more than 127).
+    The total image size is not capped yet.
+  - `Client::pull_with` reports the plan (the resolved manifest and every
+    blob's size) before any download, then each blob as present, fetching
+    (bytes so far) or stored, so a caller can show progress for the whole
+    image.
+- **References** follow Docker's rules. The first component is a registry
+  only if it contains `.` or `:` or is `localhost`; otherwise it is
+  `docker.io` (API host `registry-1.docker.io`), where a one-component name
+  gets `library/`. The tag defaults to `latest`, and a digest overrides a
+  tag. Every part is checked against a strict character set before it goes
+  into a URL. A pull names the image by the normalized reference
+  (`nginx` → `docker.io/library/nginx:latest`) and reports the platform
+  manifest's digest, which desired state pins. A reference pinned to a
+  manifest the store holds in full resolves without the network.
+
 ## Consequences
 
 - Builds need no root. The guest sees exactly the ownership the image author

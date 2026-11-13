@@ -38,6 +38,13 @@ impl Digest {
         }
     }
 
+    /// The digest of everything fed to `hasher`.
+    pub(crate) fn finish(hasher: Sha256) -> Self {
+        Self {
+            hex: hex(&hasher.finalize()),
+        }
+    }
+
     /// The 64 lowercase hex characters, without the algorithm prefix.
     pub fn hex(&self) -> &str {
         &self.hex
@@ -122,9 +129,7 @@ impl<R: Read> Read for VerifyingReader<R> {
         let n = self.inner.read(buf)?;
         if n == 0 && !buf.is_empty() && !self.checked {
             self.checked = true;
-            let actual = Digest {
-                hex: hex(&self.hasher.clone().finalize()),
-            };
+            let actual = Digest::finish(self.hasher.clone());
             if actual != self.expected {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
