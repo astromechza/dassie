@@ -32,9 +32,12 @@ pub enum Error {
     Io(PathBuf, io::Error),
     NotALayout(PathBuf),
     Json(Digest, serde_json::Error),
-    TooLarge(Digest, u64),
+    TooLarge(PathBuf),
+    Tampered(Digest),
     NotFound(String),
     NoPlatform(Digest, Platform),
+    /// The image's config says it is for another platform.
+    WrongPlatform(Digest, Platform),
     TooDeep(Digest),
 }
 
@@ -50,7 +53,14 @@ impl fmt::Display for Error {
                 )
             }
             Self::Json(d, e) => write!(f, "blob {d}: {e}"),
-            Self::TooLarge(d, size) => write!(f, "blob {d}: {size} bytes is too large for JSON"),
+            Self::TooLarge(path) => {
+                write!(
+                    f,
+                    "{}: over {MAX_JSON} bytes, too large for JSON",
+                    path.display()
+                )
+            }
+            Self::Tampered(d) => write!(f, "blob {d}: content does not match its digest"),
             Self::NotFound(r) => write!(f, "no image named {r:?} in the store"),
             Self::NoPlatform(d, p) => {
                 write!(
@@ -58,6 +68,9 @@ impl fmt::Display for Error {
                     "index {d} has no manifest for {}/{}",
                     p.os, p.architecture
                 )
+            }
+            Self::WrongPlatform(d, p) => {
+                write!(f, "image {d} is for {}/{}", p.os, p.architecture)
             }
             Self::TooDeep(d) => write!(f, "index {d} nests too deeply"),
         }
@@ -116,19 +129,10 @@ impl Store {
 
     /// Reads a whole JSON blob and checks its digest.
     fn read_small(&self, digest: &Digest) -> Result<Vec<u8>, Error> {
-        let path = self.blob_path(digest);
-        let file = File::open(&path).map_err(|e| Error::Io(path.clone(), e))?;
-        let len = file
-            .metadata()
-            .map_err(|e| Error::Io(path.clone(), e))?
-            .len();
-        if len > MAX_JSON {
-            return Err(Error::TooLarge(digest.clone(), len));
+        let bytes = read_bounded(&self.blob_path(digest))?;
+        if Digest::of(&bytes) != *digest {
+            return Err(Error::Tampered(digest.clone()));
         }
-        let mut bytes = Vec::new();
-        VerifyingReader::new(file, digest.clone())
-            .read_to_end(&mut bytes)
-            .map_err(|e| Error::Io(path, e))?;
         Ok(bytes)
     }
 
@@ -151,6 +155,7 @@ impl Store {
                 }
                 Node::Manifest(manifest) => {
                     let config = self.read_small(&manifest.config.digest)?;
+                    check_platform(&digest, &config, platform)?;
                     return Ok(Image {
                         digest,
                         manifest,
@@ -166,7 +171,7 @@ impl Store {
     /// the one for `platform`.
     fn lookup(&self, name: &str, platform: &Platform) -> Result<Digest, Error> {
         let path = self.root.join("index.json");
-        let bytes = std::fs::read(&path).map_err(|e| Error::Io(path, e))?;
+        let bytes = read_bounded(&path)?;
         let index: Index =
             serde_json::from_slice(&bytes).map_err(|e| Error::Json(Digest::of(&bytes), e))?;
         let named = Index {
@@ -176,13 +181,52 @@ impl Store {
                 .filter(|d| d.annotations.get(oci::REF_NAME).is_some_and(|n| n == name))
                 .collect(),
         };
+        // `skopeo copy` writes one entry per name with no platform; the
+        // manifest's config is checked after resolving either way.
         let pick = match named.manifests.as_slice() {
-            [only] => Some(only),
+            [only] if only.platform.is_none() => Some(only),
             _ => named.select(platform),
         };
         pick.map(|d| d.digest.clone())
             .ok_or_else(|| Error::NotFound(name.to_owned()))
     }
+}
+
+/// Reads a JSON file, refusing anything over [`MAX_JSON`] without reading
+/// more than that.
+fn read_bounded(path: &Path) -> Result<Vec<u8>, Error> {
+    let file = File::open(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_JSON + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::Io(path.to_path_buf(), e))?;
+    if bytes.len() as u64 > MAX_JSON {
+        return Err(Error::TooLarge(path.to_path_buf()));
+    }
+    Ok(bytes)
+}
+
+/// Rejects an image whose config names a different OS or architecture. A
+/// config without them (only seen in hand-made images) is accepted.
+fn check_platform(digest: &Digest, config: &[u8], want: &Platform) -> Result<(), Error> {
+    #[derive(Deserialize)]
+    struct Fields {
+        os: Option<String>,
+        architecture: Option<String>,
+    }
+    let got: Fields = serde_json::from_slice(config).map_err(|e| Error::Json(digest.clone(), e))?;
+    let differs = |got: Option<&String>, want: &String| got.is_some_and(|g| g != want);
+    if differs(got.os.as_ref(), &want.os) || differs(got.architecture.as_ref(), &want.architecture)
+    {
+        return Err(Error::WrongPlatform(
+            digest.clone(),
+            Platform::new(
+                got.os.as_deref().unwrap_or("?"),
+                got.architecture.as_deref().unwrap_or("?"),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -285,6 +329,58 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn checks_the_platform_of_the_resolved_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = br#"{"os":"linux","architecture":"amd64"}"#;
+        let d = layout(dir.path(), "app", config, &[]);
+        let store = Store::open(dir.path()).unwrap();
+        let amd64 = Platform::new("linux", "amd64");
+        assert_eq!(store.image("app", &amd64).unwrap().digest, d);
+        let arm64 = Platform::new("linux", "arm64");
+        assert!(matches!(
+            store.image("app", &arm64),
+            Err(Error::WrongPlatform(..))
+        ));
+        assert!(matches!(
+            store.image(&d.to_string(), &arm64),
+            Err(Error::WrongPlatform(..))
+        ));
+    }
+
+    #[test]
+    fn single_named_entry_with_a_platform_must_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = layout(dir.path(), "app", b"{}", &[]);
+        let index = json!({ "manifests": [{
+            "mediaType": oci::OCI_MANIFEST,
+            "digest": d.to_string(),
+            "size": 1,
+            "platform": { "os": "linux", "architecture": "amd64" },
+            "annotations": { oci::REF_NAME: "app" },
+        }]});
+        fs::write(dir.path().join("index.json"), index.to_string()).unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert!(store.image("app", &Platform::new("linux", "amd64")).is_ok());
+        assert!(matches!(
+            store.image("app", &Platform::new("linux", "arm64")),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_index_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        layout(dir.path(), "app", b"{}", &[]);
+        let big = File::create(dir.path().join("index.json")).unwrap();
+        big.set_len(MAX_JSON + 1).unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert!(matches!(
+            store.image("app", &Platform::host()),
+            Err(Error::TooLarge(_))
+        ));
+    }
+
+    #[test]
     fn rejects_tampered_blob_and_non_layout() {
         let dir = tempfile::tempdir().unwrap();
         let d = layout(dir.path(), "app", b"{}", &[]);
@@ -292,7 +388,7 @@ pub(crate) mod tests {
         fs::write(store.blob_path(&d), b"{\"config\":1}").unwrap();
         assert!(matches!(
             store.image("app", &Platform::host()),
-            Err(Error::Io(..))
+            Err(Error::Tampered(_))
         ));
         assert!(matches!(
             Store::open(dir.path().join("blobs")),

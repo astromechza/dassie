@@ -8,9 +8,10 @@ use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 
 use crate::digest::{Digest, VerifyingReader};
 use crate::flatten::{self, Tree};
@@ -24,6 +25,10 @@ pub const FORMAT_VERSION: u32 = 1;
 /// Fixed filesystem timestamps (superblock, root, `lost+found`), so the same
 /// image always builds to the same bytes. Inode times come from the layers.
 const FAKE_TIME: &str = "1";
+
+/// Numbers each build's temporary file, so concurrent builds of one image in
+/// one process never share it. The pid separates processes.
+static BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Room for ext4 metadata and the journal on top of the content estimate.
 const HEADROOM_MIB: u64 = 64;
@@ -125,7 +130,8 @@ pub fn build(
     fs::create_dir_all(out_dir).map_err(|e| Error::Io(out_dir.to_path_buf(), e))?;
     let mut tmp_name = OsString::from(".");
     tmp_name.push(path.file_name().unwrap_or_default());
-    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    let seq = BUILD_SEQ.fetch_add(1, Ordering::Relaxed);
+    tmp_name.push(format!(".tmp.{}.{seq}", std::process::id()));
     let tmp = out_dir.join(tmp_name);
 
     let result = mkfs(store, image, &tree, stats, &tmp, opts).and_then(|()| {
@@ -158,6 +164,9 @@ fn mkfs(
     let uuid = image.digest.uuid();
     let mut child = Command::new(&opts.mkfs)
         .env("E2FSPROGS_FAKE_TIME", FAKE_TIME)
+        // Takes precedence over the fake time in e2fsprogs >= 1.47.1, so an
+        // inherited one would make builds differ between hosts.
+        .env_remove("SOURCE_DATE_EPOCH")
         .args(["-q", "-F", "-b", "4096", "-L", "dassie", "-U", &uuid, "-E"])
         .arg(format!("root_owner=0:0,hash_seed={uuid}"))
         .arg("-N")
@@ -213,7 +222,7 @@ fn open_layer(store: &Store, layer: &Descriptor) -> io::Result<LayerReader> {
         .open_blob(layer)
         .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?;
     Ok(match Compression::of_layer(&layer.media_type) {
-        Some(Compression::Gzip) => LayerReader::Gzip(GzDecoder::new(blob)),
+        Some(Compression::Gzip) => LayerReader::Gzip(MultiGzDecoder::new(blob)),
         _ => LayerReader::Plain(blob),
     })
 }
@@ -223,7 +232,8 @@ fn open_layer(store: &Store, layer: &Descriptor) -> io::Result<LayerReader> {
 #[derive(Debug)]
 enum LayerReader {
     Plain(VerifyingReader<File>),
-    Gzip(GzDecoder<VerifyingReader<File>>),
+    /// Every member: a gzip layer may be split across several.
+    Gzip(MultiGzDecoder<VerifyingReader<File>>),
 }
 
 impl Read for LayerReader {
@@ -278,7 +288,28 @@ mod tests {
             .unwrap();
         assert_eq!(out, tar);
 
-        // Trailing bytes after the gzip member still count towards the digest.
+        // A layer split across two gzip members decodes to the whole tar.
+        let (head, tail) = tar.split_at(512);
+        let mut two = Vec::new();
+        for part in [head, tail] {
+            let mut gz = GzEncoder::new(Vec::new(), Level::default());
+            gz.write_all(part).unwrap();
+            two.extend(gz.finish().unwrap());
+        }
+        let two_d = put(dir.path(), &two);
+        let two_desc = Descriptor {
+            digest: two_d,
+            size: two.len() as u64,
+            ..desc.clone()
+        };
+        let mut out = Vec::new();
+        open_layer(&store, &two_desc)
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, tar);
+
+        // Bytes after the last gzip member still count towards the digest.
         let mut tampered = gz.clone();
         tampered.push(0);
         fs::write(store.blob_path(&d), &tampered).unwrap();

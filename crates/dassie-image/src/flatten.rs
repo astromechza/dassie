@@ -287,6 +287,9 @@ impl Tree {
                     }
                 }
             }
+            // Read to EOF so a verifying reader checks this pass too: the blob
+            // could have changed since `scan`.
+            io::copy(&mut archive.into_inner(), &mut io::sink())?;
         }
         let mut dir = owned_header(EntryType::Directory, 0o755, 0);
         tar.append_data(&mut dir, DASSIE_DIR, io::empty())?;
@@ -339,8 +342,11 @@ impl Tree {
     }
 
     /// Removes what layers below `layer` put at `path` (when `itself`) and
-    /// under it.
+    /// under it. Entries `layer` itself added survive, so a whiteout that
+    /// comes after them in the tar leaves their parent implied, as if it had
+    /// come first.
     fn remove(&mut self, path: &Path, layer: usize, itself: bool) {
+        self.remove_children(path, Some(layer));
         if itself
             && self
                 .nodes
@@ -348,8 +354,16 @@ impl Tree {
                 .is_some_and(|n| n.source.layer() < layer)
         {
             self.nodes.remove(path);
+            let survivor = self
+                .nodes
+                .range::<Path, _>((Bound::Excluded(path), Bound::Unbounded))
+                .next()
+                .map(|(p, _)| p.clone())
+                .filter(|p| p.starts_with(path));
+            if let Some(child) = survivor {
+                self.parents(&child, layer);
+            }
         }
-        self.remove_children(path, Some(layer));
     }
 
     /// Removes the descendants of `path`, only those from below `layer` if
@@ -634,6 +648,37 @@ pub(crate) mod tests {
             .tar();
         let out = flatten(&[base, upper], b"{}").unwrap();
         assert_eq!(find(&out, "a").data, "upper");
+    }
+
+    #[test]
+    fn whiteout_after_own_children_keeps_their_parent() {
+        let base = Layer::default()
+            .dir("d", 0o700, 1000)
+            .file("d/old", "x", 0o644, 0)
+            .tar();
+        let upper = Layer::default()
+            .file("d/new", "y", 0o644, 0)
+            .file(".wh.d", "", 0o644, 0)
+            .tar();
+        let out = flatten(&[base, upper], b"{}").unwrap();
+        assert_eq!(paths(&out), ["d", "d/new", ".dassie", ".dassie/image.json"]);
+        // The lower `d` is gone; this one is implied by the upper layer.
+        let d = find(&out, "d");
+        assert_eq!((d.mode, d.uid), (0o755, 0));
+    }
+
+    #[test]
+    fn emit_verifies_layers_again() {
+        let layer = Layer::default().file("a", "x", 0o644, 0).tar();
+        let mut tree = Tree::new();
+        tree.scan(layer.as_slice()).unwrap();
+        // The second read fails at EOF, like a blob changed between passes.
+        let changed = crate::VerifyingReader::new(layer.as_slice(), crate::Digest::of(b"other"));
+        let mut opened = Some(changed);
+        let err = tree
+            .emit(|_| Ok(opened.take().unwrap()), b"{}", Vec::new())
+            .unwrap_err();
+        assert!(matches!(err, Error::Io(e) if e.kind() == io::ErrorKind::InvalidData));
     }
 
     #[test]
