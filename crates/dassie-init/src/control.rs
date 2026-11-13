@@ -35,7 +35,7 @@ pub(crate) fn serve(
     status: Arc<Mutex<HealthStatus>>,
     control: mpsc::Sender<Control>,
 ) {
-    thread::spawn(move || {
+    thread::spawn(move || -> ! {
         loop {
             match listener.accept() {
                 Ok((reader, writer)) => {
