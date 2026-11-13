@@ -87,11 +87,12 @@ says. Host → VM connections use the input and output hooks and are unaffected.
 `sudo iptables -S FORWARD`. If the policy is `-P FORWARD DROP`, accept the
 TAPs in iptables.
 
-On a Docker host, which sets that policy, use Docker's `DOCKER-USER` chain.
-First check what is already there with `sudo iptables -S DOCKER-USER`. These
-inserts go to the top of the chain, so they bypass any existing DROP or REJECT
-for `dt+` traffic. Re-insert above them any rule that must still restrict
-guest egress.
+The inserts below go to the top of their chain, so they bypass any DROP or
+REJECT already there for `dt+` traffic. First list the chain with
+`sudo iptables -S DOCKER-USER` or `sudo iptables -S FORWARD`. Re-insert above
+the accepts any rule that must still restrict guest egress.
+
+On a Docker host, which sets that policy, use Docker's `DOCKER-USER` chain:
 
 ```sh
 sudo iptables -I DOCKER-USER -i dt+ -j ACCEPT
