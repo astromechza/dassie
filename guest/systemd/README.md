@@ -81,8 +81,9 @@ table holds the policy for all of them
 ([ADR 0008](../../architecture/0008-guest-networking.md)). Needs `iproute2`
 and `nftables` on the host.
 
-Every other firewall on the host must also let VM traffic through: a drop in
-any forward chain is final, whatever `dassie.nft` says. Check with
+Every other firewall on the host must also let forwarded VM traffic, i.e.
+egress, through: a drop in any forward chain is final, whatever `dassie.nft`
+says. Host → VM connections use the input and output hooks and are unaffected. Check with
 `sudo iptables -S FORWARD`. If the policy is `-P FORWARD DROP`, accept the
 TAPs in iptables.
 

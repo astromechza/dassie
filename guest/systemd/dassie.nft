@@ -8,7 +8,8 @@
 # accepts by default, so other forwarding on the host (Docker, libvirt) is
 # untouched; only traffic to or from a dt* TAP is filtered. The reverse does
 # not hold: another firewall's forward drop (Docker's iptables FORWARD
-# policy) also drops VM traffic. See README.md next to this file.
+# policy) also drops VM egress. Host -> VM traffic uses input/output and is
+# unaffected. See README.md next to this file.
 
 # Declare, then delete, then define: an atomic replace that also works when
 # the table does not exist yet.
