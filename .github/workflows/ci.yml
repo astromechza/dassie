@@ -162,6 +162,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # The VM network policy (guest/systemd/dassie.nft, ADR 0008) against fake
+  # VMs in network namespaces: a fixed matrix plus random probes checked
+  # against a model. Needs root but no KVM, and leaves the runner's own
+  # network alone.
+  net-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nftables
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nftables
+
+      - name: Policy test
+        run: sudo NET_POLICY_CASES=500 guest/net-policy-test.sh
+
   # Boots the x86_64 guest under Firecracker on KVM and checks the lifecycle
   # events (guest/smoke-test.sh). The drills in guest/systemd/README.md stay
   # manual.
