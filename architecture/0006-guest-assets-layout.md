@@ -105,5 +105,10 @@ each unit, so a host listener's socket survives VM restarts.
 - `fc@.service` is a template for M2's generated units, not their final form.
   It has no jailer, and it shares the rootfs file with the next boot instead
   of copying it.
-- Apps get only `/dev`, `/proc` and `/sys`. There is no `/dev/pts`,
-  `/dev/shm` or `/run` tmpfs until an image needs one.
+- Apps get only `/dev`, `/proc` and `/sys`. There is no `/dev/pts` or `/run`
+  tmpfs until an image needs one.
+- _Amended 2026-11-13, when M1's first real image (nginx-unprivileged) needed
+  it:_ `/dev` also gets what OCI runtimes provide and devtmpfs lacks. That's
+  the `/dev/fd` and `/dev/std{in,out,err}` links to `/proc/self/fd`, and a
+  `1777` tmpfs on `/dev/shm`, mounted `nosuid,nodev,noexec` and sized by the
+  kernel default.

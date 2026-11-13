@@ -110,6 +110,51 @@ pub(super) fn switch_root(root: &RootSpec) -> Result<()> {
     Ok(())
 }
 
+/// Adds what OCI runtimes provide in `/dev` beyond device nodes, which
+/// devtmpfs does not create:
+///
+/// - `/dev/fd` and `/dev/std{in,out,err}`, linking to `/proc/self/fd`. Images
+///   such as nginx link their log files to `/dev/stderr`.
+/// - a tmpfs on `/dev/shm` for POSIX shared memory, mode `1777`, sized by the
+///   kernel default (half the guest's RAM).
+pub(super) fn dev_extras() -> Result<()> {
+    let links = [
+        ("/dev/fd", "/proc/self/fd"),
+        ("/dev/stdin", "/proc/self/fd/0"),
+        ("/dev/stdout", "/proc/self/fd/1"),
+        ("/dev/stderr", "/proc/self/fd/2"),
+    ];
+    for (link, target) in links {
+        match std::os::unix::fs::symlink(target, link) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(format!("symlink {link} -> {target}: {e}").into());
+            }
+            _ => {}
+        }
+    }
+    mkdir("/dev/shm")?;
+    let flags = MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC;
+    match mount(
+        Some("tmpfs"),
+        "/dev/shm",
+        Some("tmpfs"),
+        flags,
+        Some("mode=1777"),
+    ) {
+        Ok(()) | Err(Errno::EBUSY) => Ok(()),
+        Err(e) => Err(format!("mount tmpfs on /dev/shm: {e}").into()),
+    }
+}
+
+/// Makes the console, which is the entrypoint's stdout and stderr, belong to
+/// the user it runs as. Without this, a non-root app cannot reopen its own
+/// output through `/dev/stdout` (a link to `/dev/console`, mode `0600
+/// root`). OCI runtimes do the same with a container's stdio.
+pub(super) fn give_console(uid: u32, gid: u32) -> Result<()> {
+    std::os::unix::fs::fchown(io::stdout(), Some(uid), Some(gid))
+        .map_err(|e| format!("chown /dev/console to {uid}:{gid}: {e}").into())
+}
+
 /// Creates a directory if it is missing. In the app rootfs this needs a
 /// writable mount, so a read-only rootfs must already have the directories.
 fn mkdir(path: &str) -> Result<()> {
