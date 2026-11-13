@@ -71,7 +71,7 @@ cargo lint-x86    # clippy for x86_64-unknown-linux-musl, -D warnings
 cargo lint-arm    # clippy for aarch64-unknown-linux-musl, -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check  # advisories, licenses, bans, sources (deny.toml)
-cargo shear       # unused dependencies
+cargo shear       # unused dev-dependencies (cargo's own lint covers the rest)
 ```
 
 Install the extra tools with `cargo install --locked cargo-deny cargo-shear`.
@@ -81,6 +81,8 @@ linker is needed. A plain `cargo clippy` on macOS skips everything behind
 `cfg(target_os = "linux")`.
 
 Lint policy lives in `[workspace.lints]` in `Cargo.toml`; warnings fail CI.
+Cargo's own lints (`[workspace.lints.cargo]`) deny unused dependencies and
+unused workspace dependencies during any build or clippy run.
 `unsafe` is denied by default: a crate that needs it opts in with
 `#![allow(unsafe_code)]` at its root, and every `unsafe` block needs a
 `// SAFETY:` comment. `dassie-init` (PID 1) and `dassie-proto` (parses
@@ -96,6 +98,11 @@ pins each tag, and every transitive action, to a verified commit. After
 changing any `uses:`, run `gh actions-lock` (from
 [gh-actions-lock](https://github.com/github/gh-actions-lock)) and commit the
 lockfile; CI runs `gh actions-lock --verify`. Dependabot updates both.
+
+Crate updates get the same 7-day cooldown as Dependabot:
+`registry.global-min-publish-age` in `.cargo/config.toml` makes the resolver
+(`cargo update`, new dependencies) skip versions published in the last week,
+unless already in `Cargo.lock`. The comment there shows how to take an urgent fix sooner.
 
 ### Fuzzing
 

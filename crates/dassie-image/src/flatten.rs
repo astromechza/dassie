@@ -436,7 +436,7 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
         return Err(Error::Unsupported(path, entry_type));
     }
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
-    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let parent = path.parent().map_or_default(Path::to_path_buf);
     Ok(if name == OPAQUE {
         Action::Opaque(parent)
     } else if name.starts_with(".wh..wh.") {
@@ -619,8 +619,7 @@ pub(crate) mod tests {
                     link: e
                         .link_name()
                         .unwrap()
-                        .map(|l| l.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
+                        .map_or_default(|l| l.to_string_lossy().into_owned()),
                     xattrs,
                 }
             })

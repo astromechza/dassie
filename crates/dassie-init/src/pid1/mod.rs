@@ -131,7 +131,7 @@ fn block_signals() -> Result<SigSet> {
 /// Receives the blocked signals with `sigwait` on a background thread:
 /// SIGCHLD reaps every exited child, SIGTERM and SIGINT request a stop.
 fn handle_signals(set: SigSet, control: mpsc::Sender<Control>) {
-    thread::spawn(move || {
+    thread::spawn(move || -> ! {
         loop {
             match set.wait() {
                 Ok(Signal::SIGCHLD) => reap(&control),

@@ -3,3 +3,11 @@
 [alias]
 lint-x86 = "clippy --workspace --all-targets --target x86_64-unknown-linux-musl -- -D warnings"
 lint-arm = "clippy --workspace --all-targets --target aarch64-unknown-linux-musl -- -D warnings"
+
+# Dependency cooldown: when resolving new versions, ignore any published in the
+# last 7 days unless already in Cargo.lock, so a compromised release has time
+# to be yanked. For an urgent fix:
+#   cargo update -p <crate> --precise <version> \
+#     --config 'resolver.incompatible-publish-age="allow"'
+[registry]
+global-min-publish-age = "7 days"
