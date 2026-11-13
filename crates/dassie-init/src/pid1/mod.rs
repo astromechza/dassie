@@ -60,6 +60,10 @@ fn run() -> Result<ExitStatus> {
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;
 
     let spec = config::load(Path::new("/"), &cmdline)?;
+    // After the switch-root, so this lands in the writable root.
+    if !spec.dns.is_empty() {
+        sys::write_resolv_conf(&config::resolv_conf(&spec.dns))?;
+    }
     if let Some((uid, gid)) = spec.user {
         sys::give_console(uid, gid)?;
     }

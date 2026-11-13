@@ -4,12 +4,12 @@
 #
 #   guest/vm-config.sh KERNEL INITRD ROOTFS VSOCK_UDS [EXTRA_BOOT_ARGS]
 #
-# EXTRA_BOOT_ARGS carries per-VM `dassie.*` args (ADR 0005), and `ip=` when a
-# NIC is added, and may use the kernel's double quotes
-# (`dassie.env="GREETING=hello world"`).
+# EXTRA_BOOT_ARGS carries per-VM `dassie.*` args (ADR 0005), and may use the
+# kernel's double quotes (`dassie.env="GREETING=hello world"`).
 #
-# Set FC_TAP to a host TAP device name to attach it as the guest's eth0. Its
-# address comes from an `ip=GUEST::GATEWAY:NETMASK::eth0:off` boot arg.
+# Set FC_NET_ENV to a VM's net.env (from guest/net-env.sh, ADR 0008) to give
+# the guest an eth0: its TAP and MAC go into the NIC, and its address and DNS
+# into the `ip=` and `dassie.dns=` boot args.
 
 set -euo pipefail
 
@@ -23,10 +23,35 @@ kernel=$1 initrd=$2 rootfs=$3 uds=$4 extra=${5:-}
 # turns into a clean exit. panic=1: a guest kernel panic also reboots.
 boot_args="console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw${extra:+ $extra}"
 
+# net.env is read, not sourced: only these keys, each checked for shape.
+declare -A net=()
+if [[ -n "${FC_NET_ENV:-}" ]]; then
+  ip4='([0-9]{1,3}\.){3}[0-9]{1,3}'
+  declare -A want=(
+    [DASSIE_TAP]='^dt[0-9]{1,5}$'
+    [DASSIE_HOST_IP]="^$ip4\$"
+    [DASSIE_GUEST_IP]="^$ip4\$"
+    [DASSIE_MAC]='^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+    [DASSIE_DNS]='^[0-9a-fA-F.:,]*$'
+  )
+  while IFS='=' read -r key value; do
+    [[ -n "${want[$key]:-}" ]] && net[$key]=$value
+  done <"$FC_NET_ENV"
+  for key in "${!want[@]}"; do
+    if [[ ! "${net[$key]:-}" =~ ${want[$key]} ]]; then
+      echo "vm-config.sh: $FC_NET_ENV: bad or missing $key=${net[$key]:-}" >&2
+      exit 2
+    fi
+  done
+  # /31: the gateway is the host end of the TAP. `off`: no DHCP.
+  boot_args+=" ip=${net[DASSIE_GUEST_IP]}::${net[DASSIE_HOST_IP]}:255.255.255.254::eth0:off"
+  boot_args+="${net[DASSIE_DNS]:+ dassie.dns=${net[DASSIE_DNS]}}"
+fi
+
 # Control characters have no place in a path or the cmdline, so they are
 # refused here rather than escaped. This runs in the main shell: an exit
 # inside the heredoc's $(...) below would not stop the script.
-for value in "$kernel" "$initrd" "$rootfs" "$uds" "$boot_args" "${FC_TAP:-}"; do
+for value in "$kernel" "$initrd" "$rootfs" "$uds" "$boot_args"; do
   if [[ "$value" =~ [[:cntrl:]] ]]; then
     echo "vm-config.sh: control character in ${value@Q}" >&2
     exit 2
@@ -40,8 +65,9 @@ json() {
 }
 
 network=""
-if [[ -n "${FC_TAP:-}" ]]; then
-  network=$(printf ',\n  "network-interfaces": [\n    { "iface_id": "eth0", "host_dev_name": %s }\n  ]' "$(json "$FC_TAP")")
+if [[ -n "${FC_NET_ENV:-}" ]]; then
+  network=$(printf ',\n  "network-interfaces": [\n    { "iface_id": "eth0", "host_dev_name": %s, "guest_mac": %s }\n  ]' \
+    "$(json "${net[DASSIE_TAP]}")" "$(json "${net[DASSIE_MAC]}")")
 fi
 
 cat <<EOF

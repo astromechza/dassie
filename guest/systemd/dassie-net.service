@@ -1,0 +1,29 @@
+# Host networking for every VM (ADR 0008): IPv4 forwarding, neighbour table
+# sizing, and the `inet dassie` nft table. Each VM's TAP comes from
+# dassie-tap@.service. Install and drills: README.md next to this file.
+
+[Unit]
+Description=dassie VM networking (forwarding, nft table)
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Routing between the TAPs and the uplink.
+ExecStart=sysctl -q -w net.ipv4.ip_forward=1
+# The host holds one neighbour entry per running VM (its guest end), plus
+# the uplink's. Past gc_thresh3 (default 1024) new entries fail with
+# "neighbour table overflow" and VMs lose connectivity. Sized for the full
+# /16 pool: 32768 VMs. gc_thresh1 keeps idle entries from being collected
+# when nothing is short of space.
+ExecStart=sysctl -q -w net.ipv4.neigh.default.gc_thresh1=4096 net.ipv4.neigh.default.gc_thresh2=32768 net.ipv4.neigh.default.gc_thresh3=65536
+ExecStart=nft -f /etc/dassie/dassie.nft
+# Replaces the table atomically. Use `reload`, not `restart`: every TAP
+# requires this unit, so a restart would also restart every VM.
+ExecReload=nft -f /etc/dassie/dassie.nft
+# ip_forward stays on: other services on the host may rely on it.
+ExecStop=nft delete table inet dassie
+
+[Install]
+WantedBy=multi-user.target

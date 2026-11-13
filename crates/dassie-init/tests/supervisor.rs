@@ -114,6 +114,7 @@ impl Guest {
             workdir: "/".into(),
             ready_port,
             stop_timeout: Duration::from_secs(10),
+            dns: vec![],
         })
     }
 
@@ -384,6 +385,7 @@ fn oversized_stop_timeout_does_not_panic() {
         workdir: "/".into(),
         ready_port: None,
         stop_timeout: Duration::from_secs(u64::MAX),
+        dns: vec![],
     });
     let host = guest.listen();
     assert!(matches!(host.next(), Event::Started { .. }));

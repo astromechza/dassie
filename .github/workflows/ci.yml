@@ -145,6 +145,9 @@ jobs:
       - name: shellcheck
         run: shellcheck -x guest/*.sh guest/kernel/*.sh
 
+      - name: net.env helper
+        run: guest/net-env-test.sh
+
       - name: zizmor
         run: zizmor --format=github .github
         env:

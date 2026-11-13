@@ -11,7 +11,8 @@ route changes.
 
 Status: M1 in progress. `dassie-init` boots as PID 1 in a Firecracker microVM
 under a hand-written systemd unit, and `dassie-image` pulls an OCI image and
-builds its rootfs from it. There is no daemon yet.
+builds its rootfs from it. VMs get a routed TAP each, isolated from one
+another by one nft table (ADR 0008). There is no daemon yet.
 
 ## Crates
 
@@ -32,8 +33,8 @@ has diagrams of a VM's lifecycle and the vsock channels.
 
 [`guest/`](guest/) holds the scripts that build the guest kernel, the shared
 initramfs and a test app rootfs, plus the hand-written
-[`fc@.service`](guest/systemd/fc@.service) and its
-[runbook](guest/systemd/README.md) (ADR 0006). They run on Linux:
+[`fc@.service`](guest/systemd/fc@.service), the networking units, and their
+[runbook](guest/systemd/README.md) (ADR 0006, ADR 0008). They run on Linux:
 
 ```sh
 guest/kernel/build.sh x86_64   # target/guest/x86_64/vmlinux
@@ -95,7 +96,8 @@ their crate roots.
 
 CI also runs [actionlint](https://github.com/rhysd/actionlint) and
 [zizmor](https://docs.zizmor.sh) on `.github/`, `shellcheck` on `guest/`,
-and a `kvm-boot` job that runs the guest smoke test on an x86_64 KVM runner.
+the `guest/net-env-test.sh` known-answer test for VM addressing, and a
+`kvm-boot` job that runs the guest smoke test on an x86_64 KVM runner.
 
 Workflows reference actions by release tag; `.github/workflows/actions.lock`
 pins each tag, and every transitive action, to a verified commit. After

@@ -1,0 +1,28 @@
+# The routed TAP for VM %i (ADR 0008), from /var/lib/dassie/vms/%i/net.env
+# (guest/net-env.sh). fc@%i requires it through fc@.service.d/net.conf.
+#
+# A VM without net.env has no NIC: the condition skips this unit, which
+# counts as success, so fc@%i still starts.
+
+[Unit]
+Description=dassie TAP for VM %i
+Requires=dassie-net.service
+After=dassie-net.service
+ConditionPathExists=/var/lib/dassie/vms/%i/net.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/var/lib/dassie/vms/%i/net.env
+# A TAP left behind by a crash would make `tuntap add` fail with EBUSY.
+ExecStartPre=-ip link del ${DASSIE_TAP}
+ExecStart=ip tuntap add dev ${DASSIE_TAP} mode tap
+# IPv4 only (ADR 0008): no link-local address or router solicitations on the
+# host end, before the link comes up.
+ExecStart=sysctl -q -w net.ipv6.conf.${DASSIE_TAP}.disable_ipv6=1
+# /31: the connected route covers exactly the host and guest ends.
+ExecStart=ip addr add ${DASSIE_HOST_IP}/31 dev ${DASSIE_TAP}
+# No multicast: nothing in a guest needs it, and the host's own mDNS and
+# LLMNR (systemd-resolved, avahi) would otherwise announce it to every VM.
+ExecStart=ip link set dev ${DASSIE_TAP} multicast off up
+ExecStop=ip link del ${DASSIE_TAP}

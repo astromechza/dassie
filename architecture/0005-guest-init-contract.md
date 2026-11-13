@@ -44,8 +44,15 @@ in the guest.
   | `dassie.env=K=V` (repeatable) | Sets `K=V` in the app env. |
   | `dassie.port=N` | Readiness port. |
   | `dassie.stop_timeout=SECS` | Default grace period between SIGTERM and SIGKILL (10 s). |
+  | `dassie.dns=IP[,IP]` | Resolvers for `/etc/resolv.conf` (up to 3; added 2026-11-13). |
 
 - Cmdline values win over the image config.
+- _Amended 2026-11-13:_ with `dassie.dns`, init replaces `/etc/resolv.conf`
+  in the app root (a file or a dangling symlink alike) after the switch-root,
+  before the entrypoint starts. Without the arg the image's own file is left
+  alone. Bad addresses, or more than 3, are a boot error like any other bad
+  `dassie.*` value. The guest's address itself comes from the kernel's `ip=`
+  arg ([ADR 0008](0008-guest-networking.md)).
 
 **Image config fields honoured in M0:**
 

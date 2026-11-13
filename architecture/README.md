@@ -14,6 +14,7 @@ same change that makes the decision. Start new ones from
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted |
 | [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted |
 | [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted |
+| [0008](0008-guest-networking.md) | Guest networking | Accepted |
 
 ## Diagrams
 
