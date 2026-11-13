@@ -218,9 +218,10 @@ done
 
 unit=fc@$name.service
 if ((vm_changed)); then
-  # Stop before replacing net.env: the TAP unit's ExecStop reads it to find
-  # the TAP to delete. The TAP goes with the VM (StopWhenUnneeded).
-  "${sudo[@]}" systemctl stop "$unit"
+  # Stop both before replacing net.env: the TAP unit's ExecStop reads it to
+  # find the TAP to delete. StopWhenUnneeded would also stop the TAP, but as
+  # a separate job after the VM's, which `stop fc@…` alone does not wait for.
+  "${sudo[@]}" systemctl stop "$unit" "dassie-tap@$name.service"
   "${sudo[@]}" install -d -m 0755 "$dir"
   "${sudo[@]}" sync "$vms"
   # Not one atomic switch: a power cut between these two renames can leave
