@@ -24,6 +24,23 @@ table inet dassie {
     elements = { 10.88.0.0/16 }
   }
 
+  # Destinations VMs may not reach. Link-local holds cloud metadata services
+  # (169.254.169.254), which would hand a VM the host's credentials. The
+  # private and CGNAT ranges hold the host's LAN, Docker and libvirt
+  # bridges and the VM pool itself. To let VMs reach a private service, for
+  # example a resolver set in DASSIE_DNS, remove its range here and reload.
+  set no_egress {
+    type ipv4_addr
+    flags interval
+    elements = {
+      10.0.0.0/8,
+      100.64.0.0/10,
+      169.254.0.0/16,
+      172.16.0.0/12,
+      192.168.0.0/16,
+    }
+  }
+
   chain prerouting {
     type filter hook prerouting priority filter; policy accept;
     # Anti-spoof: a VM may only send from an address routed back through its
@@ -33,23 +50,25 @@ table inet dassie {
   }
 
   # VM -> host. Replies to connections the host opened (Caddy, curl) pass;
-  # nothing on the host is reachable from a VM, ping included.
+  # nothing on the host is reachable from a VM, ping included. Refusals
+  # here and below are ICMP admin-prohibited, which fails a connect at once
+  # with EHOSTUNREACH.
   chain input {
     type filter hook input priority filter; policy accept;
     iifname "dt*" ct state established,related accept
-    iifname "dt*" meta l4proto tcp counter reject with tcp reset
     iifname "dt*" counter reject with icmpx admin-prohibited
   }
 
   chain forward {
     type filter hook forward priority filter; policy accept;
-    # VM -> VM is refused, fast. Approved-pair rules (ADR 0008) go above.
-    iifname "dt*" oifname "dt*" meta l4proto tcp counter reject with tcp reset
+    # VM -> VM is refused. Approved-pair rules (ADR 0008) go above.
     iifname "dt*" oifname "dt*" counter reject with icmpx admin-prohibited
     # Outside -> VM: only replies to the VM's own egress.
     oifname "dt*" ct state established,related accept
     oifname "dt*" counter drop
-    # VM -> outside: IPv4 from the pool only, so no IPv6 egress either.
+    # VM -> outside: IPv4 from the pool only, so no IPv6 egress either, and
+    # never to @no_egress.
+    iifname "dt*" ip daddr @no_egress counter reject with icmpx admin-prohibited
     iifname "dt*" ip saddr @vm_pool counter accept
     iifname "dt*" counter drop
   }

@@ -136,9 +136,14 @@ curl http://10.88.0.3:8080/   # ok
 ```
 
 - `fc@test` now requires `dassie-tap@test`, which creates `dt1` from
-  `net.env` before the VM starts and deletes it when stopped. The TAP stays up
-  across VM restarts.
-- A VM without `net.env` skips its TAP unit and boots with no NIC.
+  `net.env` before the VM starts. The TAP stays up across VM restarts, and
+  goes away when `fc@test` stops.
+- A VM without `net.env` skips its TAP unit and boots with no NIC, even if
+  `dassie-net` has failed. A networked VM does not start unless the
+  `inet dassie` table is loaded.
+- VMs cannot reach link-local (cloud metadata), RFC 1918 or CGNAT addresses:
+  the `no_egress` set in `dassie.nft`. To use a resolver on a private network
+  in `DASSIE_DNS`, remove its range there and reload.
 - `net.env` also carries `DASSIE_DNS` (default `1.1.1.1,9.9.9.9`; set
   `DASSIE_DNS` when running `net-env.sh` to change it), which reaches init as
   `dassie.dns` and becomes the guest's `/etc/resolv.conf`.
@@ -227,8 +232,7 @@ by `fc@test`, and `curl http://10.88.0.3:8080/` answers again.
 `active (running)` via `WantedBy=multi-user.target`. The journal for this boot
 shows the guest console. A listener started afterwards still receives
 `Started` and `Ready`, because the guest held them. To clean up, run
-`sudo systemctl disable --now fc@test`. With networking, also run
-`sudo systemctl stop dassie-tap@test`, because the TAP outlives the VM.
+`sudo systemctl disable --now fc@test`.
 
 ### 5. Two VMs share one rootfs, and writes vanish on restart
 
@@ -274,26 +278,27 @@ Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
 Set them up as for `test` above. They share `test.erofs`, and each has its own
 directory, `net.env` and config. `a` reuses `test`'s index, and starting its
 TAP would delete `test`'s live `dt1`, so first run
-`sudo systemctl stop fc@test dassie-tap@test`. The testapp's
+`sudo systemctl stop fc@test`, which also removes its TAP. The testapp's
 `/dial?addr=HOST:PORT` opens a TCP connection from inside the guest and
 reports the result:
 
 ```sh
 curl 'http://10.88.0.3:8080/dial?addr=10.88.0.5:8080'   # VM -> VM
 curl 'http://10.88.0.3:8080/dial?addr=10.88.0.2:22'     # VM -> host
+curl 'http://10.88.0.3:8080/dial?addr=169.254.169.254:80'  # metadata
 curl 'http://10.88.0.3:8080/dial?addr=example.com:443'  # egress by name
 curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
 ```
 
 **Expected:**
 
-- VM → VM and VM → host: `error: Connection refused` at once. The forward
-  and input chains reject them with a TCP reset.
+- VM → VM, VM → host and VM → metadata: `error: Host is unreachable` at
+  once. The forward and input chains reject them with ICMP admin-prohibited.
 - Egress: `ok <ip>:443` from both VMs, through the masquerade, with the name
   resolved by the guest from `dassie.dns`.
 - `curl http://10.88.0.5:8080/` from the host still answers `ok`.
-- Stopping `fc@a` and `dassie-tap@a` removes `dt1`. Starting `fc@a` again
-  recreates it, even if a stale `dt1` was left behind.
+- Stopping `fc@a` removes `dt1`. Starting it again recreates it, even if a
+  stale `dt1` was left behind.
 
 ### Bonus: the start limit
 

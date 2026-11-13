@@ -40,8 +40,9 @@ if [[ -n "${FC_NET_ENV:-}" ]]; then
     [DASSIE_DNS]='^[0-9a-fA-F.:,]*$'
   )
   # `|| [[ -n $key ]]`: also take a last line with no trailing newline.
+  # Blank lines, comments and unknown keys are skipped.
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
-    [[ -n "${want[$key]:-}" ]] && net[$key]=$value
+    [[ -n "$key" && -n "${want[$key]:-}" ]] && net[$key]=$value
   done <"$FC_NET_ENV"
   for key in "${!want[@]}"; do
     if [[ ! "${net[$key]:-}" =~ ${want[$key]} ]]; then

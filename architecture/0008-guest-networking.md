@@ -53,21 +53,30 @@ dassie does not depend on, or fight, whichever network manager the host uses.
   neighbour table, and loads the `inet dassie` nft table. `reload` swaps the
   table atomically without restarting any VM.
 - `dassie-tap@<name>.service` (oneshot, `RemainAfterExit`) creates `dt<N>`
-  from `net.env`, gives it the host address, and deletes it on stop.
+  from `net.env`, gives it the host address, and deletes it on stop. With
+  `StopWhenUnneeded=` it goes away with its VM, but stays up across the VM's
+  `Restart=always` cycles.
 - A drop-in makes every `fc@<name>` require its TAP unit, ordered after it.
   The TAP unit has `ConditionPathExists=` on `net.env`. Without that file the
   unit is skipped, which counts as success, so a VM without `net.env` boots
   with no NIC.
+- The TAP unit only *wants* `dassie-net`, and is `PartOf=` it. A failed
+  required unit would fail every dependent job before any condition is
+  checked, so a broken nft file would also stop VMs that have no NIC. Instead,
+  the TAP unit fails closed itself: it starts only if the `inet dassie` table
+  is loaded. Stopping or restarting `dassie-net` still stops or restarts every
+  networked VM.
 
 **One nft table, `inet dassie`, default-deny for VM traffic.** Rules match the
 `dt*` interface pattern and named sets, never a single VM.
 
 | Flow | Verdict |
 | --- | --- |
-| VM → VM | Rejected: TCP reset, else ICMP admin-prohibited, so apps fail fast. |
+| VM → VM | Rejected with ICMP admin-prohibited, so a connect fails at once with `EHOSTUNREACH`. |
 | VM → host (any port, ping included) | Rejected, except replies to connections the host opened. |
 | Host → VM | Allowed. Caddy proxies to the guest IP. |
-| VM → outside | IPv4 from `@vm_pool` is accepted and masqueraded out whichever uplink the route picks. |
+| VM → outside | IPv4 from `@vm_pool` is accepted and masqueraded out whichever uplink the route picks, except to `@no_egress`. |
+| VM → `@no_egress` | Rejected. The set holds link-local (`169.254.0.0/16`: cloud metadata, which would hand a VM the host's credentials), RFC 1918 and CGNAT (the host's LAN, Docker and libvirt bridges). |
 | Outside → VM | Only replies to the VM's own connections. |
 | Forged source address | Dropped in prerouting by one `fib saddr . iif oif missing` rule. Otherwise a VM could have replies to another VM's address delivered to that VM. |
 
@@ -128,6 +137,9 @@ in one nft table.
   `curl` and `tcpdump -i dt<N>` work against the guest IP directly.
 - A VM cannot use any host service, including a local DNS cache or metadata
   endpoint. Anything it needs must come over vsock or from outside.
+- A VM cannot reach private networks either, including a resolver there. An
+  operator who needs that removes the range from `@no_egress`, a deliberate
+  edit to one set.
 - IPv6 is out of scope: VMs have no IPv6 connectivity.
 - VMs depend on the configured public resolvers being reachable. A host on a
   network that blocks them must set `DASSIE_DNS`.
