@@ -73,6 +73,11 @@ port, `ready` follows `started`.
 
 - The app gets `/dev/null` as stdin. Its stdout and stderr are init's: the
   serial console, which reaches journald on the host.
+- _Amended 2026-11-13:_ when the app runs as a non-root user, init gives it
+  the console (`fchown` to its uid:gid) before spawning it, as OCI runtimes
+  give a container's stdio to its user. Otherwise the app could not reopen its
+  output through `/dev/stdout` or `/dev/stderr` (ADR 0006), which images such
+  as nginx do for their logs.
 - The app starts with no signals blocked, even though init blocks its own
   stop signals and SIGCHLD to receive them with `sigwait`.
 - A stop request sends SIGTERM to the app, then SIGKILL once the timeout passes:
