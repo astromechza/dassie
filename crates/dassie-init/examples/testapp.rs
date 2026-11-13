@@ -8,6 +8,9 @@
 //!   crash drills in `guest/systemd/README.md` on a VM with no NIC.
 //! - `GET /crash` aborts the process (SIGABRT), for the "kill the
 //!   entrypoint" drill in `guest/systemd/README.md`.
+//! - `GET /dial?addr=HOST:PORT` opens a TCP connection from inside the guest,
+//!   resolving `HOST` through `/etc/resolv.conf`, and answers `200 ok ADDR`
+//!   or `502 error: …`. The network drills use it for isolation and egress.
 //!
 //! At startup it reopens its stderr through `/dev/stderr` and writes to
 //! `/dev/shm`, and exits if either fails. It runs as a non-root user, so the
@@ -22,7 +25,7 @@
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 use std::{env, process, thread};
@@ -117,7 +120,11 @@ fn env_or(key: &str, default: u16) -> Result<u16, String> {
     })
 }
 
-/// Reads the request head, then answers 200, or aborts on `GET /crash`.
+/// How long `/dial` waits for each resolved address to connect.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Reads the request head, then answers 200, or aborts on `GET /crash`, or
+/// dials out on `GET /dial`.
 fn respond(mut conn: &TcpStream) -> std::io::Result<()> {
     conn.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(conn);
@@ -131,14 +138,51 @@ fn respond(mut conn: &TcpStream) -> std::io::Result<()> {
         eprintln!("testapp: /crash requested, aborting");
         process::abort();
     }
-    while !matches!(line.as_str(), "" | "\r\n" | "\n") {
-        line.clear();
-        reader.read_line(&mut line)?;
+    let target = line.split(' ').nth(1).unwrap_or_default().to_owned();
+    let mut head = line.clone();
+    while !matches!(head.as_str(), "" | "\r\n" | "\n") {
+        head.clear();
+        reader.read_line(&mut head)?;
     }
-    let body = "ok\n";
+    let (status, body) = match target.strip_prefix("/dial") {
+        Some(query) => dial(query),
+        None => ("200 OK", "ok\n".to_owned()),
+    };
     write!(
         conn,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+/// Handles `/dial?addr=HOST:PORT`: tries each resolved address in turn.
+fn dial(query: &str) -> (&'static str, String) {
+    let Some(addr) = query
+        .strip_prefix('?')
+        .into_iter()
+        .flat_map(|q| q.split('&'))
+        .find_map(|kv| kv.strip_prefix("addr="))
+        .filter(|a| !a.is_empty())
+    else {
+        return (
+            "400 Bad Request",
+            "error: want /dial?addr=HOST:PORT\n".to_owned(),
+        );
+    };
+    let result = addr.to_socket_addrs().and_then(|addrs| {
+        let mut last = std::io::Error::other("no addresses");
+        for sa in addrs {
+            match TcpStream::connect_timeout(&sa, DIAL_TIMEOUT) {
+                Ok(_) => return Ok(sa),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    });
+    let (status, body) = match result {
+        Ok(sa) => ("200 OK", format!("ok {sa}\n")),
+        Err(e) => ("502 Bad Gateway", format!("error: {e}\n")),
+    };
+    eprintln!("testapp: dial {addr}: {}", body.trim_end());
+    (status, body)
 }

@@ -1,0 +1,38 @@
+# The routed TAP for VM %i (ADR 0008), from /var/lib/dassie/vms/%i/net.env
+# (guest/net-env.sh). fc@%i requires it through fc@.service.d/net.conf.
+#
+# A VM without net.env has no NIC: the condition skips this unit, which
+# counts as success, so fc@%i still starts, even if dassie-net has failed.
+# That is why dassie-net is wanted, not required: a failed required unit
+# fails every dependent job before any condition is checked.
+
+[Unit]
+Description=dassie TAP for VM %i
+Wants=dassie-net.service
+After=dassie-net.service
+# Stopping or restarting dassie-net does the same to every TAP, and so to
+# every networked VM.
+PartOf=dassie-net.service
+# Goes away with fc@%i, but stays up while it restarts (Restart=always).
+StopWhenUnneeded=yes
+ConditionPathExists=/var/lib/dassie/vms/%i/net.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/var/lib/dassie/vms/%i/net.env
+# Fail closed: no TAP, so no VM, unless the policy table is loaded.
+ExecStartPre=nft list set inet dassie vm_pool
+# A TAP left behind by a crash would make `tuntap add` fail with EBUSY.
+ExecStartPre=-ip link del ${DASSIE_TAP}
+ExecStart=ip tuntap add dev ${DASSIE_TAP} mode tap
+# IPv4 only (ADR 0008): no link-local address or router solicitations on the
+# host end, before the link comes up. `-`: there is no such sysctl on a host
+# booted with ipv6.disable=1.
+ExecStart=-sysctl -q -w net.ipv6.conf.${DASSIE_TAP}.disable_ipv6=1
+# /31: the connected route covers exactly the host and guest ends.
+ExecStart=ip addr add ${DASSIE_HOST_IP}/31 dev ${DASSIE_TAP}
+# No multicast: nothing in a guest needs it, and the host's own mDNS and
+# LLMNR (systemd-resolved, avahi) would otherwise announce it to every VM.
+ExecStart=ip link set dev ${DASSIE_TAP} multicast off up
+ExecStop=ip link del ${DASSIE_TAP}

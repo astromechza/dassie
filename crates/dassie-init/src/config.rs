@@ -5,9 +5,12 @@
 //!   blob. Only `config.{Entrypoint, Cmd, Env, User, WorkingDir,
 //!   ExposedPorts}` are honoured.
 //! - Per-VM `dassie.*` kernel cmdline args override the image config.
+//! - `dassie.dns` also carries the guest's resolvers, which init writes to
+//!   `/etc/resolv.conf` ([`resolv_conf`]).
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{fs, io};
@@ -21,6 +24,8 @@ pub const IMAGE_CONFIG: &str = ".dassie/image.json";
 
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Resolvers beyond this many are ignored by both glibc and musl (`MAXNS`).
+const MAX_DNS: usize = 3;
 
 /// Everything needed to spawn and supervise the entrypoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +41,9 @@ pub struct RunSpec {
     pub ready_port: Option<u16>,
     /// Default grace period between SIGTERM and SIGKILL.
     pub stop_timeout: Duration,
+    /// Resolvers from `dassie.dns`, in order. Empty leaves the image's
+    /// `/etc/resolv.conf` alone.
+    pub dns: Vec<IpAddr>,
 }
 
 #[derive(Debug)]
@@ -130,7 +138,18 @@ pub fn build(image_json: &str, cmdline: &str, accounts: &Accounts) -> Result<Run
         workdir,
         ready_port,
         stop_timeout: cmdline.stop_timeout.unwrap_or(DEFAULT_STOP_TIMEOUT),
+        dns: cmdline.dns,
     })
+}
+
+/// `/etc/resolv.conf` contents for the given resolvers.
+pub fn resolv_conf(dns: &[IpAddr]) -> String {
+    let mut out = String::from("# Written by dassie-init from dassie.dns (ADR 0005).\n");
+    for ip in dns {
+        // Writing to a String cannot fail.
+        let _ = writeln!(out, "nameserver {ip}");
+    }
+    out
 }
 
 /// `ExposedPorts` keys are `PORT[/PROTO]`; a missing proto means tcp. Port 0
@@ -205,6 +224,7 @@ struct Cmdline {
     env: Vec<(String, String)>,
     port: Option<u16>,
     stop_timeout: Option<Duration>,
+    dns: Vec<IpAddr>,
 }
 
 impl Cmdline {
@@ -232,6 +252,17 @@ impl Cmdline {
                 "dassie.stop_timeout" => {
                     let secs = value.parse().map_err(|_| bad())?;
                     out.stop_timeout = Some(Duration::from_secs(secs));
+                }
+                "dassie.dns" => {
+                    let dns = value
+                        .split(',')
+                        .map(str::parse)
+                        .collect::<Result<Vec<IpAddr>, _>>()
+                        .map_err(|_| bad())?;
+                    if dns.len() > MAX_DNS {
+                        return Err(bad());
+                    }
+                    out.dns = dns;
                 }
                 _ => {}
             }
@@ -303,6 +334,7 @@ mod tests {
                 workdir: "/".into(),
                 ready_port: None,
                 stop_timeout: DEFAULT_STOP_TIMEOUT,
+                dns: vec![],
             }
         );
     }
@@ -383,10 +415,33 @@ mod tests {
             "dassie.port=0",
             "dassie.stop_timeout=-1",
             "dassie.env=NOEQUALS",
+            "dassie.dns=",
+            "dassie.dns=1.1.1.1,",
+            "dassie.dns=example.com",
+            "dassie.dns=1.1.1.1,1.0.0.1,9.9.9.9,8.8.8.8",
         ] {
             let err = build(&image(r#"{"Cmd":["/app"]}"#), cmdline, &accounts()).unwrap_err();
             assert!(matches!(err, Error::Cmdline { .. }), "{cmdline}");
         }
+    }
+
+    #[test]
+    fn dns_last_occurrence_wins() {
+        let json = image(r#"{"Cmd":["/app"]}"#);
+        let spec = build(
+            &json,
+            "dassie.dns=192.0.2.1 dassie.dns=1.1.1.1,2606:4700::1111",
+            &accounts(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.dns,
+            ["1.1.1.1", "2606:4700::1111"].map(|ip| ip.parse::<IpAddr>().unwrap())
+        );
+        assert_eq!(
+            resolv_conf(&spec.dns),
+            "# Written by dassie-init from dassie.dns (ADR 0005).\nnameserver 1.1.1.1\nnameserver 2606:4700::1111\n"
+        );
     }
 
     #[test]

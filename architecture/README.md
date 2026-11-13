@@ -14,6 +14,7 @@ same change that makes the decision. Start new ones from
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted |
 | [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted |
 | [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009) |
+| [0008](0008-guest-networking.md) | Guest networking | Accepted |
 | [0009](0009-read-only-rootfs-format-erofs.md) | Read-only rootfs format: erofs | Accepted |
 
 ## Diagrams
@@ -41,3 +42,14 @@ outside the data path (ADR 0002).
 ADR 0009).
 
 ![From OCI image to rootfs](diagrams/4-image-build.svg)
+
+**VM networking.** A routed TAP and a /31 per VM, with no bridge. The host
+routes every packet, and one nft table refuses VM ↔ VM and VM → host and
+masquerades egress (ADR 0008).
+
+![VM networking: a routed TAP per VM](diagrams/5-vm-network.svg)
+
+**One packet from a VM.** The `inet dassie` rules a packet meets, hook by
+hook, and the verdict of each (ADR 0008).
+
+![One packet from a VM, hook by hook](diagrams/6-packet-path.svg)

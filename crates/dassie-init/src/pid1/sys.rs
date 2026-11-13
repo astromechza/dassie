@@ -194,6 +194,27 @@ pub(super) fn give_console(uid: u32, gid: u32) -> Result<()> {
         .map_err(|e| format!("chown /dev/console to {uid}:{gid}: {e}").into())
 }
 
+/// Replaces `/etc/resolv.conf` with `contents`. Images often ship it as a
+/// symlink into a resolver's runtime dir (systemd-resolved's stub), which does
+/// not exist here, so the link is removed rather than written through.
+pub(super) fn write_resolv_conf(contents: &str) -> Result<()> {
+    const PATH: &str = "/etc/resolv.conf";
+    mkdir("/etc")?;
+    match fs::remove_file(PATH) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err(format!("remove {PATH}: {e}").into());
+        }
+        _ => {}
+    }
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(PATH)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
+        .map_err(|e| format!("write {PATH}: {e}").into())
+}
+
 /// Creates a directory if it is missing. In the app rootfs it lands in the
 /// overlay's upper layer, so the image need not have it.
 fn mkdir(path: &str) -> Result<()> {

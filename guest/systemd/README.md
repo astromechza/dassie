@@ -76,26 +76,85 @@ two:
 - The guest reboots, and Firecracker exits. systemd does not restart it,
   because this is a manual stop.
 
-### Optional: a NIC for drill 1
+### Optional: networking
 
-Drill 1 reaches the testapp over HTTP, so the guest needs a TAP device. The
-kernel `ip=` arg sets the guest's address, and `dassie-init` brings `eth0` up:
+Drill 1 and the network drill reach the testapp over HTTP, so the guest needs
+a NIC. Each VM gets a routed TAP and a /31 from `10.88.0.0/16`, and one nft
+table holds the policy for all of them
+([ADR 0008](../../architecture/0008-guest-networking.md)). Needs `iproute2`
+and `nftables` on the host.
+
+Every other firewall on the host must also let forwarded VM traffic, i.e.
+egress, through: a drop in any forward chain is final, whatever `dassie.nft`
+says. Host → VM connections use the input and output hooks and are unaffected. Check with
+`sudo iptables -S FORWARD`. If the policy is `-P FORWARD DROP`, accept the
+TAPs in iptables.
+
+The inserts below go to the top of their chain, so they bypass any DROP or
+REJECT already there for `dt+` traffic. First list the chain with
+`sudo iptables -S DOCKER-USER` or `sudo iptables -S FORWARD`. Re-insert above
+the accepts any rule that must still restrict guest egress.
+
+On a Docker host, which sets that policy, use Docker's `DOCKER-USER` chain:
 
 ```sh
-sudo ip tuntap add tap0 mode tap
-sudo ip addr add 172.16.0.1/24 dev tap0
-sudo ip link set tap0 up
-FC_TAP=tap0 guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
-  /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock \
-  "dassie.instance=test ip=172.16.0.2::172.16.0.1:255.255.255.0::eth0:off" |
-  sudo tee /var/lib/dassie/vms/test/config.json
-sudo systemctl restart fc@test
-curl http://172.16.0.2:8080/   # ok
+sudo iptables -I DOCKER-USER -i dt+ -j ACCEPT
+sudo iptables -I DOCKER-USER -o dt+ -j ACCEPT
 ```
 
-`tap0` does not survive a host reboot. Use the config without `FC_TAP` for
-drill 4. If the TAP device is missing, Firecracker fails to start and the unit
-hits its start limit.
+On a host without Docker, add the same rules to `FORWARD`:
+
+```sh
+sudo iptables -I FORWARD -i dt+ -j ACCEPT
+sudo iptables -I FORWARD -o dt+ -j ACCEPT
+```
+
+The `inet dassie` table still rejects VM → VM and VM → host traffic and
+drops unsolicited traffic into VMs, because both firewalls must accept a
+packet. Egress, though, is then filtered by `dassie.nft` alone.
+
+These rules do not survive a reboot. Persist them the way the host manages
+iptables, for example with `iptables-persistent`.
+
+Install the host units, then give `test` index 1 (TAP `dt00001`, guest
+`10.88.0.3`). The index must be unique among running VMs:
+
+```sh
+sudo install -d /etc/dassie /etc/systemd/system/fc@.service.d
+sudo install -m 0644 guest/systemd/dassie.nft /etc/dassie/
+sudo install -m 0644 guest/systemd/dassie-net.service guest/systemd/dassie-tap@.service /etc/systemd/system/
+sudo install -m 0644 guest/systemd/fc@.service.d/net.conf /etc/systemd/system/fc@.service.d/
+guest/net-env.sh 1 | sudo tee /var/lib/dassie/vms/test/net.env
+FC_NET_ENV=/var/lib/dassie/vms/test/net.env guest/vm-config.sh /var/lib/dassie/guest/vmlinux \
+  /var/lib/dassie/guest/initramfs.cpio.gz /var/lib/dassie/rootfs/test.erofs \
+  /run/dassie/test.vsock "dassie.instance=test" |
+  sudo tee /var/lib/dassie/vms/test/config.json
+sudo systemctl daemon-reload
+sudo systemctl enable --now dassie-net
+sudo systemctl restart fc@test
+curl http://10.88.0.3:8080/   # ok
+```
+
+- `fc@test` now requires `dassie-tap@test`, which creates `dt00001` from
+  `net.env` before the VM starts. The TAP stays up across VM restarts, and
+  goes away when `fc@test` stops.
+- A VM without `net.env` skips its TAP unit and boots with no NIC, even if
+  `dassie-net` has failed. A networked VM does not start unless the
+  `inet dassie` table is loaded.
+- VMs cannot reach link-local (cloud metadata), RFC 1918 or CGNAT addresses:
+  the `no_egress` set in `dassie.nft`. To use a resolver on a private network
+  in `DASSIE_DNS`, remove its range there and reload.
+- VMs get addresses from `10.88.0.0/16`. If the host's LAN or a VPN already
+  uses that range, pick another /16. Set `DASSIE_POOL` (e.g. `172.31`) for
+  every `net-env.sh` run, and change the `vm_pool` element in
+  `/etc/dassie/dassie.nft` to match (`172.31.0.0/16`), then reload.
+- `net.env` also carries `DASSIE_DNS` (default `1.1.1.1,9.9.9.9`; set
+  `DASSIE_DNS` when running `net-env.sh` to change it), which reaches init as
+  `dassie.dns` and becomes the guest's `/etc/resolv.conf`.
+- After editing `/etc/dassie/dassie.nft`, run `sudo systemctl reload
+  dassie-net`. It swaps the table atomically. A `restart` would also restart
+  every TAP and VM.
+- `sudo nft list table inet dassie` shows the policy and its counters.
 
 ## Drills
 
@@ -107,7 +166,7 @@ Each drill must converge with no manual intervention. To count restarts, run
 With the NIC:
 
 ```sh
-curl http://172.16.0.2:8080/crash
+curl http://10.88.0.3:8080/crash
 ```
 
 `/crash` makes the testapp abort, so it dies of SIGABRT. Without a NIC, put
@@ -165,12 +224,13 @@ sudo dassie-listener events /run/dassie/test.vsock   # start it again after a fe
 
 ### 4. Reboot the host
 
-Use the config without a TAP device.
-
 ```sh
 sudo systemctl enable fc@test
 sudo reboot
 ```
+
+With networking, `dassie-net` and `dassie-tap@test` come back too, pulled in
+by `fc@test`, and `curl http://10.88.0.3:8080/` answers again.
 
 **Expected:** after the host is back, `systemctl status fc@test` is
 `active (running)` via `WantedBy=multi-user.target`. The journal for this boot
@@ -215,6 +275,34 @@ Firecracker run as root opens a drive read-write unless the config says
 otherwise. dassie-init mounts it read-only either way, but a root process in
 the guest could still write `/dev/vda` directly, and so the file every VM
 shares.
+
+### 6. Network isolation and egress
+
+Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
+Set them up as for `test` above. They share `test.erofs`, and each has its own
+directory, `net.env` and config. `a` reuses `test`'s index, and starting its
+TAP would delete `test`'s live `dt00001`, so first run
+`sudo systemctl stop fc@test`, which also removes its TAP. The testapp's
+`/dial?addr=HOST:PORT` opens a TCP connection from inside the guest and
+reports the result:
+
+```sh
+curl 'http://10.88.0.3:8080/dial?addr=10.88.0.5:8080'   # VM -> VM
+curl 'http://10.88.0.3:8080/dial?addr=10.88.0.2:22'     # VM -> host
+curl 'http://10.88.0.3:8080/dial?addr=169.254.169.254:80'  # metadata
+curl 'http://10.88.0.3:8080/dial?addr=example.com:443'  # egress by name
+curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
+```
+
+**Expected:**
+
+- VM → VM, VM → host and VM → metadata: `error: Host is unreachable` at
+  once. The forward and input chains reject them with ICMP admin-prohibited.
+- Egress: `ok <ip>:443` from both VMs, through the masquerade, with the name
+  resolved by the guest from `dassie.dns`.
+- `curl http://10.88.0.5:8080/` from the host still answers `ok`.
+- Stopping `fc@a` removes `dt00001`. Starting it again recreates it, even if a
+  stale `dt00001` was left behind.
 
 ### Bonus: the start limit
 
