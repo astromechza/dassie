@@ -13,7 +13,7 @@ failed=0
 expect() {
   local want got
   want=$(printf 'DASSIE_INDEX=%s\nDASSIE_TAP=%s\nDASSIE_HOST_IP=%s\nDASSIE_GUEST_IP=%s\nDASSIE_MAC=%s\nDASSIE_DNS=1.1.1.1,9.9.9.9' "$@")
-  got=$(DASSIE_DNS='' "$here/net-env.sh" "$1")
+  got=$(DASSIE_DNS='' DASSIE_POOL='' "$here/net-env.sh" "$1")
   if [[ "$got" != "$want" ]]; then
     printf 'FAIL: index %s\n--- want\n%s\n--- got\n%s\n' "$1" "$want" "$got" >&2
     failed=1
@@ -25,6 +25,20 @@ expect 5 dt00005 10.88.0.10 10.88.0.11 06:00:0a:58:00:0b
 expect 127 dt00127 10.88.0.254 10.88.0.255 06:00:0a:58:00:ff
 expect 128 dt00128 10.88.1.0 10.88.1.1 06:00:0a:58:01:01
 expect 32767 dt32767 10.88.255.254 10.88.255.255 06:00:0a:58:ff:ff
+
+# A non-default pool moves the addresses and the MAC with it.
+want=$(printf 'DASSIE_HOST_IP=172.31.1.0\nDASSIE_GUEST_IP=172.31.1.1\nDASSIE_MAC=06:00:ac:1f:01:01')
+got=$(DASSIE_POOL=172.31 "$here/net-env.sh" 128 | grep -E '_IP=|_MAC=')
+if [[ "$got" != "$want" ]]; then
+  printf 'FAIL: DASSIE_POOL=172.31\n--- want\n%s\n--- got\n%s\n' "$want" "$got" >&2
+  failed=1
+fi
+for bad in 10 10.88.0 256.1 1.256 010.88 a.b 10.88/16; do
+  if DASSIE_POOL=$bad "$here/net-env.sh" 1 >/dev/null 2>&1; then
+    echo "FAIL: DASSIE_POOL=${bad@Q} accepted" >&2
+    failed=1
+  fi
+done
 
 if [[ "$(DASSIE_DNS=192.0.2.53 "$here/net-env.sh" 1 | tail -1)" != DASSIE_DNS=192.0.2.53 ]]; then
   echo "FAIL: DASSIE_DNS override" >&2

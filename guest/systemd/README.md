@@ -144,6 +144,10 @@ curl http://10.88.0.3:8080/   # ok
 - VMs cannot reach link-local (cloud metadata), RFC 1918 or CGNAT addresses:
   the `no_egress` set in `dassie.nft`. To use a resolver on a private network
   in `DASSIE_DNS`, remove its range there and reload.
+- VMs get addresses from `10.88.0.0/16`. If the host's LAN or a VPN already
+  uses that range, pick another /16. Set `DASSIE_POOL` (e.g. `172.31`) for
+  every `net-env.sh` run, and change the `vm_pool` element in
+  `/etc/dassie/dassie.nft` to match (`172.31.0.0/16`), then reload.
 - `net.env` also carries `DASSIE_DNS` (default `1.1.1.1,9.9.9.9`; set
   `DASSIE_DNS` when running `net-env.sh` to change it), which reaches init as
   `dassie.dns` and becomes the guest's `/etc/resolv.conf`.

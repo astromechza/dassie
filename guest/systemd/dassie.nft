@@ -2,8 +2,8 @@
 # The host's whole policy for VM traffic (ADR 0008), loaded by
 # dassie-net.service into /etc/dassie/dassie.nft.
 #
-# Every VM sits behind its own routed TAP, dt<index padded to 5 digits>, with a /31 from
-# 10.88.0.0/16. Rules match the TAP name pattern and named sets, never one
+# Every VM sits behind its own routed TAP, dt<index padded to 5 digits>, with
+# a /31 from the VM pool. Rules match the TAP name pattern and named sets, never one
 # VM, so the rule count stays fixed however many VMs run. Every base chain
 # accepts by default, so other forwarding on the host (Docker, libvirt) is
 # untouched; only traffic to or from a dt* TAP is filtered. The reverse does
@@ -17,7 +17,9 @@ table inet dassie
 delete table inet dassie
 
 table inet dassie {
-  # Every VM address. Later: per-app peer sets and the VIP range (ADR 0008).
+  # Every VM address: the /16 that net-env.sh allocates from. Keep it equal
+  # to DASSIE_POOL there (default 10.88). Later: per-app peer sets and the VIP
+  # range (ADR 0008).
   set vm_pool {
     type ipv4_addr
     flags interval

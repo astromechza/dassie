@@ -29,6 +29,10 @@ forces shape it:
 - VM index `N` (0..32767) gets the /31 at `10.88.0.0 + 2N` from
   `10.88.0.0/16`. The host end is the even address and the guest's gateway. The
   guest end is the odd one.
+- The /16 is configurable, for hosts whose LAN or VPN already uses
+  `10.88.0.0/16`: `DASSIE_POOL` (its first two octets) in `net-env.sh`, plus
+  the matching `vm_pool` element in `dassie.nft`. It must be a /16, because
+  the index fills the last two octets. M2 makes it one daemon setting.
 - The TAP is named `dt` plus `N` padded to 5 digits (`dt00042`): always 7
   characters, well inside IFNAMSIZ (15), and sorted by index.
 - The guest MAC is `06:00:` followed by the guest IP in hex: locally
