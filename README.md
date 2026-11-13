@@ -10,8 +10,8 @@ state. The daemon exists for high availability and blue/green deploys via Caddy
 route changes.
 
 Status: M1 in progress. `dassie-init` boots as PID 1 in a Firecracker microVM
-under a hand-written systemd unit, and `dassie-image` builds its rootfs from an
-OCI image. There is no daemon yet.
+under a hand-written systemd unit, and `dassie-image` pulls an OCI image and
+builds its rootfs from it. There is no daemon yet.
 
 ## Crates
 
@@ -43,19 +43,23 @@ guest/firecracker.sh x86_64    # target/guest/x86_64/firecracker
 guest/smoke-test.sh x86_64     # boot once, expect started, ready, exited
 ```
 
-To build a rootfs from a real OCI image instead (ADR 0007), copy the image into
-a local OCI layout and build it. This needs `mkfs.ext4` from e2fsprogs 1.47.1
-or later and the libarchive shared library (Debian: `libarchive13t64`):
+To build a rootfs from a real OCI image instead (ADR 0007), pull the image
+into a local OCI layout and build it. The pull fetches only the blobs the
+store lacks and prints the manifest digest to pin. The build needs
+`mkfs.ext4` from e2fsprogs 1.47.1 or later and the libarchive shared library
+(Debian: `libarchive13t64`):
 
 ```sh
-skopeo copy docker://docker.io/nginxinc/nginx-unprivileged:alpine oci:$HOME/images:nginx
+cargo run -p dassie-image --example image -- pull \
+  --store $HOME/images docker.io/nginxinc/nginx-unprivileged:alpine   # prints sha256:…
 cargo run -p dassie-image --example image -- build \
-  --store $HOME/images --out $HOME/rootfs nginx   # prints the .ext4 path
+  --store $HOME/images --out $HOME/rootfs sha256:…   # prints the .ext4 path
 ```
 
-The artefact is read-only and named by manifest digest, and a rebuild of the
-same image is a no-op. `cargo test -p dassie-image -- --ignored` checks a real
-build on Linux.
+`skopeo copy docker://… oci:$HOME/images:<name>` writes the same layout, for
+offline import. The artefact is read-only and named by manifest digest. A
+re-pull fetches no blobs, and a rebuild of the same image is a no-op.
+`cargo test -p dassie-image -- --ignored` checks a real build on Linux.
 
 ## Development
 

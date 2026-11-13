@@ -7,7 +7,8 @@
 //! ```
 //!
 //! `skopeo copy docker://… oci:<root>:<name>` writes exactly this, and the
-//! registry pull writes the same format.
+//! registry pull writes the same format through the write side in
+//! [`write`](self::write).
 
 use std::fmt;
 use std::fs::File;
@@ -19,13 +20,15 @@ use serde::Deserialize;
 use crate::digest::{Digest, VerifyingReader};
 use crate::oci::{self, Descriptor, Index, Manifest, Platform};
 
+mod write;
+
 /// Upper bound for JSON blobs (indexes, manifests, image configs). Real ones
 /// are a few KiB; the cap keeps a hostile blob from exhausting memory.
-const MAX_JSON: u64 = 4 << 20;
+pub(crate) const MAX_JSON: u64 = 4 << 20;
 
 /// Index → index → manifest is the deepest real nesting (a named entry
 /// pointing at a multi-platform index).
-const MAX_DEPTH: usize = 3;
+pub(crate) const MAX_DEPTH: usize = 3;
 
 #[derive(Debug)]
 pub enum Error {
@@ -34,6 +37,10 @@ pub enum Error {
     Json(Digest, serde_json::Error),
     TooLarge(PathBuf),
     Tampered(Digest),
+    /// A blob being written is not the size its descriptor gives.
+    WrongSize(Digest, u64),
+    /// Reading a blob's source (e.g. a registry response) failed.
+    Read(Digest, io::Error),
     NotFound(String),
     NoPlatform(Digest, Platform),
     /// The image's config says it is for another platform.
@@ -61,6 +68,8 @@ impl fmt::Display for Error {
                 )
             }
             Self::Tampered(d) => write!(f, "blob {d}: content does not match its digest"),
+            Self::WrongSize(d, want) => write!(f, "blob {d}: size is not {want} bytes"),
+            Self::Read(d, e) => write!(f, "blob {d}: {e}"),
             Self::NotFound(r) => write!(f, "no image named {r:?} in the store"),
             Self::NoPlatform(d, p) => {
                 write!(
@@ -98,7 +107,7 @@ pub struct Store {
 /// `index.json` entries and nested indexes both deserialize as one of these.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum Node {
+pub(crate) enum Node {
     Index(Index),
     Manifest(Manifest),
 }
@@ -129,7 +138,7 @@ impl Store {
     }
 
     /// Reads a whole JSON blob and checks its digest.
-    fn read_small(&self, digest: &Digest) -> Result<Vec<u8>, Error> {
+    pub(crate) fn read_small(&self, digest: &Digest) -> Result<Vec<u8>, Error> {
         let bytes = read_bounded(&self.blob_path(digest))?;
         if Digest::of(&bytes) != *digest {
             return Err(Error::Tampered(digest.clone()));
@@ -195,7 +204,7 @@ impl Store {
 
 /// Reads a JSON file, refusing anything over [`MAX_JSON`] without reading
 /// more than that.
-fn read_bounded(path: &Path) -> Result<Vec<u8>, Error> {
+pub(crate) fn read_bounded(path: &Path) -> Result<Vec<u8>, Error> {
     let file = File::open(path).map_err(|e| Error::Io(path.to_path_buf(), e))?;
     let mut bytes = Vec::new();
     file.take(MAX_JSON + 1)
@@ -210,7 +219,7 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, Error> {
 /// Rejects an image whose config names a different OS, architecture or (when
 /// one is requested) variant, by the same rule as index selection. A config
 /// without OS or architecture (only seen in hand-made images) is accepted.
-fn check_platform(digest: &Digest, config: &[u8], want: &Platform) -> Result<(), Error> {
+pub(crate) fn check_platform(digest: &Digest, config: &[u8], want: &Platform) -> Result<(), Error> {
     #[derive(Deserialize)]
     struct Fields {
         os: Option<String>,

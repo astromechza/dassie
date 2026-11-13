@@ -102,7 +102,11 @@ impl Index {
 
 /// A single-platform image manifest.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Manifest {
+    /// Optional in OCI manifests, always set in Docker v2 ones.
+    #[serde(default)]
+    pub media_type: String,
     pub config: Descriptor,
     pub layers: Vec<Descriptor>,
 }
