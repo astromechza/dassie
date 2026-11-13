@@ -6,8 +6,14 @@
 //!   boot test sees `started`, `ready` and `exited` without a stop request.
 //! - `GET /crash` aborts the process (SIGABRT), for the "kill the
 //!   entrypoint" drill in `guest/systemd/README.md`.
+//!
+//! At startup it reopens its stderr through `/dev/stderr` and writes to
+//! `/dev/shm`, and exits if either fails. It runs as a non-root user, so the
+//! boot test also checks that init gives such apps the `/dev` that OCI
+//! runtimes do.
 
 use std::error::Error;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::time::Duration;
@@ -24,6 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 
+    check_dev()?;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
     eprintln!("testapp: listening on port {port}");
     for conn in listener.incoming() {
@@ -38,6 +45,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             Err(e) => eprintln!("testapp: accept: {e}"),
         }
     }
+    Ok(())
+}
+
+/// What an image like nginx does at startup: log through `/dev/stderr`, and
+/// use POSIX shared memory.
+fn check_dev() -> Result<(), String> {
+    let mut stderr = OpenOptions::new()
+        .append(true)
+        .open("/dev/stderr")
+        .map_err(|e| format!("open /dev/stderr: {e}"))?;
+    writeln!(stderr, "testapp: /dev/stderr ok").map_err(|e| format!("write /dev/stderr: {e}"))?;
+    let shm = format!("/dev/shm/testapp.{}", process::id());
+    fs::write(&shm, b"ok").map_err(|e| format!("write {shm}: {e}"))?;
+    fs::remove_file(&shm).map_err(|e| format!("remove {shm}: {e}"))?;
+    eprintln!("testapp: /dev/shm ok");
     Ok(())
 }
 

@@ -49,6 +49,7 @@ fn run() -> Result<ExitStatus> {
         fs::read_to_string("/proc/cmdline").map_err(|e| format!("read /proc/cmdline: {e}"))?;
     let root = RootSpec::from_cmdline(&cmdline);
     sys::switch_root(&root)?;
+    sys::dev_extras()?;
 
     sys::interface_up("lo")?;
     // A NIC is optional; the kernel `ip=` arg has already set its address.
@@ -59,6 +60,9 @@ fn run() -> Result<ExitStatus> {
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;
 
     let spec = config::load(Path::new("/"), &cmdline)?;
+    if let Some((uid, gid)) = spec.user {
+        sys::give_console(uid, gid)?;
+    }
     eprintln!("dassie-init: starting {:?}", spec.argv);
 
     let (control_tx, control_rx) = mpsc::channel();

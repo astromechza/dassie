@@ -2,7 +2,8 @@
 # Boots the test VM once and checks the lifecycle events: the entrypoint is
 # told to exit after a few seconds, so the listener must see `started`,
 # `ready` and `exited` in that order, and Firecracker must exit when the
-# guest reboots.
+# guest reboots. The non-root testapp must also have been able to use
+# /dev/stderr and /dev/shm.
 #
 #   guest/smoke-test.sh [x86_64|aarch64]
 #
@@ -65,10 +66,19 @@ if ! awk '/Started/ { s = NR } /Ready/ && s { r = NR } /Exited/ && r { ok = 1 } 
   echo "FAIL: events not in started, ready, exited order" >&2
   exit 1
 fi
+# testapp runs as a non-root user and exits early unless it can reopen
+# /dev/stderr and write /dev/shm (ADR 0005, ADR 0006).
+for want in "testapp: /dev/stderr ok" "testapp: /dev/shm ok"; do
+  if ! grep -qF "$want" "$run/console.log"; then
+    dump
+    echo "FAIL: console has no \"$want\"" >&2
+    exit 1
+  fi
+done
 if ((fc_status != 0)); then
   dump
   echo "FAIL: firecracker exited with $fc_status (124 means it never exited)" >&2
   exit 1
 fi
 cat "$run/events.log"
-log "PASS: started, ready, exited; firecracker exited cleanly"
+log "PASS: started, ready, exited; non-root /dev ok; firecracker exited cleanly"
