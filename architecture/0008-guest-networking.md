@@ -29,7 +29,8 @@ forces shape it:
 - VM index `N` (0..32767) gets the /31 at `10.88.0.0 + 2N` from
   `10.88.0.0/16`. The host end is the even address and the guest's gateway. The
   guest end is the odd one.
-- The TAP is named `dt<N>`, at most 7 characters, well inside IFNAMSIZ (15).
+- The TAP is named `dt` plus `N` padded to 5 digits (`dt00042`): always 7
+  characters, well inside IFNAMSIZ (15), and sorted by index.
 - The guest MAC is `06:00:` followed by the guest IP in hex: locally
   administered and unicast, as in Firecracker's examples, so a capture names
   its VM.
@@ -52,7 +53,7 @@ dassie does not depend on, or fight, whichever network manager the host uses.
 - `dassie-net.service` (oneshot) enables `net.ipv4.ip_forward`, sizes the
   neighbour table, and loads the `inet dassie` nft table. `reload` swaps the
   table atomically without restarting any VM.
-- `dassie-tap@<name>.service` (oneshot, `RemainAfterExit`) creates `dt<N>`
+- `dassie-tap@<name>.service` (oneshot, `RemainAfterExit`) creates the TAP
   from `net.env`, gives it the host address, and deletes it on stop. With
   `StopWhenUnneeded=` it goes away with its VM, but stays up across the VM's
   `Restart=always` cycles.
@@ -134,7 +135,7 @@ in one nft table.
 - Isolation holds with no per-VM firewall state. Adding a VM is one `net.env`
   and one TAP.
 - Host-to-guest traffic is plain routing, so Caddy and debugging tools such as
-  `curl` and `tcpdump -i dt<N>` work against the guest IP directly.
+  `curl` and `tcpdump -i dt00042` work against the guest IP directly.
 - A VM cannot use any host service, including a local DNS cache or metadata
   endpoint. Anything it needs must come over vsock or from outside.
 - A VM cannot reach private networks either, including a resolver there. An

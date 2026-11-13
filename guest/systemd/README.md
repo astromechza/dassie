@@ -116,7 +116,7 @@ packet. Egress, though, is then filtered by `dassie.nft` alone.
 These rules do not survive a reboot. Persist them the way the host manages
 iptables, for example with `iptables-persistent`.
 
-Install the host units, then give `test` index 1 (TAP `dt1`, guest
+Install the host units, then give `test` index 1 (TAP `dt00001`, guest
 `10.88.0.3`). The index must be unique among running VMs:
 
 ```sh
@@ -135,7 +135,7 @@ sudo systemctl restart fc@test
 curl http://10.88.0.3:8080/   # ok
 ```
 
-- `fc@test` now requires `dassie-tap@test`, which creates `dt1` from
+- `fc@test` now requires `dassie-tap@test`, which creates `dt00001` from
   `net.env` before the VM starts. The TAP stays up across VM restarts, and
   goes away when `fc@test` stops.
 - A VM without `net.env` skips its TAP unit and boots with no NIC, even if
@@ -277,7 +277,7 @@ shares.
 Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
 Set them up as for `test` above. They share `test.erofs`, and each has its own
 directory, `net.env` and config. `a` reuses `test`'s index, and starting its
-TAP would delete `test`'s live `dt1`, so first run
+TAP would delete `test`'s live `dt00001`, so first run
 `sudo systemctl stop fc@test`, which also removes its TAP. The testapp's
 `/dial?addr=HOST:PORT` opens a TCP connection from inside the guest and
 reports the result:
@@ -297,8 +297,8 @@ curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
 - Egress: `ok <ip>:443` from both VMs, through the masquerade, with the name
   resolved by the guest from `dassie.dns`.
 - `curl http://10.88.0.5:8080/` from the host still answers `ok`.
-- Stopping `fc@a` removes `dt1`. Starting it again recreates it, even if a
-  stale `dt1` was left behind.
+- Stopping `fc@a` removes `dt00001`. Starting it again recreates it, even if a
+  stale `dt00001` was left behind.
 
 ### Bonus: the start limit
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prints the `net.env` for one VM index (ADR 0008): its TAP name, the /31's
-# host and guest addresses, the guest MAC and its DNS resolvers.
+# host and guest addresses, the guest MAC and its DNS resolvers. The TAP is
+# dt plus the index padded to 5 digits (dt00042), so names sort by index.
 #
 #   guest/net-env.sh INDEX >/var/lib/dassie/vms/NAME/net.env
 #
@@ -33,9 +34,11 @@ guest_ip="10.88.$(((host + 1) >> 8)).$(((host + 1) & 255))"
 # Firecracker's examples, so a MAC in a capture names its VM.
 mac=$(printf '06:00:%02x:%02x:%02x:%02x' 10 88 $(((host + 1) >> 8)) $(((host + 1) & 255)))
 
+tap=$(printf 'dt%05d' "$index")
+
 cat <<EOF
 DASSIE_INDEX=$index
-DASSIE_TAP=dt$index
+DASSIE_TAP=$tap
 DASSIE_HOST_IP=$host_ip
 DASSIE_GUEST_IP=$guest_ip
 DASSIE_MAC=$mac

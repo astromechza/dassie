@@ -2,7 +2,7 @@
 # The host's whole policy for VM traffic (ADR 0008), loaded by
 # dassie-net.service into /etc/dassie/dassie.nft.
 #
-# Every VM sits behind its own routed TAP, dt<index>, with a /31 from
+# Every VM sits behind its own routed TAP, dt<index padded to 5 digits>, with a /31 from
 # 10.88.0.0/16. Rules match the TAP name pattern and named sets, never one
 # VM, so the rule count stays fixed however many VMs run. Every base chain
 # accepts by default, so other forwarding on the host (Docker, libvirt) is

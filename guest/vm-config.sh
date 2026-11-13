@@ -33,7 +33,7 @@ declare -A net=()
 if [[ -n "${FC_NET_ENV:-}" ]]; then
   ip4='([0-9]{1,3}\.){3}[0-9]{1,3}'
   declare -A want=(
-    [DASSIE_TAP]='^dt[0-9]{1,5}$'
+    [DASSIE_TAP]='^dt[0-9]{5}$'
     [DASSIE_HOST_IP]="^$ip4\$"
     [DASSIE_GUEST_IP]="^$ip4\$"
     [DASSIE_MAC]='^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
