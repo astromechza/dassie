@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 680" width="1000" height="680" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Dassie: one packet from a VM</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .t { font-size: 14px; font-weight: 600; fill: #0f172a; }
+      .h { font-size: 13px; font-weight: 700; fill: #0f172a; }
+      .s { font-size: 11.5px; fill: #475569; }
+      .m { font-size: 11px; fill: #334155; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .lbl { font-size: 11px; fill: #475569; }
+      .built { stroke: #334155; stroke-width: 1.5; }
+      .ln { stroke: #475569; stroke-width: 1.5; fill: none; }
+      .ok { stroke: #059669; stroke-width: 2.5; fill: none; }
+      .host { stroke: #2563eb; stroke-width: 2; fill: none; }
+      .row { stroke: #e2e8f0; stroke-width: 1; }
+      .pill { font-size: 11px; font-weight: 700; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="680" rx="14" fill="#ffffff"/>
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">One packet from a VM, hook by hook</text>
+  <text x="30" y="60" class="s">table inet dassie (guest/systemd/dassie.nft) · first matching rule wins · every chain is policy accept, so traffic not on a dt* TAP passes untouched</text>
+
+  <!-- legend -->
+  <rect x="742" y="22" width="58" height="20" rx="10" fill="#059669"/>
+  <text x="771" y="36" text-anchor="middle" class="pill">accept</text>
+  <rect x="808" y="22" width="58" height="20" rx="10" fill="#dc2626"/>
+  <text x="837" y="36" text-anchor="middle" class="pill">reject</text>
+  <rect x="874" y="22" width="58" height="20" rx="10" fill="#64748b"/>
+  <text x="903" y="36" text-anchor="middle" class="pill">drop</text>
+
+  <!-- arrival -->
+  <rect x="30" y="84" width="200" height="56" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="130" y="107" text-anchor="middle" class="t">packet from a VM</text>
+  <text x="130" y="126" text-anchor="middle" class="m">in on dt00001</text>
+  <path d="M230,112 L284,112" class="ln" marker-end="url(#a)"/>
+
+  <!-- prerouting -->
+  <rect x="286" y="84" width="380" height="56" rx="10" fill="#f8fafc" class="built"/>
+  <text x="300" y="104" class="h">prerouting</text>
+  <text x="382" y="104" class="s">anti-spoof: is the source routed back via this TAP?</text>
+  <text x="300" y="126" class="m">iifname "dt*" fib saddr . iif oif missing</text>
+  <rect x="684" y="101" width="58" height="22" rx="11" fill="#64748b"/>
+  <text x="713" y="116" text-anchor="middle" class="pill">drop</text>
+  <path d="M666,112 L682,112" class="ln"/>
+  <text x="752" y="110" class="lbl">forged source, e.g. another</text>
+  <text x="752" y="124" class="lbl">VM's address</text>
+
+  <!-- route lookup -->
+  <path d="M476,140 L476,168" class="ln" marker-end="url(#a)"/>
+  <rect x="306" y="170" width="340" height="50" rx="10" fill="#ffffff" class="built"/>
+  <text x="476" y="191" text-anchor="middle" class="t">route lookup</text>
+  <text x="476" y="209" text-anchor="middle" class="s">is the destination one of the host's own addresses?</text>
+  <path d="M306,195 C190,195 180,220 180,250" class="ln" marker-end="url(#a)"/>
+  <text x="292" y="190" class="lbl" text-anchor="end">yes</text>
+  <path d="M646,195 C760,195 770,220 770,250" class="ln" marker-end="url(#a)"/>
+  <text x="664" y="190" class="lbl">no: another network</text>
+
+  <!-- input -->
+  <rect x="30" y="252" width="320" height="140" rx="12" fill="#f8fafc" class="built"/>
+  <text x="44" y="276" class="h">input</text>
+  <text x="96" y="276" class="s">VM → the host itself</text>
+  <line x1="44" y1="288" x2="336" y2="288" class="row"/>
+  <text x="44" y="306" class="m">ct state established,related</text>
+  <text x="44" y="322" class="lbl">replies to the host's own connections</text>
+  <rect x="278" y="300" width="58" height="22" rx="11" fill="#059669"/>
+  <text x="307" y="315" text-anchor="middle" class="pill">accept</text>
+  <line x1="44" y1="334" x2="336" y2="334" class="row"/>
+  <text x="44" y="352" class="m">iifname "dt*"</text>
+  <text x="44" y="368" class="lbl">anything else: any port, ping too</text>
+  <rect x="278" y="346" width="58" height="22" rx="11" fill="#dc2626"/>
+  <text x="307" y="361" text-anchor="middle" class="pill">reject</text>
+
+  <!-- forward -->
+  <rect x="380" y="252" width="590" height="296" rx="12" fill="#f8fafc" class="built"/>
+  <text x="394" y="276" class="h">forward</text>
+  <text x="458" y="276" class="s">the host routes it on: to another VM, or towards the uplink</text>
+
+  <line x1="394" y1="288" x2="956" y2="288" class="row"/>
+  <text x="394" y="306" class="m">iifname "dt*" oifname "dt*"</text>
+  <text x="394" y="322" class="lbl">VM ↔ VM; approved-pair rules (ADR 0008, later) go above</text>
+  <rect x="898" y="300" width="58" height="22" rx="11" fill="#dc2626"/>
+  <text x="927" y="315" text-anchor="middle" class="pill">reject</text>
+
+  <line x1="394" y1="334" x2="956" y2="334" class="row"/>
+  <text x="394" y="352" class="m">oifname "dt*" ct state established,related</text>
+  <text x="394" y="368" class="lbl">replies coming back to a VM's own egress</text>
+  <rect x="898" y="346" width="58" height="22" rx="11" fill="#059669"/>
+  <text x="927" y="361" text-anchor="middle" class="pill">accept</text>
+
+  <line x1="394" y1="380" x2="956" y2="380" class="row"/>
+  <text x="394" y="398" class="m">oifname "dt*"</text>
+  <text x="394" y="414" class="lbl">unsolicited inbound from outside</text>
+  <rect x="898" y="392" width="58" height="22" rx="11" fill="#64748b"/>
+  <text x="927" y="407" text-anchor="middle" class="pill">drop</text>
+
+  <line x1="394" y1="426" x2="956" y2="426" class="row"/>
+  <text x="394" y="444" class="m">iifname "dt*" ip daddr @no_egress</text>
+  <text x="394" y="460" class="lbl">cloud metadata 169.254/16, private LANs and bridges, CGNAT</text>
+  <rect x="898" y="438" width="58" height="22" rx="11" fill="#dc2626"/>
+  <text x="927" y="453" text-anchor="middle" class="pill">reject</text>
+
+  <line x1="394" y1="472" x2="956" y2="472" class="row"/>
+  <text x="394" y="490" class="m">iifname "dt*" ip saddr @vm_pool</text>
+  <text x="394" y="506" class="lbl">egress to the internet</text>
+  <rect x="898" y="484" width="58" height="22" rx="11" fill="#059669"/>
+  <text x="927" y="499" text-anchor="middle" class="pill">accept</text>
+
+  <line x1="394" y1="518" x2="956" y2="518" class="row"/>
+  <text x="394" y="536" class="m">iifname "dt*"</text>
+  <text x="500" y="536" class="lbl">anything else: IPv6, sources outside the pool</text>
+  <rect x="898" y="524" width="58" height="20" rx="10" fill="#64748b"/>
+  <text x="927" y="538" text-anchor="middle" class="pill">drop</text>
+
+  <!-- postrouting -->
+  <path d="M927,506 C990,506 990,600 958,600" class="ok"/>
+  <path d="M958,600 L812,600" class="ok" marker-end="url(#ag)"/>
+  <rect x="380" y="574" width="430" height="56" rx="10" fill="#f8fafc" class="built"/>
+  <text x="394" y="594" class="h">postrouting (nat)</text>
+  <text x="520" y="594" class="s">source becomes the host's uplink address</text>
+  <text x="394" y="616" class="m">ip saddr @vm_pool oifname != "dt*" masquerade</text>
+  <path d="M380,602 L342,602" class="ok" marker-end="url(#ag)"/>
+  <rect x="200" y="580" width="140" height="44" rx="10" fill="#f1f5f9" class="built"/>
+  <text x="270" y="600" text-anchor="middle" class="t">uplink</text>
+  <text x="270" y="616" text-anchor="middle" class="s">to the internet</text>
+
+  <!-- host-originated -->
+  <rect x="30" y="414" width="320" height="140" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="44" y="438" class="h" fill="#1d4ed8">from the host to a VM</text>
+  <text x="44" y="458" class="s">caddy (slice E), curl, debugging tools</text>
+  <text x="44" y="480" class="s">output: no dassie rules, so allowed</text>
+  <text x="44" y="498" class="s">postrouting: out on a dt*, so not masqueraded</text>
+  <text x="44" y="516" class="s">the VM's replies come back through input as</text>
+  <text x="44" y="532" class="s">established, and are accepted</text>
+
+  <text x="30" y="660" class="s">Rejects are ICMP admin-prohibited: a VM's connect fails at once with EHOSTUNREACH. Drops are silent. Counters: sudo nft list table inet dassie.</text>
+</svg>

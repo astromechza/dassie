@@ -134,6 +134,10 @@ in one nft table.
   address, and NAT maps between the two. The host-side policy above then
   applies to the veth as it does to a TAP.
 
+The topology and the hook-by-hook packet path are drawn in
+[5-vm-network.svg](diagrams/5-vm-network.svg) and
+[6-packet-path.svg](diagrams/6-packet-path.svg).
+
 ## Consequences
 
 - Isolation holds with no per-VM firewall state. Adding a VM is one `net.env`

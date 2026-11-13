@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" width="1000" height="580" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Dassie: VM networking</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <style>
+      .t { font-size: 14px; font-weight: 600; fill: #0f172a; }
+      .s { font-size: 11.5px; fill: #475569; }
+      .m { font-size: 11px; fill: #334155; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .lbl { font-size: 11px; fill: #475569; }
+      .built { stroke: #334155; stroke-width: 1.5; }
+      .plan { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .ln { stroke: #475569; stroke-width: 1.5; fill: none; }
+      .ok { stroke: #059669; stroke-width: 2.5; fill: none; }
+      .host { stroke: #2563eb; stroke-width: 2; fill: none; }
+      .no { stroke: #dc2626; stroke-width: 2.5; fill: none; }
+      .drop { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 3 4; }
+      .x { stroke: #dc2626; stroke-width: 3; stroke-linecap: round; }
+      .xg { stroke: #64748b; stroke-width: 3; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="580" rx="14" fill="#ffffff"/>
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">VM networking: a routed TAP per VM</text>
+  <text x="30" y="60" class="s">ADR 0008 · no bridge, no shared L2 · the host routes every packet and one nft table holds the policy</text>
+
+  <!-- legend -->
+  <line x1="656" y1="32" x2="684" y2="32" class="ok"/>
+  <text x="690" y="36" class="s">egress</text>
+  <line x1="740" y1="32" x2="768" y2="32" class="host"/>
+  <text x="774" y="36" class="s">host → VM</text>
+  <line x1="842" y1="32" x2="870" y2="32" class="no"/>
+  <text x="876" y="36" class="s">refused</text>
+  <line x1="656" y1="54" x2="684" y2="54" class="drop"/>
+  <text x="690" y="58" class="s">dropped</text>
+
+  <!-- VM a -->
+  <rect x="30" y="100" width="220" height="150" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="44" y="122" font-size="11" font-weight="600" fill="#047857">microVM · fc@a · index 1</text>
+  <text x="44" y="148" class="m">eth0 10.88.0.3/31</text>
+  <text x="44" y="168" class="m">gw 10.88.0.2</text>
+  <text x="44" y="188" class="m">mac 06:00:0a:58:00:03</text>
+  <text x="44" y="214" class="s">from the kernel ip= arg</text>
+  <text x="44" y="232" class="s">resolv.conf from dassie.dns</text>
+
+  <!-- VM b -->
+  <rect x="30" y="350" width="220" height="150" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="44" y="372" font-size="11" font-weight="600" fill="#047857">microVM · fc@b · index 2</text>
+  <text x="44" y="398" class="m">eth0 10.88.0.5/31</text>
+  <text x="44" y="418" class="m">gw 10.88.0.4</text>
+  <text x="44" y="438" class="m">mac 06:00:0a:58:00:05</text>
+  <text x="44" y="464" class="s">from the kernel ip= arg</text>
+  <text x="44" y="482" class="s">resolv.conf from dassie.dns</text>
+
+  <!-- host -->
+  <rect x="330" y="84" width="420" height="440" rx="14" fill="#f8fafc" class="built"/>
+  <text x="470" y="108" class="t">host</text>
+  <text x="514" y="108" class="s">ip_forward=1 · IPv4 only</text>
+
+  <!-- routes -->
+  <rect x="470" y="122" width="252" height="88" rx="8" fill="#ffffff" class="built"/>
+  <text x="484" y="142" font-size="11" font-weight="600" fill="#0f172a">routes</text>
+  <text x="484" y="162" class="m">10.88.0.2/31 dev dt00001</text>
+  <text x="484" y="180" class="m">10.88.0.4/31 dev dt00002</text>
+  <text x="484" y="198" class="m">default via uplink gw</text>
+
+  <!-- caddy -->
+  <rect x="470" y="300" width="160" height="50" rx="8" fill="#fff7ed" class="plan"/>
+  <text x="550" y="321" text-anchor="middle" font-size="12.5" font-weight="600" fill="#0f172a">caddy (slice E)</text>
+  <text x="550" y="338" text-anchor="middle" class="s">or curl, on the host</text>
+
+  <!-- nft -->
+  <rect x="470" y="372" width="252" height="132" rx="8" fill="#ffffff" class="built"/>
+  <text x="484" y="392" font-size="11" font-weight="600" fill="#0f172a">nft table inet dassie</text>
+  <text x="484" y="412" class="s">prerouting: drop forged sources</text>
+  <text x="484" y="430" class="s">input: refuse VM → host</text>
+  <text x="484" y="448" class="s">forward: refuse VM ↔ VM, no_egress</text>
+  <text x="484" y="466" class="s">forward: accept egress from @vm_pool</text>
+  <text x="484" y="484" class="s">postrouting: masquerade @vm_pool</text>
+  <text x="484" y="499" class="s" font-style="italic">rules match dt* and sets, never one VM</text>
+
+  <!-- TAPs on the host edge -->
+  <rect x="300" y="152" width="140" height="48" rx="8" fill="#ffffff" class="built"/>
+  <text x="370" y="172" text-anchor="middle" class="m" font-weight="600">dt00001</text>
+  <text x="370" y="189" text-anchor="middle" class="m">10.88.0.2/31</text>
+
+  <line x1="250" y1="426" x2="300" y2="426" class="ln"/>
+  <rect x="300" y="402" width="140" height="48" rx="8" fill="#ffffff" class="built"/>
+  <text x="370" y="422" text-anchor="middle" class="m" font-weight="600">dt00002</text>
+  <text x="370" y="439" text-anchor="middle" class="m">10.88.0.4/31</text>
+  <text x="370" y="470" text-anchor="middle" class="lbl">dassie-tap@b</text>
+  <text x="370" y="140" text-anchor="middle" class="lbl">dassie-tap@a</text>
+
+  <!-- uplink -->
+  <rect x="680" y="236" width="130" height="48" rx="8" fill="#ffffff" class="built"/>
+  <text x="745" y="256" text-anchor="middle" class="m" font-weight="600">eth0 (uplink)</text>
+  <text x="745" y="273" text-anchor="middle" class="m">192.168.5.15</text>
+
+  <!-- internet -->
+  <rect x="840" y="100" width="130" height="64" rx="10" fill="#f1f5f9" class="built"/>
+  <text x="905" y="127" text-anchor="middle" class="t">Internet</text>
+  <text x="905" y="147" text-anchor="middle" class="m">example.com:443</text>
+
+  <!-- egress: VM a -> dt00001 -> forward -> masquerade -> uplink -> internet -->
+  <path d="M250,190 L300,190" class="ok"/>
+  <path d="M440,190 C520,190 560,252 678,252" class="ok" marker-end="url(#ag)"/>
+  <path d="M810,250 C850,250 880,210 890,166" class="ok" marker-end="url(#ag)"/>
+  <text x="482" y="270" class="lbl" fill="#047857">accept, then masquerade:</text>
+  <text x="482" y="284" class="lbl" fill="#047857">src 10.88.0.3 → 192.168.5.15</text>
+
+  <!-- VM a -> VM b: refused -->
+  <path d="M352,200 L352,300" class="no"/>
+  <line x1="344" y1="300" x2="360" y2="316" class="x"/>
+  <line x1="360" y1="300" x2="344" y2="316" class="x"/>
+  <text x="362" y="262" class="lbl" fill="#b91c1c">VM ↔ VM:</text>
+  <text x="362" y="276" class="lbl" fill="#b91c1c">refused at once</text>
+  <text x="362" y="290" class="lbl" fill="#b91c1c">(EHOSTUNREACH)</text>
+
+  <!-- host -> VM a: allowed -->
+  <path d="M470,312 C430,312 420,260 420,203" class="host" marker-end="url(#ab)"/>
+  <text x="376" y="340" class="lbl" fill="#1d4ed8">host → VM:</text>
+  <text x="376" y="354" class="lbl" fill="#1d4ed8">allowed</text>
+
+  <!-- unsolicited inbound: dropped -->
+  <path d="M940,166 C940,300 880,300 812,278" class="drop" marker-end="url(#a)"/>
+  <line x1="866" y1="290" x2="880" y2="304" class="xg"/>
+  <line x1="880" y1="290" x2="866" y2="304" class="xg"/>
+  <text x="840" y="330" class="lbl">unsolicited inbound:</text>
+  <text x="840" y="344" class="lbl">dropped before any dt*</text>
+
+  <!-- refused destinations -->
+  <rect x="780" y="380" width="190" height="124" rx="10" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="794" y="402" font-size="12.5" font-weight="600" fill="#991b1b">refused for every VM</text>
+  <text x="794" y="422" class="s">the host itself: any port</text>
+  <text x="794" y="440" class="s">169.254/16: cloud metadata</text>
+  <text x="794" y="458" class="s">10/8 · 172.16/12 · 192.168/16</text>
+  <text x="794" y="476" class="s">100.64/10 (CGNAT)</text>
+  <text x="794" y="494" class="s" font-style="italic">set no_egress</text>
+  <path d="M722,440 L776,440" class="no" marker-end="url(#ar)"/>
+
+  <text x="30" y="556" class="s">VM N gets the /31 at 10.88.0.0 + 2N (DASSIE_POOL moves the /16). The host end is the even address and the guest's gateway; TAPs are dt + N in 5 digits.</text>
+</svg>

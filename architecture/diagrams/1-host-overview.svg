@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
   <title>Dassie: one host</title>
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -19,7 +19,7 @@
     </style>
   </defs>
 
-  <rect width="1000" height="600" rx="14" fill="#ffffff"/>
+  <rect width="1000" height="700" rx="14" fill="#ffffff"/>
   <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">Dassie on one host</text>
 
   <!-- legend -->
@@ -52,9 +52,11 @@
   <!-- files on disk -->
   <rect x="300" y="70" width="200" height="112" rx="10" fill="#fefce8" class="plan"/>
   <text x="400" y="94" text-anchor="middle" class="t">Files on disk</text>
-  <text x="314" y="118" class="m">/etc/systemd/system/*</text>
-  <text x="314" y="138" class="m">caddy.json (autosave off)</text>
-  <text x="314" y="158" class="m">vms/&lt;id&gt;/config.json</text>
+  <text x="314" y="114" class="m">/etc/systemd/system/*</text>
+  <text x="314" y="130" class="m">/etc/dassie/dassie.nft</text>
+  <text x="314" y="146" class="m">caddy.json (autosave off)</text>
+  <text x="314" y="162" class="m">vms/&lt;id&gt;/config.json</text>
+  <text x="314" y="178" class="m">vms/&lt;id&gt;/net.env</text>
   <text x="400" y="200" text-anchor="middle" class="s">what runs lives here</text>
   <path d="M220,165 L298,165" class="lnp" marker-end="url(#a)"/>
   <text x="226" y="158" class="lbl">render, write</text>
@@ -66,11 +68,16 @@
   <text x="389" y="232" text-anchor="middle" class="lbl">D-Bus + Caddy admin: reload, start, verify</text>
 
   <!-- clients -->
-  <rect x="30" y="482" width="190" height="54" rx="10" fill="#f8fafc" class="built"/>
-  <text x="125" y="514" text-anchor="middle" class="t">Clients</text>
+  <rect x="30" y="540" width="190" height="54" rx="10" fill="#f8fafc" class="built"/>
+  <text x="125" y="572" text-anchor="middle" class="t">Clients</text>
+
+  <!-- internet (egress) -->
+  <rect x="30" y="616" width="190" height="54" rx="10" fill="#f8fafc" class="built"/>
+  <text x="125" y="640" text-anchor="middle" class="t">Internet</text>
+  <text x="125" y="658" text-anchor="middle" class="s">VM egress, as the host</text>
 
   <!-- systemd -->
-  <rect x="560" y="56" width="412" height="520" rx="14" fill="#f8fafc" class="built"/>
+  <rect x="560" y="56" width="412" height="630" rx="14" fill="#f8fafc" class="built"/>
   <text x="578" y="82" class="t">systemd</text>
   <text x="646" y="82" class="s">keeps it all alive · WantedBy= on boot</text>
 
@@ -109,21 +116,37 @@
   <text x="866" y="362" text-anchor="middle" class="s">new version</text>
   <text x="866" y="428" text-anchor="middle" class="s">during a deploy (M4)</text>
 
+  <!-- TAPs (ADR 0008) -->
+  <path d="M670,456 L670,440" class="ln"/>
+  <rect x="580" y="456" width="180" height="56" rx="10" fill="#ffffff" class="built"/>
+  <text x="670" y="477" text-anchor="middle" class="m" font-weight="600">dassie-tap@app-blue</text>
+  <text x="670" y="497" text-anchor="middle" class="m">dt00001 · 10.88.0.2/31</text>
+  <path d="M866,456 L866,440" class="lnp"/>
+  <rect x="776" y="456" width="180" height="56" rx="10" fill="#ffffff" class="plan"/>
+  <text x="866" y="477" text-anchor="middle" class="m" font-weight="600">dassie-tap@app-green</text>
+  <text x="866" y="497" text-anchor="middle" class="m">dt00002 · 10.88.0.4/31</text>
+
   <!-- caddy -->
-  <rect x="580" y="480" width="376" height="62" rx="10" fill="#fff7ed" class="plan"/>
-  <text x="768" y="506" text-anchor="middle" class="t">caddy.service</text>
-  <text x="768" y="526" text-anchor="middle" class="s">hostname → VM IP · route swap for blue/green</text>
-  <path d="M670,480 L670,440" class="lnp" marker-end="url(#a)"/>
-  <text x="678" y="466" class="lbl">TAP</text>
-  <path d="M866,480 L866,440" stroke="#94a3b8" stroke-width="1.5" fill="none" stroke-dasharray="2 4" marker-end="url(#a)"/>
-  <text x="874" y="466" class="lbl">after health gate</text>
+  <rect x="580" y="538" width="376" height="56" rx="10" fill="#fff7ed" class="plan"/>
+  <text x="768" y="561" text-anchor="middle" class="t">caddy.service</text>
+  <text x="768" y="580" text-anchor="middle" class="s">hostname → guest IP · route swap for blue/green</text>
+  <path d="M670,538 L670,514" class="lnp" marker-end="url(#a)"/>
+  <path d="M866,538 L866,514" stroke="#94a3b8" stroke-width="1.5" fill="none" stroke-dasharray="2 4" marker-end="url(#a)"/>
+  <text x="874" y="530" class="lbl">after health gate</text>
+
+  <!-- host networking (ADR 0008) -->
+  <rect x="580" y="614" width="376" height="56" rx="10" fill="#ffffff" class="built"/>
+  <text x="768" y="637" text-anchor="middle" class="t">dassie-net.service</text>
+  <text x="768" y="656" text-anchor="middle" class="s">nft table inet dassie · VM ↔ VM refused · egress NAT</text>
+  <path d="M578,643 L222,643" class="ln" marker-end="url(#a)"/>
+  <text x="389" y="635" text-anchor="middle" class="lbl">egress, masqueraded (no metadata, no LAN)</text>
   <!-- vsock -->
   <path d="M220,282 L602,282" stroke="#059669" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-start="url(#ag)" marker-end="url(#ag)"/>
   <text x="389" y="274" text-anchor="middle" font-size="11" fill="#047857">vsock: events, health, stop</text>
 
   <!-- clients arrow -->
-  <path d="M220,509 L578,509" class="lnp" marker-end="url(#a)"/>
-  <text x="389" y="501" text-anchor="middle" class="lbl">HTTPS</text>
+  <path d="M220,567 L578,567" class="lnp" marker-end="url(#a)"/>
+  <text x="389" y="559" text-anchor="middle" class="lbl">HTTPS</text>
   <!-- image store (M1 slice A); last, so its arrow draws over the systemd card -->
   <rect x="300" y="318" width="200" height="104" rx="10" fill="#fefce8" class="built"/>
   <text x="400" y="342" text-anchor="middle" class="t">Images on disk</text>

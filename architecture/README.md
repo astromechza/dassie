@@ -42,3 +42,14 @@ outside the data path (ADR 0002).
 ADR 0009).
 
 ![From OCI image to rootfs](diagrams/4-image-build.svg)
+
+**VM networking.** A routed TAP and a /31 per VM, with no bridge. The host
+routes every packet, and one nft table refuses VM ↔ VM and VM → host and
+masquerades egress (ADR 0008).
+
+![VM networking: a routed TAP per VM](diagrams/5-vm-network.svg)
+
+**One packet from a VM.** The `inet dassie` rules a packet meets, hook by
+hook, and the verdict of each (ADR 0008).
+
+![One packet from a VM, hook by hook](diagrams/6-packet-path.svg)
