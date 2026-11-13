@@ -103,7 +103,9 @@ fn builds_ext4_with_ownership_and_reuses_it() {
     let image = store.image("app", &Platform::host()).unwrap();
     let out = tempfile::tempdir().unwrap();
 
-    let path = build(&store, &image, out.path(), &Options::default()).unwrap();
+    let path = build(&store, &image, out.path(), &Options::default())
+        .unwrap()
+        .path;
     let meta = fs::metadata(&path).unwrap();
     assert_eq!(meta.permissions().mode() & 0o777, 0o444);
 
@@ -130,14 +132,18 @@ fn builds_ext4_with_ownership_and_reuses_it() {
     // A second build is a no-op.
     let mtime = meta.modified().unwrap();
     assert_eq!(
-        build(&store, &image, out.path(), &Options::default()).unwrap(),
+        build(&store, &image, out.path(), &Options::default())
+            .unwrap()
+            .path,
         path
     );
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
 
     // The same image builds to the same bytes elsewhere.
     let again = tempfile::tempdir().unwrap();
-    let other = build(&store, &image, again.path(), &Options::default()).unwrap();
+    let other = build(&store, &image, again.path(), &Options::default())
+        .unwrap()
+        .path;
     assert_eq!(
         Digest::of(&fs::read(&path).unwrap()),
         Digest::of(&fs::read(&other).unwrap())

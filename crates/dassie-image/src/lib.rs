@@ -24,7 +24,7 @@ mod flatten;
 mod oci;
 mod store;
 
-pub use build::{FORMAT_VERSION, Options, artefact_path, build};
+pub use build::{BuildOutput, FORMAT_VERSION, Options, artefact_path, build};
 pub use digest::{Digest, ParseError, VerifyingReader};
 pub use flatten::{Stats, Tree};
 pub use oci::{Compression, Descriptor, Index, Manifest, Platform};

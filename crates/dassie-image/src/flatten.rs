@@ -30,8 +30,12 @@ pub(crate) const DASSIE_DIR: &str = ".dassie";
 const WHITEOUT: &str = ".wh.";
 const OPAQUE: &str = ".wh..wh..opq";
 
-/// Filesystem block size the size estimate rounds to.
-const BLOCK: u64 = 4096;
+/// The ext4 block size: the size estimate rounds to it, and `build` passes it
+/// to mkfs (`-b`). It is pinned rather than left to mke2fs, whose choice
+/// depends on the filesystem size and the host's `mke2fs.conf`, so the
+/// estimate and the result agree on every host. 4096 also matches the
+/// guest's page size.
+pub(crate) const BLOCK_SIZE: u64 = 4096;
 
 #[derive(Debug)]
 pub enum Error {
@@ -214,8 +218,8 @@ impl Tree {
         for (path, node) in &self.nodes {
             stats.entries += 1;
             stats.bytes += match &node.kind {
-                Kind::Dir { .. } => BLOCK,
-                Kind::Other { size } => size.div_ceil(BLOCK).max(1) * BLOCK,
+                Kind::Dir { .. } => BLOCK_SIZE,
+                Kind::Other { size } => size.div_ceil(BLOCK_SIZE).max(1) * BLOCK_SIZE,
                 Kind::Hardlink {
                     target,
                     target_source,
@@ -830,7 +834,7 @@ pub(crate) mod tests {
             tree.finish().unwrap(),
             Stats {
                 entries: 2,
-                bytes: 2 * BLOCK
+                bytes: 2 * BLOCK_SIZE
             }
         );
     }

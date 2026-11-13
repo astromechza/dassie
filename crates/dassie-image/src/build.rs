@@ -22,9 +22,24 @@ use crate::store::{self, Image, Store};
 /// same image, so old artefacts are never reused or overwritten.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// Fixed filesystem timestamps (superblock, root, `lost+found`), so the same
-/// image always builds to the same bytes. Inode times come from the layers.
+/// mkfs's own clock, as seconds since the epoch, so the same image always
+/// builds to the same bytes.
+///
+/// e2fsprogs stamps the superblock (`s_mkfs_time`, `s_wtime`), the root
+/// directory, `lost+found` and each inode's creation time (`crtime`) with
+/// "now". `E2FSPROGS_FAKE_TIME` replaces that clock (e2fsprogs
+/// `lib/ext2fs/initialize.c`). File times still come from the layers. The
+/// value is `1` because e2fsprogs treats `0` as unset and uses the real clock
+/// (`fs->now ? fs->now : time(0)`).
+///
+/// `SOURCE_DATE_EPOCH` would also fix the clock, but e2fsprogs then clamps
+/// every inode time down to it (`clamped_time` in `misc/create_inode.c`),
+/// which would erase the image's mtimes. So it is removed from mkfs's
+/// environment.
 const FAKE_TIME: &str = "1";
+
+/// The filesystem label.
+const LABEL: &str = "dassie";
 
 /// Numbers each build's temporary file, so concurrent builds of one image in
 /// one process never share it. The pid separates processes.
@@ -32,8 +47,23 @@ static BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Room for ext4 metadata and the journal on top of the content estimate.
 const HEADROOM_MIB: u64 = 64;
-/// Spare inodes on top of one per entry.
+/// Inodes on top of one per entry (`-N`).
+///
+/// mke2fs reserves inodes 1-10 and gives inode 11 to `lost+found`. The rest
+/// is headroom for apps that create files while the root drive is still
+/// booted read-write (until M1 slice C makes it read-only). 1024 inodes cost
+/// 256 KiB of inode table at the default 256-byte inode size. mke2fs rounds
+/// `-N` up to fill whole inode groups anyway, so the exact figure matters
+/// little.
 const SPARE_INODES: u64 = 1024;
+
+/// What [`build`] produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BuildOutput {
+    /// The read-only ext4 artefact (see [`artefact_path`]).
+    pub path: PathBuf,
+}
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -107,10 +137,10 @@ pub fn build(
     image: &Image,
     out_dir: &Path,
     opts: &Options,
-) -> Result<PathBuf, Error> {
+) -> Result<BuildOutput, Error> {
     let path = artefact_path(out_dir, &image.digest);
     if path.exists() {
-        return Ok(path);
+        return Ok(BuildOutput { path });
     }
     for layer in &image.manifest.layers {
         if Compression::of_layer(&layer.media_type).is_none() {
@@ -148,7 +178,7 @@ pub fn build(
     if result.is_err() {
         drop(fs::remove_file(&tmp));
     }
-    result.map(|()| path)
+    result.map(|()| BuildOutput { path })
 }
 
 /// Runs `mkfs.ext4 -d -` on `tmp`, streaming the flattened tar to it.
@@ -164,10 +194,17 @@ fn mkfs(
     let uuid = image.digest.uuid();
     let mut child = Command::new(&opts.mkfs)
         .env("E2FSPROGS_FAKE_TIME", FAKE_TIME)
-        // Takes precedence over the fake time in e2fsprogs >= 1.47.1, so an
-        // inherited one would make builds differ between hosts.
+        // Overrides the fake time and clamps inode times; see FAKE_TIME.
         .env_remove("SOURCE_DATE_EPOCH")
-        .args(["-q", "-F", "-b", "4096", "-L", "dassie", "-U", &uuid, "-E"])
+        .args([
+            "-q",
+            "-F",
+            "-b",
+            &flatten::BLOCK_SIZE.to_string(),
+            "-L",
+            LABEL,
+        ])
+        .args(["-U", &uuid, "-E"])
         .arg(format!("root_owner=0:0,hash_seed={uuid}"))
         .arg("-N")
         .arg((stats.entries + SPARE_INODES).to_string())
@@ -334,7 +371,10 @@ mod tests {
         let opts = Options {
             mkfs: PathBuf::from("/nonexistent/mkfs"),
         };
-        assert_eq!(build(&store, &image, out.path(), &opts).unwrap(), existing);
+        assert_eq!(
+            build(&store, &image, out.path(), &opts).unwrap().path,
+            existing
+        );
 
         image.manifest.layers.push(Descriptor {
             media_type: "application/vnd.oci.image.layer.v1.tar+zstd".into(),

@@ -63,7 +63,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let image = store
         .image(reference, &platform)
         .map_err(|e| e.to_string())?;
-    let path = build(&store, &image, &out, &Options::default()).map_err(|e| e.to_string())?;
-    println!("{}", path.display());
+    let built = build(&store, &image, &out, &Options::default()).map_err(|e| e.to_string())?;
+    println!("{}", built.path.display());
     Ok(())
 }
