@@ -523,11 +523,13 @@ fn parse_bearer(header: &str) -> Option<BTreeMap<String, String>> {
     }
     let mut params = BTreeMap::new();
     loop {
-        rest = rest.trim_start_matches([' ', ',']);
+        rest = rest.trim_start_matches([' ', '\t', ',']);
         if rest.is_empty() {
             return Some(params);
         }
         let (key, after) = rest.split_once('=')?;
+        // RFC 9110 allows optional whitespace around `=`.
+        let after = after.trim_start_matches([' ', '\t']);
         let (value, after) = if let Some(q) = after.strip_prefix('"') {
             unquote(q)?
         } else {

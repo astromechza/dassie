@@ -357,6 +357,11 @@ fn parses_bearer_challenges() {
         (p["realm"].as_str(), p["scope"].as_str()),
         ("https://x/t", "a\"b")
     );
+    let p = parse_bearer("Bearer realm = \"https://x/t\",\tservice =\t\"s\"").unwrap();
+    assert_eq!(
+        (p["realm"].as_str(), p["service"].as_str()),
+        ("https://x/t", "s")
+    );
     assert!(parse_bearer(r#"Basic realm="x""#).is_none());
     assert!(parse_bearer(r#"Bearer realm="unterminated"#).is_none());
 }
