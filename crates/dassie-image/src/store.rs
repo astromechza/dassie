@@ -70,7 +70,8 @@ impl fmt::Display for Error {
                 )
             }
             Self::WrongPlatform(d, p) => {
-                write!(f, "image {d} is for {}/{}", p.os, p.architecture)
+                write!(f, "image {d} is for {}/{}", p.os, p.architecture)?;
+                p.variant.as_ref().map_or(Ok(()), |v| write!(f, "/{v}"))
             }
             Self::TooDeep(d) => write!(f, "index {d} nests too deeply"),
         }
@@ -206,27 +207,29 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// Rejects an image whose config names a different OS or architecture. A
-/// config without them (only seen in hand-made images) is accepted.
+/// Rejects an image whose config names a different OS, architecture or (when
+/// one is requested) variant, by the same rule as index selection. A config
+/// without OS or architecture (only seen in hand-made images) is accepted.
 fn check_platform(digest: &Digest, config: &[u8], want: &Platform) -> Result<(), Error> {
     #[derive(Deserialize)]
     struct Fields {
         os: Option<String>,
         architecture: Option<String>,
+        variant: Option<String>,
     }
     let got: Fields = serde_json::from_slice(config).map_err(|e| Error::Json(digest.clone(), e))?;
-    let differs = |got: Option<&String>, want: &String| got.is_some_and(|g| g != want);
-    if differs(got.os.as_ref(), &want.os) || differs(got.architecture.as_ref(), &want.architecture)
-    {
-        return Err(Error::WrongPlatform(
-            digest.clone(),
-            Platform::new(
-                got.os.as_deref().unwrap_or("?"),
-                got.architecture.as_deref().unwrap_or("?"),
-            ),
-        ));
+    let got = Platform {
+        os: got.os.unwrap_or_else(|| want.os.clone()),
+        architecture: got
+            .architecture
+            .unwrap_or_else(|| want.architecture.clone()),
+        variant: got.variant,
+    };
+    if want.accepts(&got) {
+        Ok(())
+    } else {
+        Err(Error::WrongPlatform(digest.clone(), got))
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -343,6 +346,18 @@ pub(crate) mod tests {
         ));
         assert!(matches!(
             store.image(&d.to_string(), &arm64),
+            Err(Error::WrongPlatform(..))
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = br#"{"os":"linux","architecture":"arm","variant":"v6"}"#;
+        let d = layout(dir.path(), "app", config, &[]);
+        let store = Store::open(dir.path()).unwrap();
+        let mut v7 = Platform::new("linux", "arm");
+        assert!(store.image(&d.to_string(), &v7).is_ok());
+        v7.variant = Some("v7".into());
+        assert!(matches!(
+            store.image(&d.to_string(), &v7),
             Err(Error::WrongPlatform(..))
         ));
     }

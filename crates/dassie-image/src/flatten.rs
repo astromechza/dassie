@@ -342,9 +342,9 @@ impl Tree {
     }
 
     /// Removes what layers below `layer` put at `path` (when `itself`) and
-    /// under it. Entries `layer` itself added survive, so a whiteout that
-    /// comes after them in the tar leaves their parent implied, as if it had
-    /// come first.
+    /// under it. Entries `layer` itself added survive, so a whiteout or
+    /// opaque marker that comes after them in the tar leaves their parents
+    /// implied, as if it had come first.
     fn remove(&mut self, path: &Path, layer: usize, itself: bool) {
         self.remove_children(path, Some(layer));
         if itself
@@ -354,15 +354,15 @@ impl Tree {
                 .is_some_and(|n| n.source.layer() < layer)
         {
             self.nodes.remove(path);
-            let survivor = self
-                .nodes
-                .range::<Path, _>((Bound::Excluded(path), Bound::Unbounded))
-                .next()
-                .map(|(p, _)| p.clone())
-                .filter(|p| p.starts_with(path));
-            if let Some(child) = survivor {
-                self.parents(&child, layer);
-            }
+        }
+        let survivors: Vec<PathBuf> = self
+            .nodes
+            .range::<Path, _>((Bound::Excluded(path), Bound::Unbounded))
+            .take_while(|(p, _)| p.starts_with(path))
+            .map(|(p, _)| p.clone())
+            .collect();
+        for child in survivors {
+            self.parents(&child, layer);
         }
     }
 
@@ -665,6 +665,39 @@ pub(crate) mod tests {
         // The lower `d` is gone; this one is implied by the upper layer.
         let d = find(&out, "d");
         assert_eq!((d.mode, d.uid), (0o755, 0));
+    }
+
+    #[test]
+    fn late_whiteouts_keep_every_survivors_parents() {
+        let base = Layer::default()
+            .dir("d/a", 0o755, 0)
+            .dir("d/b", 0o755, 0)
+            .dir("o/a", 0o755, 0)
+            .file("o/a/old", "x", 0o644, 0)
+            .tar();
+        let upper = Layer::default()
+            .file("d/a/x", "x", 0o644, 0)
+            .file("d/b/y", "y", 0o644, 0)
+            .file(".wh.d", "", 0o644, 0)
+            .file("o/a/new", "n", 0o644, 0)
+            .file("o/.wh..wh..opq", "", 0o644, 0)
+            .tar();
+        let out = flatten(&[base, upper], b"{}").unwrap();
+        assert_eq!(
+            paths(&out),
+            [
+                "d",
+                "d/a",
+                "d/b",
+                "o",
+                "o/a",
+                "d/a/x",
+                "d/b/y",
+                "o/a/new",
+                ".dassie",
+                ".dassie/image.json"
+            ]
+        );
     }
 
     #[test]

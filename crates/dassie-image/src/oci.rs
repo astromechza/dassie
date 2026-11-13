@@ -77,7 +77,7 @@ impl Platform {
 
     /// Whether a descriptor's platform satisfies this one. A requested
     /// variant must match; an unrequested one is ignored.
-    fn accepts(&self, other: &Self) -> bool {
+    pub(crate) fn accepts(&self, other: &Self) -> bool {
         self.os == other.os
             && self.architecture == other.architecture
             && (self.variant.is_none() || self.variant == other.variant)
