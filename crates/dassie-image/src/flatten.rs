@@ -42,7 +42,8 @@ pub enum Error {
     Io(io::Error),
     /// A path with a `..` component.
     BadPath(PathBuf),
-    /// An entry type dassie does not carry over (GNU sparse files).
+    /// An entry type dassie does not carry over: GNU sparse files, and PAX
+    /// or GNU extension headers in a format tar did not recognise.
     Unsupported(PathBuf, EntryType),
     /// A hard link to a path no lower entry created.
     DanglingLink {
@@ -423,7 +424,15 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
     if path.starts_with(DASSIE_DIR) {
         return Ok(Action::Skip);
     }
-    if entry_type.is_gnu_sparse() {
+    // tar only hands over PAX and GNU long name headers as entries when it
+    // does not recognise the header's format, so it has not applied them.
+    // Copied out, mkfs's libarchive might, and read a different archive from
+    // the one checked here. `pax` would also consume their data.
+    if entry_type.is_gnu_sparse()
+        || entry_type.is_pax_local_extensions()
+        || entry_type.is_gnu_longname()
+        || entry_type.is_gnu_longlink()
+    {
         return Err(Error::Unsupported(path, entry_type));
     }
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
@@ -724,6 +733,25 @@ pub(crate) mod tests {
             .tar();
         let out = flatten(&[base, upper], b"{}").unwrap();
         assert_eq!(paths(&out), ["d", "o", ".dassie", ".dassie/image.json"]);
+    }
+
+    #[test]
+    fn rejects_extension_headers_tar_did_not_apply() {
+        // Found by the flatten_bytes fuzz target: in a v7 header, tar yields
+        // a PAX header as an entry of its own. Copied out, it corrupted the
+        // stream.
+        for ty in [EntryType::XHeader, EntryType::GNULongName] {
+            let mut tar = Builder::new(Vec::new());
+            let mut h = Header::new_old();
+            h.set_path("ext").unwrap();
+            h.set_entry_type(ty);
+            h.set_size(16);
+            h.set_cksum();
+            tar.append(&h, b"16 path=.dassie\n".as_slice()).unwrap();
+            let layer = Layer(tar).file("a", "x", 0o644, 0).tar();
+            let err = flatten(&[layer], b"{}").unwrap_err();
+            assert!(matches!(err, Error::Unsupported(_, t) if t == ty), "{err}");
+        }
     }
 
     #[test]
