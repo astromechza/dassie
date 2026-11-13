@@ -58,7 +58,7 @@
   <rect x="510" y="150" width="200" height="160" rx="10" fill="#eef2ff" class="built"/>
   <text x="610" y="174" text-anchor="middle" class="t">pass 2: emit</text>
   <text x="610" y="191" text-anchor="middle" class="s">re-reads and re-checks layers</text>
-  <text x="524" y="218" class="s">1. every dir, sorted</text>
+  <text x="524" y="218" class="s">1. root, every dir, sorted</text>
   <text x="524" y="236" class="s">2. other winners, in</text>
   <text x="538" y="254" class="s">layer order</text>
   <text x="524" y="272" class="s">3. <tspan class="m">/.dassie/image.json</tspan></text>
@@ -66,10 +66,10 @@
 
   <!-- 4. mkfs -->
   <rect x="750" y="150" width="220" height="160" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
-  <text x="860" y="174" text-anchor="middle" class="m" font-size="13" font-weight="600">mkfs.ext4 -d -</text>
+  <text x="860" y="174" text-anchor="middle" class="m" font-size="13" font-weight="600">mkfs.erofs --tar=f</text>
   <text x="860" y="191" text-anchor="middle" class="s">tar on stdin</text>
   <text x="764" y="218" class="s">temp file → rename, 0444</text>
-  <text x="764" y="240" class="m">rootfs/sha256-&lt;hex&gt;.v1.ext4</text>
+  <text x="764" y="240" class="m">rootfs/sha256-&lt;hex&gt;.v3.erofs</text>
   <text x="764" y="266" class="s">same image → same bytes</text>
   <text x="764" y="284" class="s">already built → reused</text>
 
@@ -110,7 +110,7 @@
   <rect x="832" y="400" width="130" height="40" rx="8" fill="#ffffff" class="plan"/>
   <text x="897" y="424" text-anchor="middle" class="m">clone (M5)</text>
   <text x="532" y="472" class="s">One file, attached read-only to every VM of that version, with</text>
-  <text x="532" y="490" class="s">an overlay in the guest (slice C). It is never modified, so M5</text>
+  <text x="532" y="490" class="s">an overlay in the guest. It is never modified, so M5</text>
   <text x="532" y="508" class="s">snapshots stay valid, and M6 GC counts snapshots and VMs as</text>
   <text x="532" y="526" class="s">references.</text>
 </svg>

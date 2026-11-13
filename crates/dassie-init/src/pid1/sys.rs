@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +24,13 @@ use super::Result;
 
 // Mounts and switch-root.
 
+/// The root drive, read-only: the overlay's lower layer.
+const LOWER: &str = "/lower";
+/// The tmpfs holding the overlay's upper layer and its workdir.
+const RW: &str = "/rw";
+const UPPER: &str = "/rw/upper";
+const WORK: &str = "/rw/work";
+/// The overlay, before it becomes `/`.
 const NEW_ROOT: &str = "/newroot";
 /// Mounts carried over from the initramfs into the app rootfs.
 const MOVED: [&str; 3] = ["/dev", "/proc", "/sys"];
@@ -69,25 +76,57 @@ pub(super) fn reopen_console() -> Result<()> {
     Ok(())
 }
 
-/// Mounts the root drive at `/newroot`, moves `/dev`, `/proc` and `/sys`
-/// into it, and makes it `/`, as busybox `switch_root` does. The initramfs
-/// is a rootfs mount, which `pivot_root` cannot leave, so this moves the new
-/// root over `/` and chroots into it. PID 1 keeps running throughout.
+/// Mounts the root drive read-only at `/lower` and a tmpfs at `/rw`, and
+/// overlays them at `/newroot`. Then moves `/dev`, `/proc` and `/sys` into
+/// it and makes it `/`, as busybox `switch_root` does. The initramfs is a
+/// rootfs mount, which `pivot_root` cannot leave, so this moves the new root
+/// over `/` and chroots into it. PID 1 keeps running throughout.
+///
+/// The drive is never written, so every VM of an image can share it, and
+/// every boot starts from a clean root. `/lower` and `/rw` stay mounted in
+/// the initramfs underneath, out of the app's reach.
 pub(super) fn switch_root(root: &RootSpec) -> Result<()> {
     wait_for(&root.device)?;
-    mkdir(NEW_ROOT)?;
-    let mut flags = MsFlags::empty();
-    if root.read_only {
-        flags |= MsFlags::MS_RDONLY;
-    }
+    mkdir(LOWER)?;
     mount(
         Some(root.device.as_str()),
-        NEW_ROOT,
+        LOWER,
         Some(root.fstype.as_str()),
-        flags,
+        MsFlags::MS_RDONLY,
         None::<&str>,
     )
-    .map_err(|e| format!("mount {} ({}) on {NEW_ROOT}: {e}", root.device, root.fstype))?;
+    .map_err(|e| format!("mount {} ({}) on {LOWER}: {e}", root.device, root.fstype))?;
+
+    // The kernel's default size: half the guest's RAM. No nosuid, nodev or
+    // noexec: this is the app's `/`, so it needs whatever the image has.
+    mkdir(RW)?;
+    mount(
+        Some("tmpfs"),
+        RW,
+        Some("tmpfs"),
+        MsFlags::empty(),
+        None::<&str>,
+    )
+    .map_err(|e| format!("mount tmpfs on {RW}: {e}"))?;
+    mkdir(UPPER)?;
+    mkdir(WORK)?;
+    // The merged root takes its mode and owner from the upper directory,
+    // which would otherwise be the tmpfs root's `1777 root`.
+    let lower = fs::metadata(LOWER).map_err(|e| format!("stat {LOWER}: {e}"))?;
+    std::os::unix::fs::chown(UPPER, Some(lower.uid()), Some(lower.gid()))
+        .map_err(|e| format!("chown {UPPER}: {e}"))?;
+    fs::set_permissions(UPPER, fs::Permissions::from_mode(lower.mode() & 0o7777))
+        .map_err(|e| format!("chmod {UPPER}: {e}"))?;
+
+    mkdir(NEW_ROOT)?;
+    mount(
+        Some("overlay"),
+        NEW_ROOT,
+        Some("overlay"),
+        MsFlags::empty(),
+        Some(format!("lowerdir={LOWER},upperdir={UPPER},workdir={WORK}").as_str()),
+    )
+    .map_err(|e| format!("mount overlay on {NEW_ROOT}: {e}"))?;
 
     for dir in MOVED {
         let target = format!("{NEW_ROOT}{dir}");
@@ -176,8 +215,8 @@ pub(super) fn write_resolv_conf(contents: &str) -> Result<()> {
         .map_err(|e| format!("write {PATH}: {e}").into())
 }
 
-/// Creates a directory if it is missing. In the app rootfs this needs a
-/// writable mount, so a read-only rootfs must already have the directories.
+/// Creates a directory if it is missing. In the app rootfs it lands in the
+/// overlay's upper layer, so the image need not have it.
 fn mkdir(path: &str) -> Result<()> {
     if Path::new(path).is_dir() {
         return Ok(());

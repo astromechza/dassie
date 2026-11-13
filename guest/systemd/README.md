@@ -30,17 +30,20 @@ guest/firecracker.sh x86_64
 cargo build --release -p dassie-proto --example listener
 ```
 
-Install them, plus one instance called `test`:
+Install them, plus one instance called `test`. The rootfs goes in once, read-only,
+under `/var/lib/dassie/rootfs/`. Every instance attaches that same file as a
+read-only drive, and the guest writes only to a tmpfs overlay
+([ADR 0006](../../architecture/0006-guest-assets-layout.md)):
 
 ```sh
 G=target/guest/x86_64
 sudo install -m 0755 $G/firecracker /usr/local/bin/firecracker
 sudo install -m 0755 target/release/examples/listener /usr/local/bin/dassie-listener
-sudo install -d /var/lib/dassie/guest /var/lib/dassie/vms/test /run/dassie
+sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test /run/dassie
 sudo install -m 0644 $G/vmlinux $G/initramfs.cpio.gz /var/lib/dassie/guest/
-sudo install -m 0644 $G/rootfs.ext4 /var/lib/dassie/vms/test/
+sudo install -m 0444 $G/rootfs.erofs /var/lib/dassie/rootfs/test.erofs
 guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
-  /var/lib/dassie/vms/test/rootfs.ext4 /run/dassie/test.vsock "dassie.instance=test" |
+  /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock "dassie.instance=test" |
   sudo tee /var/lib/dassie/vms/test/config.json
 sudo install -m 0644 guest/systemd/fc@.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -123,7 +126,7 @@ sudo install -m 0644 guest/systemd/dassie-net.service guest/systemd/dassie-tap@.
 sudo install -m 0644 guest/systemd/fc@.service.d/net.conf /etc/systemd/system/fc@.service.d/
 guest/net-env.sh 1 | sudo tee /var/lib/dassie/vms/test/net.env
 FC_NET_ENV=/var/lib/dassie/vms/test/net.env guest/vm-config.sh /var/lib/dassie/guest/vmlinux \
-  /var/lib/dassie/guest/initramfs.cpio.gz /var/lib/dassie/vms/test/rootfs.ext4 \
+  /var/lib/dassie/guest/initramfs.cpio.gz /var/lib/dassie/rootfs/test.erofs \
   /run/dassie/test.vsock "dassie.instance=test" |
   sudo tee /var/lib/dassie/vms/test/config.json
 sudo systemctl daemon-reload
@@ -158,8 +161,8 @@ curl http://10.88.0.3:8080/crash
 ```
 
 `/crash` makes the testapp abort, so it dies of SIGABRT. Without a NIC, put
-`dassie.env=EXIT_AFTER=20` into the config's extra boot args instead. The
-testapp then exits 0 on its own every 20 s.
+`dassie.env=CRASH_AFTER=20` into the config's extra boot args instead. The
+testapp then aborts on its own 20 s after every start.
 
 **Expected:**
 
@@ -227,23 +230,53 @@ shows the guest console. A listener started afterwards still receives
 `sudo systemctl disable --now fc@test`. With networking, also run
 `sudo systemctl stop dassie-tap@test`, because the TAP outlives the VM.
 
-### Bonus: the start limit
+### 5. Two VMs share one rootfs, and writes vanish on restart
 
-Set `dassie.env=EXIT_AFTER=1` in the config's extra boot args and restart the
-unit.
+Add a second instance on the same rootfs file. Use different vsock sockets
+and no NIC, and make it crash every 20 s:
 
-**Expected:** each boot exits within seconds. After 5 starts in 60 s, the unit
-is `failed` with `start-limit-hit`, and it stays down. To recover, fix the
-config, then run `sudo systemctl reset-failed fc@test` and
-`sudo systemctl start fc@test`.
+```sh
+sudo install -d /var/lib/dassie/vms/test2
+guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
+  /var/lib/dassie/rootfs/test.erofs /run/dassie/test2.vsock \
+  "dassie.instance=test2 dassie.env=CRASH_AFTER=20" |
+  sudo tee /var/lib/dassie/vms/test2/config.json
+sha256sum /var/lib/dassie/rootfs/test.erofs
+sudo systemctl start fc@test fc@test2
+sudo ls -l /proc/$(systemctl show -p MainPID --value fc@test)/fd \
+  /proc/$(systemctl show -p MainPID --value fc@test2)/fd | grep test.erofs
+```
 
-### 5. Network isolation and egress
+At startup, testapp creates `/tmp/testapp.boot` on its root filesystem. If
+the file is already there, testapp exits 1, because the overlay should have
+discarded it.
+
+**Expected:**
+
+- Both VMs reach `Ready`, and both Firecracker processes hold the same
+  `test.erofs` open.
+- Each boot of `fc@test2` logs `testapp: / is 0755 root` and
+  `testapp: clean root, write ok`. After `CRASH_AFTER=20 elapsed, aborting`
+  and the restart, the next boot logs `clean root` again, not `stale write
+  from a previous boot`.
+- `sha256sum` of the rootfs is unchanged after any number of restarts.
+- To clean up, run `sudo systemctl stop fc@test2`.
+
+Leave `is_read_only: true` in the config, even though the file is `0444`.
+Firecracker run as root opens a drive read-write unless the config says
+otherwise. dassie-init mounts it read-only either way, but a root process in
+the guest could still write `/dev/vda` directly, and so the file every VM
+shares.
+
+### 6. Network isolation and egress
 
 Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
-Set them up as for `test` above, with their own directory, `net.env` and
-config. `a` reuses `test`'s index, and starting its TAP would delete `test`'s
-live `dt1`, so first run `sudo systemctl stop fc@test dassie-tap@test`. The testapp's `/dial?addr=HOST:PORT` opens a TCP connection from inside
-the guest and reports the result:
+Set them up as for `test` above. They share `test.erofs`, and each has its own
+directory, `net.env` and config. `a` reuses `test`'s index, and starting its
+TAP would delete `test`'s live `dt1`, so first run
+`sudo systemctl stop fc@test dassie-tap@test`. The testapp's
+`/dial?addr=HOST:PORT` opens a TCP connection from inside the guest and
+reports the result:
 
 ```sh
 curl 'http://10.88.0.3:8080/dial?addr=10.88.0.5:8080'   # VM -> VM
@@ -261,3 +294,13 @@ curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
 - `curl http://10.88.0.5:8080/` from the host still answers `ok`.
 - Stopping `fc@a` and `dassie-tap@a` removes `dt1`. Starting `fc@a` again
   recreates it, even if a stale `dt1` was left behind.
+
+### Bonus: the start limit
+
+Set `dassie.env=EXIT_AFTER=1` in the config's extra boot args and restart the
+unit.
+
+**Expected:** each boot exits within seconds. After 5 starts in 60 s, the unit
+is `failed` with `start-limit-hit`, and it stays down. To recover, fix the
+config, then run `sudo systemctl reset-failed fc@test` and
+`sudo systemctl start fc@test`.

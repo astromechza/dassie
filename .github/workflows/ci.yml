@@ -205,8 +205,11 @@ jobs:
           path: ${{ runner.temp }}/guest/x86_64/vmlinux
           key: ${{ steps.kernel.outputs.cache-primary-key }}
 
+      # The test rootfs is erofs, like image artefacts (ADR 0009).
       - name: Build initramfs and rootfs
         run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends erofs-utils
           guest/initramfs.sh x86_64
           guest/rootfs.sh x86_64
 

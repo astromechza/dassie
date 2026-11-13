@@ -57,9 +57,9 @@
     <rect x="607" y="92" width="170" height="104" rx="10" class="boot"/>
     <circle cx="627" cy="112" r="10" fill="#4f46e5"/><text x="627" y="116" text-anchor="middle" class="n">4</text>
     <text x="644" y="117" class="t">switch-root</text>
-    <text x="621" y="142" class="s">vda on /newroot; move</text>
-    <text x="621" y="160" class="s">/dev /proc /sys; chroot</text>
-    <text x="621" y="176" class="s">+ /dev/std*, /dev/shm</text>
+    <text x="621" y="142" class="s">overlay: ro vda + tmpfs</text>
+    <text x="621" y="160" class="s">move /dev /proc /sys</text>
+    <text x="621" y="176" class="s">chroot; /dev/std*, shm</text>
   </g>
   <g>
     <rect x="799" y="92" width="170" height="104" rx="10" class="run"/>

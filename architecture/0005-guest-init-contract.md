@@ -104,6 +104,18 @@ messages, so it runs as an ordinary process in tests, as ADR 0003 requires. The
 Linux-only PID-1 layer turns signals into those messages and reaps every
 child with `waitpid(-1)`. It also does the mounts, chroot and reboot.
 
+**Root filesystem.** _Added 2026-11-13, for M1 slice C:_ the image's files
+are read-only. `/` is writable only through an overlay whose upper layer is a
+tmpfs (ADR 0006), so:
+
+- writes to `/` live in guest RAM and are discarded at every reboot, which
+  includes every entrypoint exit;
+- the upper layer is capped at the kernel's tmpfs default, half the guest's
+  RAM, and a full one returns `ENOSPC`. `/dev/shm` has its own cap of the
+  same size, so together they can still exhaust guest memory;
+- nothing persists across boots until volumes exist. The root's mode and
+  owner are the image's, not tmpfs's `1777`.
+
 The shared-initramfs and switch-root layout is a separate decision, recorded
 in [ADR 0006](0006-guest-assets-layout.md).
 
@@ -120,3 +132,6 @@ in [ADR 0006](0006-guest-assets-layout.md).
 - The kernel cmdline is readable by the app via `/proc/cmdline`, and env
   overrides travel there, so they must not carry secrets (see ADR 0004).
 - Images whose `User` relies on supplementary groups lose those groups.
+- _Added 2026-11-13, for M1 slice C:_ an app that keeps state in its root
+  filesystem loses it at every restart, as a container without volumes does.
+  The writes it makes count against guest RAM.

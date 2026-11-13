@@ -1,5 +1,5 @@
-//! Builds the rootfs artefact for an image: flatten, then `mkfs.ext4 -d -`
-//! (ADR 0007).
+//! Builds the rootfs artefact for an image: flatten, then `mkfs.erofs
+//! --tar=f` (ADR 0007, ADR 0009).
 
 use std::fmt;
 use std::fs::{self, File};
@@ -19,58 +19,54 @@ use crate::store::{self, Image, Store};
 
 /// Bumped whenever the builder would produce a different filesystem from the
 /// same image, so old artefacts are never reused or overwritten.
-pub const FORMAT_VERSION: u32 = 2;
+///
+/// 3: erofs with lz4hc instead of ext4, and an explicit `0755 root` root
+/// (ADR 0009).
+pub const FORMAT_VERSION: u32 = 3;
+
+/// The artefact's file extension: its filesystem type, as `rootfstype=`
+/// names it.
+pub const EXTENSION: &str = "erofs";
 
 /// mkfs's own clock, as seconds since the epoch, so the same image always
 /// builds to the same bytes.
 ///
-/// e2fsprogs stamps the superblock (`s_mkfs_time`, `s_wtime`), the root
-/// directory, `lost+found` and each inode's creation time (`crtime`) with
-/// "now". `E2FSPROGS_FAKE_TIME` replaces that clock (e2fsprogs
-/// `lib/ext2fs/initialize.c`). File times still come from the layers. The
-/// value is `1` because e2fsprogs treats `0` as unset and uses the real clock
-/// (`fs->now ? fs->now : time(0)`).
+/// `-T` sets the build time that mkfs.erofs stamps on the superblock. On its
+/// own, `-T` also implies `--all-time`, which would stamp every inode with it
+/// and erase the image's mtimes; `--mkfs-time` limits it to the superblock
+/// (erofs-utils 1.8 or later).
 ///
-/// `SOURCE_DATE_EPOCH` would also fix the clock, but e2fsprogs then clamps
-/// every inode time down to it (`clamped_time` in `misc/create_inode.c`),
-/// which would erase the image's mtimes. So it is removed from mkfs's
-/// environment.
+/// `SOURCE_DATE_EPOCH` would also fix the clock, but mkfs.erofs then stamps
+/// every inode with it too, so it is removed from mkfs's environment.
 const FAKE_TIME: &str = "1";
 
 /// The filesystem label.
 const LABEL: &str = "dassie";
 
-/// Room for ext4 metadata and the journal on top of the content estimate.
-const HEADROOM_MIB: u64 = 64;
-/// Inodes on top of one per entry (`-N`).
-///
-/// mke2fs reserves inodes 1-10 and gives inode 11 to `lost+found`. The rest
-/// is headroom for apps that create files while the root drive is still
-/// booted read-write (until M1 slice C makes it read-only). 1024 inodes cost
-/// 256 KiB of inode table at the default 256-byte inode size. mke2fs rounds
-/// `-N` up to fill whole inode groups anyway, so the exact figure matters
-/// little.
-const SPARE_INODES: u64 = 1024;
+/// lz4hc at its highest level: about 40% smaller than uncompressed on real
+/// images, with no measurable cost to boot time (ADR 0009). Decompression
+/// speed does not depend on the level, only build time does.
+const COMPRESSION: &str = "lz4hc,level=12";
 
 /// What [`build`] produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BuildOutput {
-    /// The read-only ext4 artefact (see [`artefact_path`]).
+    /// The read-only erofs artefact (see [`artefact_path`]).
     pub path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The `mkfs.ext4` to run. It needs e2fsprogs 1.47.1 or later, built with
-    /// libarchive, for `-d -` (a tarball on stdin).
+    /// The `mkfs.erofs` to run. It needs erofs-utils 1.8 or later, for
+    /// `--mkfs-time`.
     pub mkfs: PathBuf,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            mkfs: PathBuf::from("mkfs.ext4"),
+            mkfs: PathBuf::from("mkfs.erofs"),
         }
     }
 }
@@ -95,8 +91,7 @@ impl fmt::Display for Error {
             Self::Io(path, e) => write!(f, "{}: {e}", path.display()),
             Self::Mkfs(status, stderr) => write!(
                 f,
-                "mkfs.ext4 failed ({status}): {}\n(it needs e2fsprogs >= 1.47.1 and the \
-                 libarchive shared library, e.g. Debian's libarchive13t64)",
+                "mkfs.erofs failed ({status}): {}\n(it needs erofs-utils >= 1.8)",
                 stderr.trim()
             ),
         }
@@ -117,9 +112,13 @@ impl From<flatten::Error> for Error {
     }
 }
 
-/// The artefact for an image: `<out_dir>/sha256-<hex>.v<FORMAT_VERSION>.ext4`.
+/// The artefact for an image:
+/// `<out_dir>/sha256-<hex>.v<FORMAT_VERSION>.<EXTENSION>`.
 pub fn artefact_path(out_dir: &Path, image: &Digest) -> PathBuf {
-    out_dir.join(format!("sha256-{}.v{FORMAT_VERSION}.ext4", image.hex()))
+    out_dir.join(format!(
+        "sha256-{}.v{FORMAT_VERSION}.{EXTENSION}",
+        image.hex()
+    ))
 }
 
 /// Builds the rootfs for `image` into `out_dir`, or returns the existing one.
@@ -150,47 +149,33 @@ pub fn build(
     for layer in &image.manifest.layers {
         tree.scan(open_layer(store, layer).map_err(flatten::Error::Io)?)?;
     }
-    let stats = tree.finish()?;
+    tree.finish()?;
 
     fs::create_dir_all(out_dir).map_err(|e| Error::Io(out_dir.to_path_buf(), e))?;
     atomic::write_with(&path, Error::Io, |tmp| {
-        mkfs(store, image, &tree, stats, tmp, opts)?;
+        mkfs(store, image, &tree, tmp, opts)?;
         fs::set_permissions(tmp, fs::Permissions::from_mode(0o444))
             .map_err(|e| Error::Io(tmp.to_path_buf(), e))
     })?;
     Ok(BuildOutput { path })
 }
 
-/// Runs `mkfs.ext4 -d -` on `tmp`, streaming the flattened tar to it.
+/// Runs `mkfs.erofs --tar=f` on `tmp`, streaming the flattened tar to it.
 fn mkfs(
     store: &Store,
     image: &Image,
     tree: &Tree,
-    stats: flatten::Stats,
     tmp: &Path,
     opts: &Options,
 ) -> Result<(), Error> {
-    let size_mib = (stats.bytes + stats.bytes / 4).div_ceil(1 << 20) + HEADROOM_MIB;
     let uuid = image.digest.uuid();
     let mut child = Command::new(&opts.mkfs)
-        .env("E2FSPROGS_FAKE_TIME", FAKE_TIME)
-        // Overrides the fake time and clamps inode times; see FAKE_TIME.
+        // Stamps every inode; see FAKE_TIME.
         .env_remove("SOURCE_DATE_EPOCH")
-        .args([
-            "-q",
-            "-F",
-            "-b",
-            &flatten::BLOCK_SIZE.to_string(),
-            "-L",
-            LABEL,
-        ])
-        .args(["-U", &uuid, "-E"])
-        .arg(format!("root_owner=0:0,hash_seed={uuid}"))
-        .arg("-N")
-        .arg((stats.entries + SPARE_INODES).to_string())
-        .args(["-d", "-"])
+        .args(["--quiet", "--tar=f", "-z", COMPRESSION])
+        .args(["-T", FAKE_TIME, "--mkfs-time", "-U", &uuid, "-L", LABEL])
+        // With no source argument, the tar comes from stdin.
         .arg(tmp)
-        .arg(format!("{size_mib}M"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

@@ -20,7 +20,7 @@ another by one nft table (ADR 0008). There is no daemon yet.
 | --- | --- |
 | [`dassie`](crates/dassie) | Host daemon and CLI: reconcile loop, SQLite, systemd, Caddy |
 | [`dassie-vm`](crates/dassie-vm) | Firecracker and jailer config, Firecracker API socket |
-| [`dassie-image`](crates/dassie-image) | OCI image to ext4 guest rootfs |
+| [`dassie-image`](crates/dassie-image) | OCI image to erofs guest rootfs |
 | [`dassie-proto`](crates/dassie-proto) | Host <-> guest protocol over vsock |
 | [`dassie-init`](crates/dassie-init) | Guest PID 1 (static musl) |
 
@@ -39,22 +39,25 @@ initramfs and a test app rootfs, plus the hand-written
 ```sh
 guest/kernel/build.sh x86_64   # target/guest/x86_64/vmlinux
 guest/initramfs.sh x86_64      # target/guest/x86_64/initramfs.cpio.gz
-guest/rootfs.sh x86_64         # target/guest/x86_64/rootfs.ext4
+guest/rootfs.sh x86_64         # target/guest/x86_64/rootfs.erofs
 guest/firecracker.sh x86_64    # target/guest/x86_64/firecracker
-guest/smoke-test.sh x86_64     # boot once, expect started, ready, exited
+guest/smoke-test.sh x86_64     # boot twice, expect started, ready, exited
 ```
+
+`rootfs.sh` needs `mkfs.erofs` (erofs-utils, any recent version). The root
+drive is attached read-only and the guest writes to a tmpfs overlay, so
+every VM of an image shares one file and every boot starts clean.
 
 To build a rootfs from a real OCI image instead (ADR 0007), pull the image
 into a local OCI layout and build it. The pull fetches only the blobs the
 store lacks and prints the manifest digest to pin. The build needs
-`mkfs.ext4` from e2fsprogs 1.47.1 or later and the libarchive shared library
-(Debian: `libarchive13t64`):
+`mkfs.erofs` from erofs-utils 1.8 or later (Debian: `erofs-utils`; ADR 0009):
 
 ```sh
 cargo run -p dassie-image --example image -- pull \
   --store $HOME/images docker.io/nginxinc/nginx-unprivileged:alpine   # prints sha256:…
 cargo run -p dassie-image --example image -- build \
-  --store $HOME/images --out $HOME/rootfs sha256:…   # prints the .ext4 path
+  --store $HOME/images --out $HOME/rootfs sha256:…   # prints the .erofs path
 ```
 
 `skopeo copy docker://… oci:$HOME/images:<name>` writes the same layout, for
@@ -137,10 +140,10 @@ cargo +nightly fuzz run flatten_bytes fuzz/corpus/flatten_bytes fuzz/seeds/flatt
 - `flatten_model` generates 1–4 layers of directories, files, symlinks, hard
   links, whiteouts and opaque markers over the names `a`, `b`, `c` and
   `.dassie`, up to three deep, so paths collide often. Only a dangling or
-  replaced hard link may fail. Otherwise the output must hold every parent
-  before its children, no path twice, hard links after their non-directory
-  targets, no `..` or absolute paths, and `.dassie/image.json` last and
-  alone under `.dassie`. The same input must give the same bytes, and the
+  replaced hard link may fail. Otherwise the output must start with a
+  `0755 root:root` root entry and hold every parent before its children, no
+  path twice, hard links after their non-directory targets, no `..` or
+  absolute paths, and `.dassie/image.json` last and alone under `.dassie`. The same input must give the same bytes, and the
   same entries as a naive reference model of the OCI layer rules (ADR 0007):
   each layer's whiteouts hide only lower layers, then its entries apply in
   tar order.
