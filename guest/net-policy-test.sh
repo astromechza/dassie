@@ -59,10 +59,18 @@ vm() {
   guest_ip[$name]=${env[DASSIE_GUEST_IP]} host_ip[$name]=${env[DASSIE_HOST_IP]}
 }
 
-# serve NS PORT LOG: an HTTP server on every address of NS.
+# serve NS PORT LOG: an HTTP server on every address of NS. Returns once it
+# listens, so the first probe cannot race its startup.
 serve() {
+  local i
   nsx "$1" python3 -m http.server --bind 0.0.0.0 "$2" >/dev/null 2>"$3" &
   pids+=($!)
+  for ((i = 0; i < 100; i++)); do
+    [[ -n "$(nsx "$1" ss -Hltn "sport = :$2")" ]] && return
+    sleep 0.1
+  done
+  echo "$0: no server on port $2 in $1" >&2
+  exit 1
 }
 
 # --- Topology --------------------------------------------------------------
@@ -97,7 +105,6 @@ serve dpt-world 80 "$logs/world.log"
 serve dpt-host 8080 "$logs/host.log"
 serve dpt-vm1 8080 "$logs/vm1.log"
 serve dpt-vm2 8080 "$logs/vm2.log"
-sleep 1
 
 # --- Probes ----------------------------------------------------------------
 
