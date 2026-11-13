@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::{self, Read};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +29,11 @@ const ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
     application/vnd.docker.distribution.manifest.list.v2+json, \
     application/vnd.docker.distribution.manifest.v2+json";
 
+/// The most layers an image may have. Docker has long refused more than
+/// 127, so real images stay under it; the cap bounds the work a hostile
+/// manifest can ask for.
+pub const MAX_LAYERS: usize = 128;
+
 #[derive(Debug)]
 pub enum Error {
     /// The request failed before a status arrived, or its body broke off.
@@ -39,6 +45,8 @@ pub enum Error {
     Auth(String),
     Json(String, serde_json::Error),
     UnsupportedLayer(Digest, String),
+    /// The manifest lists more than [`MAX_LAYERS`] layers.
+    TooManyLayers(Digest, usize),
     Store(store::Error),
 }
 
@@ -52,6 +60,12 @@ impl fmt::Display for Error {
             Self::UnsupportedLayer(d, media_type) => {
                 write!(f, "layer {d}: unsupported media type {media_type:?}")
             }
+            Self::TooManyLayers(d, n) => {
+                write!(
+                    f,
+                    "image {d} has {n} layers, over the limit of {MAX_LAYERS}"
+                )
+            }
             Self::Store(e) => write!(f, "{e}"),
         }
     }
@@ -63,6 +77,20 @@ impl From<store::Error> for Error {
     fn from(e: store::Error) -> Self {
         Self::Store(e)
     }
+}
+
+/// Progress of a pull, reported to the callback given to
+/// [`Client::pull_with`] as it happens, once per config or layer blob.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum Event<'a> {
+    /// The blob is already in the store and will not be fetched.
+    Present(&'a Descriptor),
+    /// `done` of the blob's `size` bytes have arrived: first with `done` 0,
+    /// then after every read.
+    Fetching { blob: &'a Descriptor, done: u64 },
+    /// The blob was verified and is in the store.
+    Stored(&'a Descriptor),
 }
 
 /// What [`Client::pull`] did.
@@ -141,8 +169,19 @@ impl Client {
         reference: &Reference,
         platform: &Platform,
     ) -> Result<Pulled, Error> {
+        self.pull_with(store, reference, platform, &mut |_| {})
+    }
+
+    /// [`pull`](Self::pull), reporting each blob's progress to `on`.
+    pub fn pull_with(
+        &self,
+        store: &Store,
+        reference: &Reference,
+        platform: &Platform,
+        on: &mut dyn FnMut(Event<'_>),
+    ) -> Result<Pulled, Error> {
         let name = reference.to_string();
-        if let Some(pulled) = local(store, reference, platform, &name)? {
+        if let Some(pulled) = local(store, reference, platform, &name, on)? {
             return Ok(pulled);
         }
 
@@ -156,6 +195,7 @@ impl Client {
             ),
             repository: reference.repository().to_owned(),
             token: None,
+            on,
         };
         let mut target = reference.target();
         let mut want = reference.digest().cloned();
@@ -191,6 +231,7 @@ fn local(
     reference: &Reference,
     platform: &Platform,
     name: &str,
+    on: &mut dyn FnMut(Event<'_>),
 ) -> Result<Option<Pulled>, Error> {
     let Some(digest) = reference.digest() else {
         return Ok(None);
@@ -206,7 +247,11 @@ fn local(
     {
         return Ok(None);
     }
-    check_layers(&image.manifest)?;
+    check_layers(&image.digest, &image.manifest)?;
+    on(Event::Present(&image.manifest.config));
+    for layer in &image.manifest.layers {
+        on(Event::Present(layer));
+    }
     // The resolved manifest, which differs from `digest` if a layout written
     // by `skopeo copy --all` holds the index too.
     let size = std::fs::metadata(store.blob_path(&image.digest)).map_or(0, |m| m.len());
@@ -223,8 +268,12 @@ fn local(
     }))
 }
 
-/// Refuses a manifest with layers the build cannot unpack (zstd, foreign).
-fn check_layers(manifest: &Manifest) -> Result<(), Error> {
+/// Refuses a manifest with too many layers, or layers the build cannot
+/// unpack (zstd, foreign).
+fn check_layers(digest: &Digest, manifest: &Manifest) -> Result<(), Error> {
+    if manifest.layers.len() > MAX_LAYERS {
+        return Err(Error::TooManyLayers(digest.clone(), manifest.layers.len()));
+    }
     match manifest
         .layers
         .iter()
@@ -274,6 +323,7 @@ struct Session<'a> {
     base: String,
     repository: String,
     token: Option<String>,
+    on: &'a mut dyn FnMut(Event<'_>),
 }
 
 impl Session<'_> {
@@ -296,7 +346,7 @@ impl Session<'_> {
             blobs_present: 0,
         };
         // Refuse before downloading anything that could not be built.
-        check_layers(manifest)?;
+        check_layers(&pulled.digest, manifest)?;
         if manifest.config.size > MAX_JSON {
             let path = store.blob_path(&manifest.config.digest);
             return Err(store::Error::TooLarge(path).into());
@@ -333,11 +383,23 @@ impl Session<'_> {
     fn blob(&mut self, store: &Store, desc: &Descriptor, pulled: &mut Pulled) -> Result<(), Error> {
         if store.has_blob(&desc.digest) {
             pulled.blobs_present += 1;
+            (self.on)(Event::Present(desc));
             return Ok(());
         }
         let url = format!("{}/blobs/{}", self.base, desc.digest);
         let resp = self.get(&url, None)?;
-        store.put(&desc.digest, desc.size, resp.into_body().into_reader())?;
+        (self.on)(Event::Fetching {
+            blob: desc,
+            done: 0,
+        });
+        let body = Counting {
+            inner: resp.into_body().into_reader(),
+            blob: desc,
+            done: 0,
+            on: &mut *self.on,
+        };
+        store.put(&desc.digest, desc.size, body)?;
+        (self.on)(Event::Stored(desc));
         pulled.blobs_fetched += 1;
         pulled.bytes_fetched += desc.size;
         Ok(())
@@ -407,6 +469,28 @@ impl Session<'_> {
             .or(t.access_token)
             .filter(|t| !t.is_empty())
             .ok_or_else(|| Error::Auth(format!("{realm} returned no token")))
+    }
+}
+
+/// Reports [`Event::Fetching`] after every read of a blob body.
+struct Counting<'a, 'b, R> {
+    inner: R,
+    blob: &'a Descriptor,
+    done: u64,
+    on: &'b mut dyn FnMut(Event<'_>),
+}
+
+impl<R: Read> Read for Counting<'_, '_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.done += n as u64;
+            (self.on)(Event::Fetching {
+                blob: self.blob,
+                done: self.done,
+            });
+        }
+        Ok(n)
     }
 }
 

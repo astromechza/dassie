@@ -60,6 +60,16 @@ fn reference(fake: &Fake, rest: &str) -> Reference {
     format!("{}/team/app{rest}", fake.addr).parse().unwrap()
 }
 
+/// An event as `<kind> <first 8 hex> [done]`, for comparing.
+fn event(e: Event<'_>) -> String {
+    let short = |d: &Descriptor| d.digest.hex()[..8].to_owned();
+    match e {
+        Event::Present(d) => format!("present {}", short(d)),
+        Event::Fetching { blob, done } => format!("fetching {} {done}", short(blob)),
+        Event::Stored(d) => format!("stored {}", short(d)),
+    }
+}
+
 /// Temporary files anywhere in the store.
 fn leftovers(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
@@ -84,7 +94,10 @@ fn pulls_through_token_challenge_and_index_then_dedups() {
     let arm64 = Platform::new("linux", "arm64");
     let tag = reference(&fake, ":v1");
 
-    let pulled = client.pull(&store, &tag, &arm64).unwrap();
+    let mut events = Vec::new();
+    let pulled = client
+        .pull_with(&store, &tag, &arm64, &mut |e| events.push(event(e)))
+        .unwrap();
     assert_eq!(pulled.digest, arm_d);
     assert_eq!(pulled.name, format!("{}/team/app:v1", fake.addr));
     assert_eq!((pulled.blobs_fetched, pulled.blobs_present), (3, 0));
@@ -100,7 +113,36 @@ fn pulls_through_token_challenge_and_index_then_dedups() {
     assert!(!store.has_blob(&amd_d));
 
     // A re-pull by tag fetches the manifests again, but no blobs.
-    let again = client.pull(&store, &tag, &arm64).unwrap();
+    // Each blob: fetching from 0, up to its size, then stored.
+    let size = |s: &str| s.len() as u64;
+    for (blob, len) in [(config, size(config)), ("base", 4), ("arm-top", 7)] {
+        let hex = Digest::of(blob.as_bytes()).hex()[..8].to_owned();
+        let mine: Vec<_> = events
+            .iter()
+            .filter(|e| e.contains(&hex))
+            .cloned()
+            .collect();
+        assert_eq!(
+            mine.first(),
+            Some(&format!("fetching {hex} 0")),
+            "{events:?}"
+        );
+        assert!(
+            mine.contains(&format!("fetching {hex} {len}")),
+            "{events:?}"
+        );
+        assert_eq!(mine.last(), Some(&format!("stored {hex}")), "{events:?}");
+    }
+
+    let mut events = Vec::new();
+    let again = client
+        .pull_with(&store, &tag, &arm64, &mut |e| events.push(event(e)))
+        .unwrap();
+    assert_eq!(
+        events.iter().filter(|e| e.starts_with("present")).count(),
+        3
+    );
+    assert_eq!(events.len(), 3);
     assert_eq!(again.digest, arm_d);
     assert_eq!((again.blobs_fetched, again.blobs_present), (0, 3));
     assert_eq!(fake.count("/storage/"), 3);
@@ -221,6 +263,9 @@ fn refuses_before_downloading() {
         &[("application/vnd.oci.image.layer.v1.tar+zstd", b"z")],
     );
     fake.manifest("zstd", DOCKER_MANIFEST, &zstd);
+    let deep: Vec<(&str, &[u8])> = vec![(TAR, b"l"); MAX_LAYERS + 1];
+    let deep = image(&fake, "arm64", &deep);
+    fake.manifest("deep", DOCKER_MANIFEST, &deep);
     multi_arch(&fake);
     let dir = tempfile::tempdir().unwrap();
     let store = Store::init(dir.path()).unwrap();
@@ -231,6 +276,10 @@ fn refuses_before_downloading() {
         .pull(&store, &reference(&fake, ":zstd"), &arm64)
         .unwrap_err();
     assert!(matches!(err, Error::UnsupportedLayer(..)), "{err}");
+    let err = client
+        .pull(&store, &reference(&fake, ":deep"), &arm64)
+        .unwrap_err();
+    assert!(matches!(err, Error::TooManyLayers(_, 129)), "{err}");
     let err = client
         .pull(
             &store,

@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use dassie_image::{Client, Options, Platform, Reference, Store, build};
+use dassie_image::{Client, Event, Options, Platform, Reference, Store, build};
 
 const USAGE: &str = "usage: image pull [--store DIR] [--platform OS/ARCH] <ref>
        image build [--store DIR] [--out DIR] [--platform OS/ARCH] <name|sha256:...>";
@@ -74,15 +74,20 @@ fn run(args: &[String]) -> Result<(), String> {
 fn pull(store: PathBuf, platform: &Platform, reference: &str) -> Result<(), String> {
     let reference: Reference = reference.parse().map_err(|e| format!("{e}"))?;
     let store = Store::init(store).map_err(|e| e.to_string())?;
+    // One line per fetched blob; a progress bar would hook in here too.
+    let mut on = |e: Event<'_>| {
+        if let Event::Stored(blob) = e {
+            eprintln!("  stored {} ({:.1} MiB)", blob.digest, mib(blob.size));
+        }
+    };
     let pulled = Client::new()
-        .pull(&store, &reference, platform)
+        .pull_with(&store, &reference, platform, &mut on)
         .map_err(|e| e.to_string())?;
     let total = pulled.blobs_fetched + pulled.blobs_present;
     if pulled.blobs_fetched == 0 {
         eprintln!("all {total} blobs already present, fetched nothing");
     } else {
-        #[allow(clippy::cast_precision_loss)]
-        let mib = pulled.bytes_fetched as f64 / f64::from(1 << 20);
+        let mib = mib(pulled.bytes_fetched);
         eprintln!(
             "fetched {} of {total} blobs ({mib:.1} MiB)",
             pulled.blobs_fetched
@@ -91,6 +96,11 @@ fn pull(store: PathBuf, platform: &Platform, reference: &str) -> Result<(), Stri
     eprintln!("named {}", pulled.name);
     println!("{}", pulled.digest);
     Ok(())
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / f64::from(1 << 20)
 }
 
 fn build_rootfs(

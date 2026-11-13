@@ -149,6 +149,11 @@ _Amended 2026-11-13, when slice B added the write side and the pull:_
     run clippy on macOS and in CI. It is younger than ring; swapping
     providers later is a one-line change.
   - Timeouts cover connect, response and each read. There are no retries.
+  - Bounds: JSON bodies are capped at 4 MiB, a blob at its declared size,
+    and a manifest at 128 layers (Docker has long refused more than 127).
+    The total image size is not capped yet.
+  - `Client::pull_with` reports each blob as present, fetching (bytes so
+    far) or stored, for progress display.
 - **References** follow Docker's rules. The first component is a registry
   only if it contains `.` or `:` or is `localhost`; otherwise it is
   `docker.io` (API host `registry-1.docker.io`), where a one-component name
