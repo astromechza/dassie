@@ -42,7 +42,8 @@ pub enum Error {
     Io(io::Error),
     /// A path with a `..` component.
     BadPath(PathBuf),
-    /// An entry type dassie does not carry over (GNU sparse files).
+    /// An entry type dassie does not carry over: GNU sparse files, and PAX
+    /// or GNU extension headers in a format tar did not recognise.
     Unsupported(PathBuf, EntryType),
     /// A hard link to a path no lower entry created.
     DanglingLink {
@@ -97,14 +98,6 @@ enum Source {
     Implied { layer: usize },
 }
 
-impl Source {
-    fn layer(self) -> usize {
-        match self {
-            Self::Entry { layer, .. } | Self::Implied { layer } => layer,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 enum Kind {
     /// Kept whole: directories are emitted from the stored header.
@@ -144,6 +137,23 @@ pub struct Tree {
     layers: usize,
 }
 
+/// One of a layer's own entries, deferred until its markers are applied.
+enum Step {
+    /// Make every ancestor of the path a directory.
+    Parents(PathBuf),
+    Put {
+        path: PathBuf,
+        index: usize,
+        kind: Kind,
+    },
+    /// Resolved when put, against the tree as it is at that point.
+    Link {
+        path: PathBuf,
+        index: usize,
+        target: PathBuf,
+    },
+}
+
 /// What one tar entry does to the tree.
 enum Action {
     Skip,
@@ -161,34 +171,74 @@ impl Tree {
 
     /// Pass 1: applies the next layer (an uncompressed tar stream). Reads it
     /// to EOF, so a digest-verifying reader underneath gets to check.
+    ///
+    /// A whiteout or opaque marker hides only what lower layers put there,
+    /// wherever it sits in this layer's tar. So the layer's headers are read
+    /// first, its markers applied to the tree of lower layers, and only then
+    /// its own entries put in tar order.
     pub fn scan(&mut self, layer: impl Read) -> Result<(), Error> {
         let n = self.layers;
         self.layers += 1;
         let mut archive = Archive::new(layer);
+        let mut removals = Vec::new();
+        let mut steps = Vec::new();
         for (index, entry) in archive.entries()?.enumerate() {
             let mut entry = entry?;
-            let path = match classify(&entry)? {
-                Action::Skip => continue,
+            match classify(&entry)? {
+                Action::Skip => {}
                 Action::Whiteout(path) => {
-                    self.remove(&path, n, true);
-                    continue;
+                    // The marker lives in its parent, so the layer has that
+                    // directory, as overlayfs, Docker and containerd agree.
+                    steps.push(Step::Parents(path.clone()));
+                    removals.push((path, true));
                 }
                 Action::Opaque(dir) => {
-                    self.remove(&dir, n, false);
                     // The directory itself stays; make sure it exists.
-                    self.parents(&dir.join(OPAQUE), n);
+                    steps.push(Step::Parents(dir.join(OPAQUE)));
+                    removals.push((dir, false));
+                }
+                Action::Put(path) => steps.push(match entry.header().entry_type() {
+                    EntryType::Directory => Step::Put {
+                        path,
+                        index,
+                        kind: Kind::Dir {
+                            header: Box::new(entry.header().clone()),
+                            pax: pax(&mut entry)?,
+                        },
+                    },
+                    EntryType::Link => Step::Link {
+                        path,
+                        index,
+                        target: link_target(&entry)?,
+                    },
+                    _ => Step::Put {
+                        path,
+                        index,
+                        kind: Kind::Other { size: entry.size() },
+                    },
+                }),
+            }
+        }
+        io::copy(&mut archive.into_inner(), &mut io::sink())?;
+
+        for (path, itself) in removals {
+            self.remove_children(&path);
+            if itself {
+                self.nodes.remove(&path);
+            }
+        }
+        for step in steps {
+            let (path, index, kind) = match step {
+                Step::Parents(path) => {
+                    self.parents(&path, n);
                     continue;
                 }
-                Action::Put(path) => path,
-            };
-            let source = Source::Entry { layer: n, index };
-            let kind = match entry.header().entry_type() {
-                EntryType::Directory => Kind::Dir {
-                    header: Box::new(entry.header().clone()),
-                    pax: pax(&mut entry)?,
-                },
-                EntryType::Link => {
-                    let target = link_target(&entry)?;
+                Step::Put { path, index, kind } => (path, index, kind),
+                Step::Link {
+                    path,
+                    index,
+                    target,
+                } => {
                     let target_source = self
                         .nodes
                         .get(&target)
@@ -198,16 +248,16 @@ impl Tree {
                             path: path.clone(),
                             target: target.clone(),
                         })?;
-                    Kind::Hardlink {
+                    let kind = Kind::Hardlink {
                         target,
                         target_source,
-                    }
+                    };
+                    (path, index, kind)
                 }
-                _ => Kind::Other { size: entry.size() },
             };
+            let source = Source::Entry { layer: n, index };
             self.put(path, Node { source, kind }, n);
         }
-        io::copy(&mut archive.into_inner(), &mut io::sink())?;
         Ok(())
     }
 
@@ -314,7 +364,7 @@ impl Tree {
             .get(&path)
             .is_some_and(|old| matches!(old.kind, Kind::Dir { .. }));
         if replaces_dir && !matches!(node.kind, Kind::Dir { .. }) {
-            self.remove_children(&path, None);
+            self.remove_children(&path);
         }
         self.nodes.insert(path, node);
     }
@@ -345,41 +395,14 @@ impl Tree {
         }
     }
 
-    /// Removes what layers below `layer` put at `path` (when `itself`) and
-    /// under it. Entries `layer` itself added survive, so a whiteout or
-    /// opaque marker that comes after them in the tar leaves their parents
-    /// implied, as if it had come first.
-    fn remove(&mut self, path: &Path, layer: usize, itself: bool) {
-        self.remove_children(path, Some(layer));
-        if itself
-            && self
-                .nodes
-                .get(path)
-                .is_some_and(|n| n.source.layer() < layer)
-        {
-            self.nodes.remove(path);
-        }
-        let survivors: Vec<PathBuf> = self
-            .nodes
-            .range::<Path, _>((Bound::Excluded(path), Bound::Unbounded))
-            .take_while(|(p, _)| p.starts_with(path))
-            .map(|(p, _)| p.clone())
-            .collect();
-        for child in survivors {
-            self.parents(&child, layer);
-        }
-    }
-
-    /// Removes the descendants of `path`, only those from below `layer` if
-    /// given.
-    fn remove_children(&mut self, path: &Path, layer: Option<usize>) {
+    /// Removes the descendants of `path`.
+    fn remove_children(&mut self, path: &Path) {
         // `PathBuf` orders by component, so a path's descendants follow it
         // contiguously.
         let doomed: Vec<PathBuf> = self
             .nodes
             .range::<Path, _>((Bound::Excluded(path), Bound::Unbounded))
             .take_while(|(p, _)| p.starts_with(path))
-            .filter(|(_, n)| layer.is_none_or(|l| n.source.layer() < l))
             .map(|(p, _)| p.clone())
             .collect();
         for p in doomed {
@@ -401,7 +424,15 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
     if path.starts_with(DASSIE_DIR) {
         return Ok(Action::Skip);
     }
-    if entry_type.is_gnu_sparse() {
+    // tar only hands over PAX and GNU long name headers as entries when it
+    // does not recognise the header's format, so it has not applied them.
+    // Copied out, mkfs's libarchive might, and read a different archive from
+    // the one checked here. `pax` would also consume their data.
+    if entry_type.is_gnu_sparse()
+        || entry_type.is_pax_local_extensions()
+        || entry_type.is_gnu_longname()
+        || entry_type.is_gnu_longlink()
+    {
         return Err(Error::Unsupported(path, entry_type));
     }
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
@@ -669,6 +700,58 @@ pub(crate) mod tests {
         // The lower `d` is gone; this one is implied by the upper layer.
         let d = find(&out, "d");
         assert_eq!((d.mode, d.uid), (0o755, 0));
+    }
+
+    #[test]
+    fn whiteout_implies_its_parent() {
+        // Found by the flatten_model fuzz target: a whiteout in a directory
+        // no layer created, or in one a lower layer made a file.
+        let base = Layer::default().file("f", "x", 0o644, 0).tar();
+        let upper = Layer::default()
+            .file("d/.wh.x", "", 0o644, 0)
+            .file("f/.wh.x", "", 0o644, 0)
+            .tar();
+        let out = flatten(&[base, upper], b"{}").unwrap();
+        assert_eq!(paths(&out), ["d", "f", ".dassie", ".dassie/image.json"]);
+        assert_eq!(find(&out, "f").kind, EntryType::Directory);
+    }
+
+    #[test]
+    fn late_whiteout_keeps_a_markers_parent() {
+        // Found by the flatten_model fuzz target: the upper layer has `d`
+        // (it holds a marker), so the later whiteout of the lower `d` must
+        // not take it away.
+        let base = Layer::default()
+            .file("d/old", "x", 0o644, 0)
+            .file("o/old", "x", 0o644, 0)
+            .tar();
+        let upper = Layer::default()
+            .file("d/.wh.x", "", 0o644, 0)
+            .file(".wh.d", "", 0o644, 0)
+            .file("o/.wh..wh..opq", "", 0o644, 0)
+            .file(".wh..wh..opq", "", 0o644, 0)
+            .tar();
+        let out = flatten(&[base, upper], b"{}").unwrap();
+        assert_eq!(paths(&out), ["d", "o", ".dassie", ".dassie/image.json"]);
+    }
+
+    #[test]
+    fn rejects_extension_headers_tar_did_not_apply() {
+        // Found by the flatten_bytes fuzz target: in a v7 header, tar yields
+        // a PAX header as an entry of its own. Copied out, it corrupted the
+        // stream.
+        for ty in [EntryType::XHeader, EntryType::GNULongName] {
+            let mut tar = Builder::new(Vec::new());
+            let mut h = Header::new_old();
+            h.set_path("ext").unwrap();
+            h.set_entry_type(ty);
+            h.set_size(16);
+            h.set_cksum();
+            tar.append(&h, b"16 path=.dassie\n".as_slice()).unwrap();
+            let layer = Layer(tar).file("a", "x", 0o644, 0).tar();
+            let err = flatten(&[layer], b"{}").unwrap_err();
+            assert!(matches!(err, Error::Unsupported(_, t) if t == ty), "{err}");
+        }
     }
 
     #[test]
