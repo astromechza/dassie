@@ -74,6 +74,9 @@ fn run(args: &[String]) -> Result<(), String> {
 fn pull(store: PathBuf, platform: &Platform, reference: &str) -> Result<(), String> {
     let reference: Reference = reference.parse().map_err(|e| format!("{e}"))?;
     let store = Store::init(store).map_err(|e| e.to_string())?;
+    for path in store.sweep().map_err(|e| e.to_string())? {
+        eprintln!("removed stale {}", path.display());
+    }
     // One line per fetched blob; a progress bar would hook in here too.
     let mut on = |e: Event<'_>| match e {
         Event::Planned {
@@ -135,6 +138,9 @@ fn build_rootfs(
         .image(reference, platform)
         .map_err(|e| e.to_string())?;
     let built = build(&store, &image, out, &Options::default()).map_err(|e| e.to_string())?;
+    for path in &built.swept {
+        eprintln!("removed stale {}", path.display());
+    }
     println!("{}", built.path.display());
     Ok(())
 }
