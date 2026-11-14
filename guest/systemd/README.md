@@ -1,4 +1,4 @@
-# `fc@.service` runbook
+# Host runbook: `fc@.service`, networking and Caddy
 
 [`fc@.service`](fc@.service) runs one Firecracker microVM per instance, with
 no daemon. It's hand-written for M0 (issue #2). systemd keeps the VM alive:
@@ -156,6 +156,74 @@ curl http://10.88.0.3:8080/   # ok
   every TAP and VM.
 - `sudo nft list table inet dassie` shows the policy and its counters.
 
+### Optional: ingress, and deploying an image
+
+Caddy on the host serves `https://HOSTNAME/` for each VM that has a route,
+from its own local CA ([ADR 0010](../../architecture/0010-ingress-through-caddy.md)).
+`guest/deploy-image.sh` goes from an image reference to such a VM in one
+command. Set up networking as above first. It also needs a Rust toolchain
+and erofs-utils ≥ 1.8 for `dassie-image`.
+
+`deploy-image.sh` is M1 scaffolding: M2's daemon replaces it, along with the
+per-VM `route.env` and the hand-picked index. What stays is
+[`caddy.service`](caddy.service) and the shape of `/etc/dassie/caddy.json`.
+
+Install Caddy and its unit. `deploy-image.sh` writes `/etc/dassie/caddy.json`,
+then enables and starts Caddy:
+
+```sh
+guest/caddy.sh x86_64
+sudo install -m 0755 target/guest/x86_64/caddy /usr/local/bin/caddy
+sudo install -m 0644 guest/systemd/caddy.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+Deploy an image. The arguments are the reference, a VM name, an index (unique
+per VM, as for `net-env.sh`), and optionally a hostname and the guest port
+(default 80). Run it as your user, from the checkout; it uses sudo where it
+needs root:
+
+```sh
+guest/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
+```
+
+It pulls the image and builds its rootfs, then writes
+`/var/lib/dassie/vms/web/{net.env,config.json,route.env}`. It enables and
+starts `fc@web` and renders `/etc/dassie/caddy.json` from every VM's
+`route.env`. A file is only replaced when its content changes, so redeploying
+changes nothing unless the reference now resolves to another digest. Without
+a hostname the VM gets no route.
+
+Caddy's CA is not in the host's trust store. Give it to clients explicitly.
+curl resolves `*.localhost` to the loopback address by itself. For other
+names, use `/etc/hosts` or `--resolve web.example:443:127.0.0.1`:
+
+```sh
+sudo cat /var/lib/caddy/pki/authorities/local/root.crt > caddy-root.crt
+curl --cacert caddy-root.crt https://web.localhost/
+```
+
+- `/etc/dassie/caddy.json` is the whole config. `persist: false` stops Caddy
+  keeping a copy of its own, so a restart or reboot loads exactly that file.
+- After editing it by hand, run `sudo systemctl reload caddy`. It loads the
+  file through the admin API on `/run/caddy/admin.sock`, and keeps the old
+  config if the new one fails.
+- The admin API listens only on that socket, never on TCP. Caddy still logs
+  `admin endpoint on open interface; host checking disabled` for it: host
+  checking is for TCP listeners, and the warning is harmless here.
+- A new hostname's certificate is issued just after the reload. A request in
+  the same second may fail with a TLS `internal error` alert; retry.
+- If Caddy refuses a new config, `deploy-image.sh` puts the previous
+  `caddy.json` back and fails, so the file always says what Caddy runs.
+  Fix the cause and run the deploy again. A hostname that another VM
+  already has is refused before any file changes.
+- Caddy runs as a dynamic user. Its CA and certificates live in
+  `/var/lib/caddy`, a link into `/var/lib/private`.
+- `deploy-image.sh` does not lock. Run one deploy at a time.
+- To remove an app, `sudo systemctl disable --now fc@NAME`, delete
+  `/var/lib/dassie/vms/NAME`, and redeploy any other app (or edit
+  `caddy.json` and reload) to drop its route.
+
 ## Drills
 
 Each drill must converge with no manual intervention. To count restarts, run
@@ -303,6 +371,59 @@ curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
 - `curl http://10.88.0.5:8080/` from the host still answers `ok`.
 - Stopping `fc@a` removes `dt00001`. Starting it again recreates it, even if a
   stale `dt00001` was left behind.
+
+### 7. Deploy an image by reference
+
+```sh
+guest/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
+curl --cacert caddy-root.crt https://web.localhost/
+curl -I http://web.localhost/
+```
+
+**Expected:**
+
+- The deploy prints `fetched 4 of 4 blobs`, the rootfs path, `(re)started`
+  and `caddy: reloaded`.
+- `curl` over HTTPS prints whoami's page, served by the VM: `Hostname:
+  10.88.0.21`, and `RemoteAddr: 10.88.0.20:…`, the host end of `dt00010`, which
+  is Caddy.
+- Plain HTTP answers `308` to `https://web.localhost/`.
+
+### 8. Redeploy the same reference
+
+Run the same deploy again. Before and after, record
+`systemctl show fc@web -p NRestarts -p MainPID -p ActiveEnterTimestamp`,
+`systemctl show caddy -p MainPID`, and the mtimes of the rootfs, the VM's
+files and `caddy.json`.
+
+**Expected:** `all 4 blobs already present, fetched nothing`;
+`unchanged, not restarted`; `caddy: unchanged, not reloaded`. Everything
+recorded is identical. A tag that moved to a new digest would instead pull,
+build a new rootfs and restart the VM.
+
+### 9. A VM with no route
+
+```sh
+guest/deploy-image.sh docker.io/nginxinc/nginx-unprivileged:alpine quiet 11
+sudo dassie-listener health /run/dassie/quiet.vsock
+```
+
+**Expected:** `route: none`, and `caddy.json` has no `vm-quiet` route.
+`fc@quiet` is active, and `health` prints `state: Ready`: readiness travels
+over vsock, from the port in the image's `ExposedPorts` (ADR 0005), whatever
+Caddy does.
+
+### 10. Power-cycle the host
+
+With `web` and `quiet` deployed, cut the power: `limactl stop --force` on a
+lima VM, or the hypervisor's power-off. Do it within a few seconds of a deploy
+too, to check that its files were written durably. Then boot it.
+
+**Expected:** with no manual step, `dassie-net`, `dassie-tap@web`,
+`dassie-tap@quiet`, `fc@web`, `fc@quiet` and `caddy` are all active.
+`sudo nft list table inet dassie` shows the table. `dt00010` and `dt00011`
+are up. `curl --cacert caddy-root.crt https://web.localhost/` answers, and
+`health` is `Ready` for both VMs.
 
 ### Bonus: the start limit
 
