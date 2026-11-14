@@ -39,7 +39,9 @@ client stands: the timeouts, the token renewal on a 401, and the bounds.
 ## Consequences
 
 - Short outages, broken connections and brief rate limits no longer fail a
-  pull or a deploy. A pull that does fail takes at most about 3 s longer.
+  pull or a deploy. A failing request costs up to 3 s of pauses, plus the
+  repeated attempts themselves, which for a blob can mean downloading it
+  again before giving up.
 - **No `Retry-After` and no jitter.** Docker Hub's 429 is a pull quota with a
   window of hours, so honouring the header up to any sensible cap would rarely
   change the result. One host pulls one image at a time, so there are no other
