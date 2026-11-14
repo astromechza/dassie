@@ -3,7 +3,7 @@
 #
 #   scripts/host/firecracker.sh [x86_64|aarch64]
 #
-# Outputs $OUT/firecracker.
+# Outputs $OUT/firecracker and $OUT/jailer (ADR 0013), from the same release.
 
 # shellcheck source-path=SCRIPTDIR source=../lib.sh
 source "$(dirname "$0")/../lib.sh"
@@ -16,6 +16,10 @@ esac
 
 name="firecracker-$FC_VERSION-$ARCH"
 tgz=$(fetch "https://github.com/firecracker-microvm/firecracker/releases/download/$FC_VERSION/$name.tgz" "$FC_SHA256")
-tar -xzf "$tgz" -C "$OUT" --strip-components=1 "release-$FC_VERSION-$ARCH/$name"
+jailer="jailer-$FC_VERSION-$ARCH"
+tar -xzf "$tgz" -C "$OUT" --strip-components=1 "release-$FC_VERSION-$ARCH/$name" \
+  "release-$FC_VERSION-$ARCH/$jailer"
 mv "$OUT/$name" "$OUT/firecracker"
+mv "$OUT/$jailer" "$OUT/jailer"
 log "wrote $OUT/firecracker ($("$OUT/firecracker" --version | head -1))"
+log "wrote $OUT/jailer ($("$OUT/jailer" --version | head -1))"

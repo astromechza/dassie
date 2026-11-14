@@ -134,7 +134,9 @@ for one boot ([ADR 0012](0012-per-vm-runner.md)).
   serial console alone. Every init failure is logged there before the reboot.
 - `fc@.service` is a template for M2's generated units, not their final form.
   It has no jailer, and it shares the rootfs file with the next boot instead
-  of copying it.
+  of copying it. _Amended 2026-11-14:_ it now runs Firecracker in the jailer,
+  with the shared rootfs hard-linked into each boot's chroot
+  ([ADR 0013](0013-jailed-firecracker.md)).
 - _Amended 2026-11-13, for M1 slice C:_ the rootfs file is never written, so
   every VM of an image shares one file, and every boot starts from the image
   as built. What the app writes to `/` lives in guest RAM and is gone at the

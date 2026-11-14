@@ -34,16 +34,16 @@
     <circle cx="51" cy="112" r="10" fill="#334155"/><text x="51" y="116" text-anchor="middle" class="n">1</text>
     <text x="68" y="117" class="t">systemd → vm-run</text>
     <text x="45" y="142" class="s">fc@&lt;id&gt; runs dassie vm-run:</text>
-    <text x="45" y="160" class="s">clears stale sockets,</text>
+    <text x="45" y="160" class="s">clears the old jail,</text>
     <text x="45" y="176" class="m">binds &lt;uds&gt;_1024</text>
   </g>
   <g>
     <rect x="223" y="92" width="170" height="104" rx="10" class="host"/>
     <circle cx="243" cy="112" r="10" fill="#334155"/><text x="243" y="116" text-anchor="middle" class="n">2</text>
-    <text x="260" y="117" class="t">firecracker</text>
-    <text x="237" y="142" class="m">--no-api --config-file</text>
-    <text x="237" y="160" class="s">boots vmlinux + shared</text>
-    <text x="237" y="176" class="s">initramfs; rootfs = vda</text>
+    <text x="260" y="117" class="t">jailer → firecracker</text>
+    <text x="237" y="142" class="s">fresh chroot, assets linked;</text>
+    <text x="237" y="160" class="s">the VM's own uid, same pid</text>
+    <text x="237" y="176" class="s">boots kernel; rootfs = vda</text>
   </g>
   <g>
     <rect x="415" y="92" width="170" height="104" rx="10" class="boot"/>

@@ -9,6 +9,11 @@ Firecracker and turns the guest's events into unit state:
 - `ready` sends `READY=1`, so the unit is `active` once the app is ready.
 - `started`, `ready` and `exited` become journal entries, with
   `DASSIE_EVENT`, `DASSIE_PID` and `DASSIE_CODE` or `DASSIE_SIGNAL` fields.
+- Firecracker runs in its jailer
+  ([ADR 0013](../../../architecture/0013-jailed-firecracker.md)), as the
+  VM's own uid and gid from `jail.env`. Each boot gets a fresh chroot in
+  `/var/lib/dassie/jail/firecracker/<name>/root`, with the kernel, initramfs
+  and rootfs hard-linked in.
 - vm-run exits with the app's exit code (128+N for signal N), so
   `ExecMainStatus` is the app's.
   - It exits 0 after a stop.
@@ -47,22 +52,25 @@ cargo build --release -p dassie
 cargo build --release -p dassie-vm --example listener
 ```
 
-Install them, plus one instance called `test`. The rootfs goes in once, read-only,
+Install them, plus one instance called `test`, with index 1. The index picks
+the VM's jail uid and gid (`jail-env.sh`) and, later, its network. It must be
+unique among all VMs. The rootfs goes in once, read-only,
 under `/var/lib/dassie/rootfs/`. Every instance attaches that same file as a
 read-only drive, and the guest writes only to a tmpfs overlay
 ([ADR 0006](../../../architecture/0006-guest-assets-layout.md)):
 
 ```sh
 G=target/guest/x86_64
-sudo install -m 0755 $G/firecracker /usr/local/bin/firecracker
+sudo install -m 0755 $G/firecracker $G/jailer /usr/local/bin/
 sudo install -m 0755 target/release/dassie /usr/local/bin/dassie
 sudo install -m 0755 target/release/examples/listener /usr/local/bin/dassie-listener
-sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test /run/dassie
+sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test
 sudo install -m 0644 $G/vmlinux $G/initramfs.cpio.gz /var/lib/dassie/guest/
 sudo install -m 0444 $G/rootfs.erofs /var/lib/dassie/rootfs/test.erofs
 scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
   /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock "dassie.instance=test" |
   sudo tee /var/lib/dassie/vms/test/config.json
+scripts/host/jail-env.sh 1 | sudo tee /var/lib/dassie/vms/test/jail.env
 sudo install -m 0644 scripts/host/systemd/fc@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
@@ -86,9 +94,16 @@ journalctl -u fc@test DASSIE_EVENT=exited   # only the exits
   `testapp: listening on port 8080`.
 - It also shows `entrypoint started, pid …` and `entrypoint ready` from
   `dassie-vm-run`, with `DASSIE_EVENT=started` and `DASSIE_EVENT=ready`.
-- `sudo dassie-listener health /run/dassie/test.vsock` prints `state: Ready`.
-  The listener's `health` and `stop` work next to vm-run. Its `events`
-  subcommand does not, because vm-run owns `/run/dassie/test.vsock_1024`.
+- `sudo dassie-listener health /var/lib/dassie/jail/firecracker/test/root/vsock`
+  prints `state: Ready`. The listener's `health` and `stop` work next to
+  vm-run. Its `events` subcommand does not, because vm-run owns `vsock_1024`
+  next to that socket. The `uds_path` in `config.json` does not matter for a
+  jailed VM: the socket is always `vsock` in the jail.
+- Firecracker runs as the jail uid, 1879048193, in the chroot:
+  `ps -o uid,comm -p $(pgrep -P $(systemctl show -p MainPID --value fc@test))`,
+  and `sudo ls /proc/<that pid>/root/` lists `kernel`, `initrd`,
+  `drive-rootfs`, `config.json`, `dev` and `vsock`. It stays in the unit's
+  cgroup (`/proc/<pid>/cgroup`).
 
 **Graceful stop.** `sudo systemctl stop fc@test` returns within a second or
 two:
@@ -142,8 +157,9 @@ packet. Egress, though, is then filtered by `dassie.nft` alone.
 These rules do not survive a reboot. Persist them the way the host manages
 iptables, for example with `iptables-persistent`.
 
-Install the host units, then give `test` index 1 (TAP `dt00001`, guest
-`10.88.0.3`). The index must be unique among running VMs:
+Install the host units, then give `test` its network for index 1 (TAP
+`dt00001`, guest `10.88.0.3`). The TAP belongs to the jail uid from
+`jail.env`, so only this VM's Firecracker can attach to it:
 
 ```sh
 sudo install -d /etc/dassie /etc/systemd/system/fc@.service.d
@@ -308,8 +324,8 @@ new=$(next_runner "$old") && sudo kill -KILL "$new"
   197. systemd restarts the unit after `RestartSec=1`.
 - vm-run killed: systemd SIGKILLs the rest of the unit, Firecracker
   included, at once, and restarts it.
-- Either way the new vm-run removes the stale `/run/dassie/test.vsock` and
-  `test.vsock_1024`, and the new boot logs `started` and `ready`.
+- Either way the new vm-run finds the old boot's sockets stale, rebuilds the
+  jail from scratch, and the new boot logs `started` and `ready`.
 - `NRestarts` goes up by one each time.
 
 ### 3. The app's exit code reaches systemd
@@ -350,11 +366,12 @@ shows the guest console, and the `started` and `ready` entries. To clean up, run
 
 ### 5. Two VMs share one rootfs, and writes vanish on restart
 
-Add a second instance on the same rootfs file. Use different vsock sockets
-and no NIC, and make it crash every 20 s:
+Add a second instance on the same rootfs file, with index 3, no NIC, and
+make it crash every 20 s:
 
 ```sh
 sudo install -d /var/lib/dassie/vms/test2
+scripts/host/jail-env.sh 3 | sudo tee /var/lib/dassie/vms/test2/jail.env
 scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
   /var/lib/dassie/rootfs/test.erofs /run/dassie/test2.vsock \
   "dassie.instance=test2 dassie.env=CRASH_AFTER=20" |
@@ -363,7 +380,10 @@ sha256sum /var/lib/dassie/rootfs/test.erofs
 sudo systemctl start fc@test fc@test2
 # Firecracker is the child of vm-run, the unit's main process.
 fc() { pgrep -P "$(systemctl show -p MainPID --value "fc@$1")"; }
-sudo ls -l /proc/$(fc test)/fd /proc/$(fc test2)/fd | grep test.erofs
+sudo ls -l /proc/$(fc test)/fd /proc/$(fc test2)/fd | grep drive-rootfs
+# Each jail's drive-rootfs is a hard link to the one file.
+sudo stat -c '%i %h %n' /var/lib/dassie/rootfs/test.erofs \
+  /var/lib/dassie/jail/firecracker/test{,2}/root/drive-rootfs
 ```
 
 At startup, testapp creates `/tmp/testapp.boot` on its root filesystem. If
@@ -372,8 +392,9 @@ discarded it.
 
 **Expected:**
 
-- Both VMs reach `Ready`, and both Firecracker processes hold the same
-  `test.erofs` open.
+- Both VMs reach `Ready`, and both Firecracker processes hold their jail's
+  `drive-rootfs` open. All three paths have the same inode: the one
+  `test.erofs`.
 - Each boot of `fc@test2` logs `testapp: / is 0755 root` and
   `testapp: clean root, write ok`. After `CRASH_AFTER=20 elapsed, aborting`
   and the restart, the next boot logs `clean root` again, not `stale write
@@ -391,7 +412,7 @@ shares.
 
 Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
 Set them up as for `test` above. They share `test.erofs`, and each has its own
-directory, `net.env` and config. `a` reuses `test`'s index, and starting its
+directory, `net.env`, `jail.env` and config. `a` reuses `test`'s index, and starting its
 TAP would delete `test`'s live `dt00001`, so first run
 `sudo systemctl stop fc@test`, which also removes its TAP. The testapp's
 `/dial?addr=HOST:PORT` opens a TCP connection from inside the guest and
@@ -448,7 +469,7 @@ build a new rootfs and restart the VM.
 
 ```sh
 scripts/host/deploy-image.sh docker.io/nginxinc/nginx-unprivileged:alpine quiet 11
-sudo dassie-listener health /run/dassie/quiet.vsock
+sudo dassie-listener health /var/lib/dassie/jail/firecracker/quiet/root/vsock
 ```
 
 **Expected:** `route: none`, and `caddy.json` has no `vm-quiet` route.

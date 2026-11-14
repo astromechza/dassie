@@ -21,11 +21,14 @@ ConditionPathExists=/var/lib/dassie/vms/%i/net.env
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/var/lib/dassie/vms/%i/net.env
+# The VM's jail uid and gid own the TAP, so no other uid can attach to it
+# (ADR 0013).
+EnvironmentFile=/var/lib/dassie/vms/%i/jail.env
 # Fail closed: no TAP, so no VM, unless the policy table is loaded.
 ExecStartPre=nft list set inet dassie vm_pool
 # A TAP left behind by a crash would make `tuntap add` fail with EBUSY.
 ExecStartPre=-ip link del ${DASSIE_TAP}
-ExecStart=ip tuntap add dev ${DASSIE_TAP} mode tap
+ExecStart=ip tuntap add dev ${DASSIE_TAP} mode tap user ${DASSIE_UID} group ${DASSIE_GID}
 # IPv4 only (ADR 0008): no link-local address or router solicitations on the
 # host end, before the link comes up. `-`: there is no such sysctl on a host
 # booted with ipv6.disable=1.

@@ -2,6 +2,7 @@
 //! over real Unix sockets, and receives the journal and notify datagrams on
 //! sockets of its own.
 
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::os::unix::process::ExitStatusExt;
@@ -291,9 +292,71 @@ fn spawns_a_real_process() {
         ("/usr/bin/true", NO_EXITED_EVENT),
         ("/usr/bin/false", VM_FAILED),
     ] {
-        let child = spawn_firecracker(Path::new(bin), Path::new("/nonexistent.json")).unwrap();
+        let child = firecracker_command(Path::new(bin), Path::new("/nonexistent.json"))
+            .spawn()
+            .unwrap();
         assert_eq!(Harness::start(child).finish(), want, "{bin}");
     }
+}
+
+#[test]
+fn jailed_setup_builds_the_jail_and_hands_the_socket_to_the_jail_uid() {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let _spawn = spawn_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let assets = dir.path().join("assets");
+    fs::create_dir(&assets).unwrap();
+    for name in ["vmlinux", "rootfs.erofs"] {
+        fs::write(assets.join(name), name).unwrap();
+    }
+    let config = dir.path().join("config.json");
+    fs::write(
+        &config,
+        format!(
+            r#"{{"boot-source": {{"kernel_image_path": "{0}/vmlinux"}},
+                "drives": [{{"drive_id": "rootfs", "path_on_host": "{0}/rootfs.erofs"}}],
+                "vsock": {{"guest_cid": 3, "uds_path": "/ignored.vsock"}}}}"#,
+            assets.display()
+        ),
+    )
+    .unwrap();
+    // The test can only chown to its own uid and gid.
+    let me = fs::metadata(dir.path()).unwrap();
+    let launch = Launch {
+        config,
+        firecracker: "/usr/bin/true".into(),
+        jail: Some(JailArgs {
+            jailer: "/usr/bin/true".into(),
+            chroot_base: dir.path().join("jail"),
+            id: "vm-1".into(),
+            uid: me.uid(),
+            gid: me.gid(),
+        }),
+    };
+
+    let (uds, listener, command) = setup(&launch).unwrap();
+    // The jail dir is named after the resolved binary, which on some
+    // distributions is a symlink to a multi-call binary.
+    let exec = fs::canonicalize("/usr/bin/true").unwrap();
+    let root = fs::canonicalize(dir.path().join("jail"))
+        .unwrap()
+        .join(exec.file_name().unwrap())
+        .join("vm-1/root");
+    assert_eq!(uds, root.join("vsock"));
+    let events = fs::metadata(root.join("vsock_1024")).unwrap();
+    assert!(events.file_type().is_socket());
+    assert_eq!((events.uid(), events.gid()), (me.uid(), me.gid()));
+    assert!(root.join("config.json").exists());
+    let args: Vec<_> = command.get_args().collect();
+    assert_eq!(args[..2], ["--id", "vm-1"]);
+
+    // While that boot's socket is live, a second vm-run must not wipe its jail.
+    let err = setup(&launch).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{err}");
+    drop(listener);
+    // Once it is gone, the next boot starts from a fresh jail.
+    setup(&launch).unwrap();
 }
 
 #[test]

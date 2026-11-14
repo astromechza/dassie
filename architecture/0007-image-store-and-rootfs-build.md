@@ -190,6 +190,8 @@ _Amended 2026-11-13, when slice B added the write side and the pull:_
     land.
 - The artefact's internal ids are never interpreted on the host. M2's jailer
   runs Firecracker as a per-VM uid, so the `0444` artefact has to be linked or
-  bind-mounted into each jail.
+  bind-mounted into each jail. _Amended 2026-11-14:_ it is hard-linked, and
+  the store must share a filesystem with the jails
+  ([ADR 0013](0013-jailed-firecracker.md)).
 - Per-layer disk sharing for rootfs files is ruled out. Disk use is one
   flattened file per image version, cleaned up by GC.
