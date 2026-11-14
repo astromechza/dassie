@@ -77,7 +77,9 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
   thread to reach EOF before it settles the exit status. An `exited` frame
   still being read while the guest reboots is not lost. If the events thread
   has reported no connection at all this boot, vm-run first waits 200 ms for
-  one, since a short-lived guest's connection may still be queued.
+  one, since a short-lived guest's connection may still be queued. Past the
+  1 s, vm-run still reads what is queued, so a queued `exited` sets the
+  status, but it reports nothing more.
 - **Bounded.** The events thread hands frames to the main loop through a
   queue of 64. When the loop is behind, the thread stops reading and the
   guest's writes wait, so a guest cannot grow vm-run's memory. Each journal

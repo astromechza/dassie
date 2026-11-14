@@ -193,7 +193,7 @@ pub(crate) fn run(
                     kill(vm);
                 }
             }
-            Ok(msg) => state.handle(msg, reporting),
+            Ok(msg) => state.handle(msg, Some(reporting)),
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
         }
         if kill_at.is_some_and(|at| Instant::now() >= at) {
@@ -216,25 +216,29 @@ pub(crate) fn run(
     // this boot, wait briefly for one.
     let start = Instant::now();
     loop {
-        let until = if state.connected {
-            start + DRAIN
+        let late = start.elapsed() >= DRAIN;
+        let wait = if late {
+            None
+        } else if state.connected {
+            Some(start + DRAIN)
         } else if !state.seen {
-            start + ACCEPT_GRACE
+            Some(start + ACCEPT_GRACE)
         } else {
             // Take what is already queued, such as a reconnection, without
             // waiting for more.
-            match rx.try_recv() {
-                Ok(msg) => {
-                    state.handle(msg, reporting);
-                    continue;
-                }
-                Err(_) => break,
-            }
+            None
         };
-        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
-            Ok(msg) => state.handle(msg, reporting),
-            Err(_) => break,
-        }
+        let msg = match wait {
+            Some(until) => rx
+                .recv_timeout(until.saturating_duration_since(Instant::now()))
+                .ok(),
+            None => rx.try_recv().ok(),
+        };
+        let Some(msg) = msg else { break };
+        // Past the deadline, only record what the guest said, so a queued
+        // `exited` still sets the exit status but a stalled journal cannot
+        // hold up the exit.
+        state.handle(msg, (!late).then_some(reporting));
     }
 
     let (code, reason) = outcome::exit_code(state.stopped, state.exited, firecracker);
@@ -254,7 +258,8 @@ struct State {
 }
 
 impl State {
-    fn handle(&mut self, msg: Msg, reporting: &Reporting) {
+    /// Updates the state, and reports events unless `reporting` is `None`.
+    fn handle(&mut self, msg: Msg, reporting: Option<&Reporting>) {
         match msg {
             Msg::Connected => {
                 self.connected = true;
@@ -266,6 +271,7 @@ impl State {
                 if let Event::Exited { status } = &event {
                     self.exited = Some(*status);
                 }
+                let Some(reporting) = reporting else { return };
                 if let Some(entry) = outcome::entry(&event) {
                     reporting.journal.send(&entry);
                 }
