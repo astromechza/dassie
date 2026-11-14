@@ -11,7 +11,9 @@ publish = false
 
 [workspace.dependencies]
 arbitrary = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 dassie-proto = { path = "crates/dassie-proto" }
+dassie-vm = { path = "crates/dassie-vm" }
 flate2 = "1"
 nix = { version = "0.31", default-features = false }
 # rustls's crypto provider. Pure Rust (and asm) for x86_64 and aarch64, so the
@@ -21,6 +23,8 @@ rustls-graviola = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+# Signals to a thread without `unsafe`: `dassie vm-run`'s SIGTERM.
+signal-hook = "0.4"
 # Only reading and writing archives; the default `xattr` feature is for unpacking
 # to disk, which dassie never does.
 tar = { version = "0.4", default-features = false }

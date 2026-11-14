@@ -3,8 +3,10 @@
 //! musl binary.
 //!
 //! - `PORT`: TCP port to listen on, on all addresses (default 8080).
-//! - `EXIT_AFTER`: if set, exit with code 0 after this many seconds, so a
-//!   boot test sees `started`, `ready` and `exited` without a stop request.
+//! - `EXIT_AFTER`: if set, exit after this many seconds, so a boot test sees
+//!   `started`, `ready` and `exited` without a stop request.
+//! - `EXIT_CODE`: the code `EXIT_AFTER` exits with (default 0), so a boot test
+//!   can check that it reaches the host as `dassie vm-run`'s exit status.
 //! - `CRASH_AFTER`: if set, abort (SIGABRT) after this many seconds, for the
 //!   crash drills in `scripts/host/systemd/README.md` on a VM with no NIC.
 //! - `GET /crash` aborts the process (SIGABRT), for the "kill the
@@ -35,10 +37,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let port: u16 = env_or("PORT", 8080)?;
     if let Ok(secs) = env::var("EXIT_AFTER") {
         let secs: u64 = secs.parse().map_err(|e| format!("bad EXIT_AFTER: {e}"))?;
+        let code: i32 = env::var("EXIT_CODE").map_or(Ok(0), |c| {
+            c.parse().map_err(|e| format!("bad EXIT_CODE={c:?}: {e}"))
+        })?;
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(secs));
-            eprintln!("testapp: EXIT_AFTER={secs} elapsed, exiting");
-            process::exit(0);
+            eprintln!("testapp: EXIT_AFTER={secs} elapsed, exiting {code}");
+            process::exit(code);
         });
     }
     if let Ok(secs) = env::var("CRASH_AFTER") {

@@ -20,7 +20,7 @@
 
   <rect width="1000" height="470" rx="14" fill="#ffffff"/>
   <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">One VM, from boot to restart</text>
-  <text x="30" y="60" class="s">The loop systemd runs with no daemon. Green tags are events sent to the host on vsock port 1024.</text>
+  <text x="30" y="60" class="s">The loop systemd runs with no daemon. Green tags are events dassie vm-run receives on vsock port 1024.</text>
 
   <!-- legend -->
   <rect x="640" y="26" width="14" height="14" rx="3" class="host"/><text x="660" y="37" class="s">host</text>
@@ -32,10 +32,10 @@
   <g>
     <rect x="31" y="92" width="170" height="104" rx="10" class="host"/>
     <circle cx="51" cy="112" r="10" fill="#334155"/><text x="51" y="116" text-anchor="middle" class="n">1</text>
-    <text x="68" y="117" class="t">systemd</text>
-    <text x="45" y="142" class="s">starts fc@&lt;id&gt;.service</text>
-    <text x="45" y="160" class="s">removes the stale vsock</text>
-    <text x="45" y="176" class="s">socket first</text>
+    <text x="68" y="117" class="t">systemd → vm-run</text>
+    <text x="45" y="142" class="s">fc@&lt;id&gt; runs dassie vm-run:</text>
+    <text x="45" y="160" class="s">clears stale sockets,</text>
+    <text x="45" y="176" class="m">binds &lt;uds&gt;_1024</text>
   </g>
   <g>
     <rect x="223" y="92" width="170" height="104" rx="10" class="host"/>
@@ -86,6 +86,7 @@
     <text x="621" y="320" class="s">TCP connect to the port,</text>
     <text x="621" y="338" class="s">or at once with no port</text>
     <rect x="621" y="348" width="50" height="18" rx="9" fill="#d1fae5"/><text x="646" y="361" text-anchor="middle" class="ev">ready</text>
+    <text x="677" y="361" class="m">→ READY=1</text>
   </g>
   <g>
     <rect x="415" y="270" width="170" height="104" rx="10" class="stop"/>
@@ -94,6 +95,7 @@
     <text x="429" y="320" class="s">crash, clean exit, or</text>
     <text x="429" y="338" class="s">stop → SIGTERM → KILL</text>
     <rect x="429" y="348" width="54" height="18" rx="9" fill="#d1fae5"/><text x="456" y="361" text-anchor="middle" class="ev">exited</text>
+    <text x="489" y="361" class="m">→ its code</text>
   </g>
   <g>
     <rect x="223" y="270" width="170" height="104" rx="10" class="stop"/>
@@ -106,10 +108,10 @@
   <g>
     <rect x="31" y="270" width="170" height="104" rx="10" class="host"/>
     <circle cx="51" cy="290" r="10" fill="#334155"/><text x="51" y="294" text-anchor="middle" class="n">10</text>
-    <text x="68" y="295" class="t">firecracker exits 0</text>
-    <text x="45" y="320" class="m">Restart=always</text>
-    <text x="45" y="338" class="s">gives up after 5 starts</text>
-    <text x="45" y="356" class="s">in 60 s</text>
+    <text x="68" y="295" class="t">vm-run exits</text>
+    <text x="45" y="320" class="s">with the app's code</text>
+    <text x="45" y="338" class="m">Restart=always</text>
+    <text x="45" y="356" class="s">≤ 5 starts in 60 s</text>
   </g>
 
   <!-- arrows -->
@@ -129,6 +131,6 @@
   <path d="M500,196 C500,232 320,232 308,268" stroke="#e11d48" stroke-width="1.3" fill="none" stroke-dasharray="4 4" marker-end="url(#a)"/>
   <text x="512" y="222" class="s" fill="#be123c">setup error or panic</text>
 
-  <text x="30" y="420" class="s">Graceful stop: systemctl stop → ExecStop sends a control-channel stop → step 8 → guest reboots → Firecracker exits, and</text>
-  <text x="30" y="438" class="s">systemd does not restart it. A killed Firecracker skips 3–9: systemd sees the main process die and goes straight back to step 1.</text>
+  <text x="30" y="420" class="s">Graceful stop: systemctl stop → SIGTERM to vm-run → control-channel stop → step 8 → guest reboots → vm-run exits 0, and</text>
+  <text x="30" y="438" class="s">systemd does not restart it. A killed Firecracker skips 3–9: vm-run exits 197 and systemd goes straight back to step 1.</text>
 </svg>

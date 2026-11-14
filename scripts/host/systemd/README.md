@@ -1,18 +1,34 @@
 # Host runbook: `fc@.service`, networking and Caddy
 
 [`fc@.service`](fc@.service) runs one Firecracker microVM per instance, with
-no daemon. It's hand-written for M0 (issue #2). systemd keeps the VM alive:
+no daemon. It's hand-written until M2's daemon renders units. Its main
+process is `dassie vm-run`
+([ADR 0012](../../../architecture/0012-per-vm-runner.md)), which starts
+Firecracker and turns the guest's events into unit state:
+
+- `ready` sends `READY=1`, so the unit is `active` once the app is ready.
+- `started`, `ready` and `exited` become journal entries, with
+  `DASSIE_EVENT`, `DASSIE_PID` and `DASSIE_CODE` or `DASSIE_SIGNAL` fields.
+- vm-run exits with the app's exit code (128+N for signal N), so
+  `ExecMainStatus` is the app's.
+  - It exits 0 after a stop.
+  - It exits 196 when no `exited` event arrived.
+  - It exits 197 when the VM could not run.
+
+systemd keeps the VM alive:
 
 1. The entrypoint exits.
 2. `dassie-init` reports `exited` and reboots the guest.
-3. Firecracker exits 0, and `Restart=always` starts the VM again.
+3. Firecracker exits 0, vm-run exits with the app's code, and `Restart=always`
+   starts the VM again.
 
 `StartLimitBurst=5` in `StartLimitIntervalSec=60` stops a guest that keeps
 exiting from looping forever.
 
 CI runs one part of this automatically: the `kvm-boot` job runs
-[`scripts/test/smoke-test.sh`](../../test/smoke-test.sh), which boots the test
-VM once and checks for `started`, `ready` and `exited`. The drills below need systemd, and
+[`scripts/test/smoke-test.sh`](../../test/smoke-test.sh). It boots the test
+VM through `dassie vm-run` twice, once under `systemd-run`, and checks for
+`started`, `ready` and `exited` and for vm-run's exit status. The drills below need systemd, and
 one of them needs a host reboot, so they run by hand. Use an x86_64 Linux host
 with KVM, or an aarch64 Linux VM with nested virtualisation (ADR 0003).
 Substitute `aarch64` and `Image` for `x86_64` and `vmlinux` there.
@@ -27,6 +43,7 @@ scripts/guest/kernel/build.sh x86_64
 scripts/guest/initramfs.sh x86_64
 scripts/guest/rootfs.sh x86_64
 scripts/host/firecracker.sh x86_64
+cargo build --release -p dassie
 cargo build --release -p dassie-vm --example listener
 ```
 
@@ -38,6 +55,7 @@ read-only drive, and the guest writes only to a tmpfs overlay
 ```sh
 G=target/guest/x86_64
 sudo install -m 0755 $G/firecracker /usr/local/bin/firecracker
+sudo install -m 0755 target/release/dassie /usr/local/bin/dassie
 sudo install -m 0755 target/release/examples/listener /usr/local/bin/dassie-listener
 sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test /run/dassie
 sudo install -m 0644 $G/vmlinux $G/initramfs.cpio.gz /var/lib/dassie/guest/
@@ -49,32 +67,40 @@ sudo install -m 0644 scripts/host/systemd/fc@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
-Run the host listener in its own terminal, then start the VM. You can also
-start the listener later, because the guest holds its events until a listener
-is there:
+Start the VM, and watch its journal in another terminal. The guest's events
+are journal entries of their own. Show them with their fields:
 
 ```sh
-sudo dassie-listener events /run/dassie/test.vsock   # terminal 1
-sudo systemctl start fc@test                         # terminal 2
-journalctl -fu fc@test                               # terminal 3: serial console
+journalctl -fu fc@test       # terminal 1: serial console and events
+sudo systemctl start fc@test # terminal 2
+journalctl -u fc@test -o verbose --output-fields=MESSAGE,DASSIE_EVENT,DASSIE_PID,DASSIE_CODE,DASSIE_SIGNAL
+journalctl -u fc@test DASSIE_EVENT=exited   # only the exits
 ```
 
 **Expected:**
 
+- `systemctl start` returns only once the guest reports `ready`, about 1.5 s.
+  The unit is then `active (running)`, with `Status: "ready"`.
 - The journal shows the kernel booting, then
   `dassie-init: starting ["/usr/local/bin/testapp"]` and
   `testapp: listening on port 8080`.
-- The listener prints `Started { pid: … }`, then `Ready`.
+- It also shows `entrypoint started, pid …` and `entrypoint ready` from
+  `dassie-vm-run`, with `DASSIE_EVENT=started` and `DASSIE_EVENT=ready`.
 - `sudo dassie-listener health /run/dassie/test.vsock` prints `state: Ready`.
+  The listener's `health` and `stop` work next to vm-run. Its `events`
+  subcommand does not, because vm-run owns `/run/dassie/test.vsock_1024`.
 
 **Graceful stop.** `sudo systemctl stop fc@test` returns within a second or
 two:
 
-- `ExecStop` sends a control-channel `stop`.
-- The testapp dies of SIGTERM, and the listener prints
-  `Exited { status: Signal(15) }`.
-- The guest reboots, and Firecracker exits. systemd does not restart it,
-  because this is a manual stop.
+- systemd sends SIGTERM to vm-run alone (`KillMode=mixed`). vm-run sends a
+  control-channel `stop`.
+- The testapp dies of SIGTERM, and the journal shows
+  `entrypoint killed by signal 15` with `DASSIE_SIGNAL=15`.
+- The guest reboots, Firecracker exits, and vm-run exits 0. The unit is
+  `inactive (dead)`, not `failed`, and is not restarted.
+- If the guest ignores the `stop`, vm-run kills Firecracker after 15 s and
+  still exits 0.
 
 ### Optional: networking
 
@@ -246,50 +272,51 @@ testapp then aborts on its own 20 s after every start.
 
 - The journal shows `testapp: /crash requested, aborting`, then
   `dassie-init: entrypoint exited with Signal(6)`, then the guest reboot.
-- systemd logs `Scheduled restart job`, and the next boot follows.
-- The listener prints `Exited { status: Signal(6) }`, then, on a new
-  connection, `Started` and `Ready`.
+- The journal shows `entrypoint killed by signal 6` (`DASSIE_SIGNAL=6`).
+  systemd logs `Main process exited, code=exited, status=134/n/a`, then
+  `Scheduled restart job`, and the next boot follows, with new `started` and
+  `ready` entries.
 - `NRestarts` goes up by one.
 
-### 2. Kill the Firecracker process
+### 2. Kill Firecracker, or vm-run
+
+Kill Firecracker alone, then vm-run, the unit's main process:
 
 ```sh
-sudo systemctl kill -s KILL fc@test
+sudo kill -KILL $(pgrep -P $(systemctl show -p MainPID --value fc@test))
+sudo kill -KILL $(systemctl show -p MainPID --value fc@test)
 ```
 
 **Expected:**
 
-- systemd sees the main process die of SIGKILL and restarts the unit after
-  `RestartSec=1`.
-- `ExecStartPre` removes the stale `/run/dassie/test.vsock`, so the new
-  Firecracker can bind it.
-- The listener sees the old connection close with no `exited`, because the
-  VM vanished. Then it sees a new `Started` and `Ready`.
-- `NRestarts` goes up by one.
+- Firecracker killed: vm-run logs `firecracker failed: signal: 9` and exits
+  197. systemd restarts the unit after `RestartSec=1`.
+- vm-run killed: systemd SIGKILLs the rest of the unit, Firecracker
+  included, at once, and restarts it.
+- Either way the new vm-run removes the stale `/run/dassie/test.vsock` and
+  `test.vsock_1024`, and the new boot logs `started` and `ready`.
+- `NRestarts` goes up by one each time.
 
-### 3. Kill the host listener mid-message
+### 3. The app's exit code reaches systemd
 
-Kill the listener with Ctrl-C or `kill -9` while the VM runs. Then restart the
-VM so the guest has events to send while no listener is up:
+Put `dassie.env=EXIT_AFTER=5 dassie.env=EXIT_CODE=3` into the config's extra
+boot args, then restart the unit:
 
 ```sh
 sudo systemctl restart fc@test
-sudo dassie-listener health /run/dassie/test.vsock   # Ready
-sudo dassie-listener events /run/dassie/test.vsock   # start it again after a few seconds
+sleep 6
+systemctl show fc@test -p ExecMainStatus -p Result -p NRestarts
 ```
 
 **Expected:**
 
-- The guest keeps running: `health` answers `Ready` throughout, the journal
-  shows no reboot, and `NRestarts` does not change.
-- Events the guest could not deliver stay pending (ADR 0004). Within about
-  500 ms of the listener coming back, it receives `Started` and `Ready` from
-  this boot.
-- An event that was written into a connection the listener then dropped
-  unread is lost, which is expected. `health` is the source of truth.
-- For the "mid-message" case, kill the listener while a crash from drill 1 is
-  being reported. The `exited` may be lost, but the VM still reboots and comes
-  back, and the next listener sees the new `Started`.
+- The journal shows `entrypoint exited with code 3` with `DASSIE_CODE=3`,
+  and systemd logs `Main process exited, code=exited, status=3/NOTIMPLEMENTED`.
+- Between boots, `ExecMainStatus=3` and `Result=exit-code`. systemd restarts
+  the unit, and `NRestarts` goes up by one per boot. After 5 starts in 60 s
+  the unit stops on `start-limit-hit` (see the bonus drill).
+- To clean up, regenerate the config without the args, then run
+  `sudo systemctl reset-failed fc@test` and `sudo systemctl start fc@test`.
 
 ### 4. Reboot the host
 
@@ -303,8 +330,7 @@ by `fc@test`, and `curl http://10.88.0.3:8080/` answers again.
 
 **Expected:** after the host is back, `systemctl status fc@test` is
 `active (running)` via `WantedBy=multi-user.target`. The journal for this boot
-shows the guest console. A listener started afterwards still receives
-`Started` and `Ready`, because the guest held them. To clean up, run
+shows the guest console, and the `started` and `ready` entries. To clean up, run
 `sudo systemctl disable --now fc@test`.
 
 ### 5. Two VMs share one rootfs, and writes vanish on restart
@@ -320,8 +346,9 @@ scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/in
   sudo tee /var/lib/dassie/vms/test2/config.json
 sha256sum /var/lib/dassie/rootfs/test.erofs
 sudo systemctl start fc@test fc@test2
-sudo ls -l /proc/$(systemctl show -p MainPID --value fc@test)/fd \
-  /proc/$(systemctl show -p MainPID --value fc@test2)/fd | grep test.erofs
+# Firecracker is the child of vm-run, the unit's main process.
+fc() { pgrep -P "$(systemctl show -p MainPID --value "fc@$1")"; }
+sudo ls -l /proc/$(fc test)/fd /proc/$(fc test2)/fd | grep test.erofs
 ```
 
 At startup, testapp creates `/tmp/testapp.boot` on its root filesystem. If

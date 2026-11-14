@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Boots the test VM twice and checks the lifecycle events: the entrypoint is
-# told to exit after a few seconds, so the listener must see `started`,
-# `ready` and `exited` in that order, and Firecracker must exit when the
-# guest reboots. The non-root testapp must also have been able to use
+# Boots the test VM twice through `dassie vm-run` (ADR 0012) and checks the
+# lifecycle: the entrypoint is told to exit with code 3 after a few seconds,
+# so vm-run must report `started`, `ready` and `exited` in that order and
+# exit with 3 itself. The non-root testapp must also have been able to use
 # /dev/stderr and /dev/shm.
+#
+# Boot 1 runs vm-run directly. Boot 2 runs it under `systemd-run` as a
+# `Type=notify` unit, as fc@.service does, when systemd-run and passwordless
+# sudo are there (as on CI): the unit must then reach `ready` through
+# READY=1 and end with result `exit-code` and status 3.
 #
 # Both boots use the built, read-only rootfs itself, as every VM of an image
 # shares its artefact. testapp writes a file to the overlay root at startup
@@ -25,55 +30,66 @@ case "$ARCH" in
 esac
 timeout_secs=${SMOKE_TIMEOUT:-60}
 
-cargo build --locked -p dassie-vm --example listener --manifest-path "$REPO/Cargo.toml"
-listener="$REPO/target/debug/examples/listener"
+cargo build --locked -p dassie --manifest-path "$REPO/Cargo.toml"
+dassie="$REPO/target/debug/dassie"
+want_code=3
 
 rootfs="$OUT/rootfs.erofs"
 before=$(sha256sum "$rootfs")
 
-# boot N: boots the VM once, with its files in $OUT/smoke/N.
+# boot N direct|systemd: boots the VM once, with its files in $OUT/smoke/N.
 boot() {
-  local run="$OUT/smoke/$1"
+  local n=$1 mode=$2
+  local run="$OUT/smoke/$n"
+  # A systemd boot leaves root-owned files; the directory is ours to empty.
   rm -rf "$run"
   mkdir -p "$run"
-  local uds="$run/vm.vsock"
-  "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" "$uds" \
-    "dassie.instance=smoke-$1 dassie.env=EXIT_AFTER=3" >"$run/config.json"
+  "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" "$run/vm.vsock" \
+    "dassie.instance=smoke-$n dassie.env=EXIT_AFTER=3 dassie.env=EXIT_CODE=$want_code" \
+    >"$run/config.json"
+  local vm_run=("$dassie" vm-run --config "$run/config.json" --firecracker "$OUT/firecracker")
 
-  "$listener" events "$uds" --until exited --timeout "$timeout_secs" \
-    >"$run/events.log" 2>"$run/listener.log" &
-  local listener_pid=$!
-  # The guest holds its events until the host listens, but start in order anyway.
-  for _ in $(seq 50); do
-    [[ -S "${uds}_1024" ]] && break
-    sleep 0.1
-  done
-
-  log "booting $ARCH VM ($1)"
-  timeout "$((timeout_secs + 10))" "$OUT/firecracker" --no-api --config-file "$run/config.json" \
-    >"$run/console.log" 2>&1 &
-  local fc_pid=$!
-
+  log "booting $ARCH VM ($n, $mode)"
   local status=0
-  wait "$listener_pid" || status=$?
-  # Firecracker exits once the guest reboots after `exited`.
-  local fc_status=0
-  wait "$fc_pid" || fc_status=$?
+  case "$mode" in
+    direct)
+      timeout --kill-after=10 "$timeout_secs" "${vm_run[@]}" \
+        >"$run/console.log" 2>"$run/vm-run.log" || status=$?
+      ;;
+    systemd)
+      # Without READY=1 the unit's result would be `protocol` or `timeout`,
+      # not `exit-code`.
+      sudo -n systemd-run --wait --collect --unit "dassie-smoke-$n-$$" \
+        -p Type=notify -p NotifyAccess=main -p KillMode=mixed \
+        -p RuntimeMaxSec="$timeout_secs" \
+        -p StandardOutput="file:$run/console.log" -p StandardError="file:$run/vm-run.log" \
+        "${vm_run[@]}" 2>"$run/systemd-run.log" || true
+      if ! grep -qF "Finished with result: exit-code" "$run/systemd-run.log"; then
+        status=-1
+      else
+        status=$(sed -n 's/.*code=exited.*status=\([0-9]*\).*/\1/p' "$run/systemd-run.log")
+      fi
+      ;;
+  esac
 
   dump() {
     echo "--- console ---" && cat "$run/console.log"
-    echo "--- listener ---" && cat "$run/listener.log"
-    echo "--- events ---" && cat "$run/events.log"
+    echo "--- vm-run ---" && cat "$run/vm-run.log"
+    if [[ -f "$run/systemd-run.log" ]]; then
+      echo "--- systemd-run ---" && cat "$run/systemd-run.log"
+    fi
   }
 
-  if ((status != 0)); then
+  if [[ "$status" != "$want_code" ]]; then
     dump
-    echo "FAIL: boot $1: listener saw no exited event (status $status)" >&2
+    echo "FAIL: boot $n ($mode): vm-run exited with ${status:-?}, want $want_code" \
+      "(124: timed out, 196: no exited event, 197: VM failed, -1: unit did not end in exit-code)" >&2
     exit 1
   fi
-  if ! awk '/Started/ { s = NR } /Ready/ && s { r = NR } /Exited/ && r { ok = 1 } END { exit !ok }' "$run/events.log"; then
+  if ! awk '/event=started/ { s = NR } /event=ready/ && s { r = NR }
+      /event=exited code='"$want_code"'/ && r { ok = 1 } END { exit !ok }' "$run/vm-run.log"; then
     dump
-    echo "FAIL: boot $1: events not in started, ready, exited order" >&2
+    echo "FAIL: boot $n ($mode): events not in started, ready, exited order" >&2
     exit 1
   fi
   # testapp runs as a non-root user and exits early unless it can reopen
@@ -84,24 +100,26 @@ boot() {
     "testapp: / is 0755 root" "testapp: clean root, write ok"; do
     if ! grep -qF "$want" "$run/console.log"; then
       dump
-      echo "FAIL: boot $1: console has no \"$want\"" >&2
+      echo "FAIL: boot $n ($mode): console has no \"$want\"" >&2
       exit 1
     fi
   done
-  if ((fc_status != 0)); then
-    dump
-    echo "FAIL: boot $1: firecracker exited with $fc_status (124 means it never exited)" >&2
-    exit 1
-  fi
-  cat "$run/events.log"
+  grep -F "vm-run: event=" "$run/vm-run.log"
 }
 
-boot 1
-boot 2
+if command -v systemd-run >/dev/null && sudo -n true 2>/dev/null; then
+  second=systemd
+else
+  log "no systemd-run or passwordless sudo: booting twice without systemd"
+  second=direct
+fi
+
+boot 1 direct
+boot 2 "$second"
 
 if [[ "$(sha256sum "$rootfs")" != "$before" ]]; then
   echo "FAIL: the read-only rootfs changed: $before" >&2
   exit 1
 fi
-log "PASS: two boots of one read-only rootfs: started, ready, exited; non-root /dev ok;" \
-  "clean overlay root each time; rootfs unchanged; firecracker exited cleanly"
+log "PASS: two boots of one read-only rootfs (direct, $second): started, ready, exited;" \
+  "vm-run exited $want_code; non-root /dev ok; clean overlay root each time; rootfs unchanged"

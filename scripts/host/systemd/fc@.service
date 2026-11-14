@@ -1,9 +1,11 @@
-# One Firecracker microVM per instance, hand-written for M0 (ADR 0006).
-# Install and drills: README.md next to this file.
+# One Firecracker microVM per instance, run by `dassie vm-run` (ADR 0012).
+# Hand-written until M2's daemon renders units. Install and drills: README.md
+# next to this file.
 #
 # Instance %i reads /var/lib/dassie/vms/%i/config.json (from
-# scripts/host/vm-config.sh) and gets the vsock socket /run/dassie/%i.vsock. The
-# host listener for its events binds /run/dassie/%i.vsock_1024.
+# scripts/host/vm-config.sh) and gets the vsock socket /run/dassie/%i.vsock.
+# vm-run listens for the guest's events on /run/dassie/%i.vsock_1024, and
+# removes either socket if a killed run left it behind.
 # fc@.service.d/net.conf adds its TAP, dassie-tap@%i (ADR 0008).
 
 [Unit]
@@ -14,24 +16,22 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-Type=simple
-# /run/dassie also holds the host listener's sockets, so it outlives the unit.
+# vm-run sends READY=1 when the guest reports `ready`, so the unit is active
+# once the app is, not when Firecracker starts.
+Type=notify
+NotifyAccess=main
 RuntimeDirectory=dassie
 RuntimeDirectoryPreserve=yes
-# A killed Firecracker leaves its vsock socket behind, and the next start
-# would fail to bind it.
-ExecStartPre=/bin/rm -f /run/dassie/%i.vsock
-# --no-api: the config file is the whole VM; no API socket to collide on.
-ExecStart=/usr/local/bin/firecracker --no-api --id %i --config-file /var/lib/dassie/vms/%i/config.json
-# Graceful stop over the control channel (ADR 0004): the guest SIGTERMs the
-# entrypoint, reboots once it exits, and Firecracker exits. systemd kills
-# whatever is left as soon as ExecStop returns, so wait for Firecracker.
-# If the request fails, return at once and let systemd kill the VM.
-# systemd also runs ExecStop after Firecracker exits on its own (guest
-# reboot); MAINPID is then empty and there is nothing to stop.
-ExecStop=/bin/sh -c '[ -n "$$MAINPID" ] || exit 0; /usr/local/bin/dassie-listener stop /run/dassie/%i.vsock && exec tail --pid=$$MAINPID -f /dev/null'
+# Exit status: the app's exit code (128+N for signal N), 0 after a stop,
+# 196 if no `exited` event arrived, 197 if the VM could not run. Events go to
+# the journal with DASSIE_EVENT fields: journalctl -u fc@%i -o verbose.
+ExecStart=/usr/local/bin/dassie vm-run --config /var/lib/dassie/vms/%i/config.json
+# SIGTERM reaches vm-run alone. It asks the guest to stop over the control
+# channel (ADR 0004), waits for the guest to reboot and Firecracker to exit,
+# and kills Firecracker after 15 s. Whatever is left is SIGKILLed.
+KillMode=mixed
 TimeoutStopSec=30
-# Entrypoint exit -> guest reboot -> Firecracker exits 0 -> restart.
+# Entrypoint exit -> guest reboot -> Firecracker exits -> vm-run exits -> restart.
 Restart=always
 RestartSec=1
 # The serial console is Firecracker's stdout.
