@@ -283,15 +283,23 @@ testapp then aborts on its own 20 s after every start.
 Kill Firecracker alone, then vm-run, the unit's main process:
 
 ```sh
+# The next boot's vm-run, within 30 s. Until the old one notices, the unit
+# is still active with the old MainPID, and during RestartSec=1 MainPID is 0.
+next_runner() {
+  for _ in $(seq 150); do
+    pid=$(systemctl show -p MainPID --value fc@test)
+    if [ "$pid" -gt 1 ] && [ "$pid" != "$1" ] && systemctl is-active -q fc@test; then
+      echo "$pid"
+      return
+    fi
+    sleep 0.2
+  done
+  systemctl status --no-pager fc@test >&2
+  return 1
+}
 old=$(systemctl show -p MainPID --value fc@test)
 sudo kill -KILL $(pgrep -P "$old")
-# Wait for the next boot's vm-run: until the old one notices, the unit is
-# still active with the old MainPID, and during RestartSec=1 MainPID is 0.
-until pid=$(systemctl show -p MainPID --value fc@test) &&
-  [ "$pid" -gt 1 ] && [ "$pid" != "$old" ] && systemctl is-active -q fc@test; do
-  sleep 0.2
-done
-sudo kill -KILL "$pid"
+new=$(next_runner "$old") && sudo kill -KILL "$new"
 ```
 
 **Expected:**
