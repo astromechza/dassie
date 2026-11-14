@@ -14,7 +14,7 @@
 # each flow in the ADR. Then NET_POLICY_CASES random TCP probes (default
 # 200, seed NET_POLICY_SEED) are checked against a model of the policy:
 # a VM address, a host address or @no_egress is refused, and anything else
-# reaches the world. Needs root, iproute2, nftables, python3 and curl. The
+# reaches the world. Needs root, iproute2, nftables and python3. The
 # host's own network and firewall are not touched. NET_POLICY_NFT tests
 # another ruleset file instead, e.g. to check that a broken one fails.
 
@@ -59,17 +59,36 @@ vm() {
   guest_ip[$name]=${env[DASSIE_GUEST_IP]} host_ip[$name]=${env[DASSIE_HOST_IP]}
 }
 
-# serve NS PORT LOG: an HTTP server on every address of NS. Returns once it
-# listens, so the first probe cannot race its startup.
+# A TCP listener on every address, for the probes to connect to. It logs
+# each connection's source (`ADDR accepted`) to stderr, which the masquerade
+# check reads, and prints `listening` on stdout once it is.
+listen_py='
+import socket, sys
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", int(sys.argv[1])))
+s.listen(1024)
+print("listening", flush=True)
+while True:
+    conn, (addr, _) = s.accept()
+    print(addr, "accepted", file=sys.stderr, flush=True)
+    conn.close()
+'
+
+# serve NS PORT LOG: the listener in NS, its stderr in LOG. Returns once it
+# listens, so the first probe cannot race its startup. A listener that dies
+# fails the test at once, with its stderr. One that is slow to start (a busy
+# CI runner) gets 30 s.
 serve() {
-  local i
-  nsx "$1" python3 -m http.server --bind 0.0.0.0 "$2" >/dev/null 2>"$3" &
+  local fd line
+  exec {fd}< <(exec ip netns exec "$1" python3 -I -c "$listen_py" "$2" 2>"$3")
   pids+=($!)
-  for ((i = 0; i < 100; i++)); do
-    [[ -n "$(nsx "$1" ss -Hltn "sport = :$2")" ]] && return
-    sleep 0.1
-  done
-  echo "$0: no server on port $2 in $1" >&2
+  if read -r -t 30 -u "$fd" line && [[ "$line" == listening ]]; then
+    exec {fd}<&-
+    return
+  fi
+  echo "$0: no listener on port $2 in $1 after 30 s, or it exited. Its stderr:" >&2
+  cat "$3" >&2
   exit 1
 }
 
@@ -178,7 +197,8 @@ for dst in 169.254.169.254 10.1.2.3 172.17.0.2 192.168.1.1 100.64.0.1; do
 done
 expect open "$(tcp dpt-vm1 1.1.1.1 80)" "vm1 -> 1.1.1.1 (egress)"
 expect open "$(tcp dpt-vm2 "$world_ip" 80)" "vm2 -> world uplink"
-nsx dpt-vm1 curl -s -o /dev/null --max-time 2 http://93.184.215.14/ || true
+# The world's log holds the source of every connection it accepted. VM
+# egress must arrive from the uplink address, never from a VM's own.
 if grep -q "^$uplink " "$logs/world.log" && ! grep -q '^10\.88\.' "$logs/world.log"; then
   expect masq masq "egress arrives masqueraded as $uplink"
 else
