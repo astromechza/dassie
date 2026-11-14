@@ -2,13 +2,13 @@
 # Downloads the pinned Caddy release for the host's ingress (ADR 0010) and
 # verifies its checksum.
 #
-#   guest/caddy.sh [x86_64|aarch64]
+#   scripts/host/caddy.sh [x86_64|aarch64]
 #
 # Outputs $OUT/caddy. Install it as /usr/local/bin/caddy, for
 # systemd/caddy.service.
 
-# shellcheck source-path=SCRIPTDIR source=lib.sh
-source "$(dirname "$0")/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib.sh
+source "$(dirname "$0")/../lib.sh"
 
 # The sha256 of each tarball. Caddy publishes sha512s in
 # caddy_<version>_checksums.txt; check a new pin against those too.

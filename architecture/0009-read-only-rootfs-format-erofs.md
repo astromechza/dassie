@@ -71,8 +71,8 @@ naming, the temporary file plus rename, and `0444`.
 - The guest kernel pins `CONFIG_EROFS_FS` with `_XATTR`, `_POSIX_ACL`,
   `_SECURITY` and `_ZIP` (lz4 needs no separate option in 6.18). This adds
   128 KiB to the kernel image. ext4 is no longer part of the guest contract.
-- The test app rootfs (`guest/rootfs.sh`) is erofs too, so CI boots the same
-  format as production.
+- The test app rootfs (`scripts/guest/rootfs.sh`) is erofs too, so CI boots
+  the same format as production.
 
 ## Consequences
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # One command from an OCI image reference to a VM served by Caddy (issue #10).
 #
-#   guest/deploy-image.sh REF NAME INDEX [HOSTNAME [PORT]]
+#   scripts/host/deploy-image.sh REF NAME INDEX [HOSTNAME [PORT]]
 #
-#   guest/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
+#   scripts/host/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
 #
 # M1 scaffolding: the daemon replaces this script in M2. What lasts is the
 # Caddy config it writes (ADR 0010) and the rule that redeploying the same
@@ -13,8 +13,8 @@
 # Pulls REF and builds its rootfs (dassie-image, ADR 0007), then writes the
 # VM's files under /var/lib/dassie/vms/NAME:
 #
-#   net.env      guest/net-env.sh INDEX (TAP, /31, MAC, DNS; ADR 0008)
-#   config.json  guest/vm-config.sh, with the rootfs and net.env
+#   net.env      scripts/host/net-env.sh INDEX (TAP, /31, MAC, DNS; ADR 0008)
+#   config.json  scripts/host/vm-config.sh, with the rootfs and net.env
 #   route.env    DASSIE_HOSTNAME and DASSIE_PORT, only with a HOSTNAME
 #
 # and renders /etc/dassie/caddy.json from every VM's route.env. A file is
@@ -28,7 +28,7 @@
 # VM gets no route. Run it as a user with sudo, from a checkout: cargo builds
 # as you, everything else runs through sudo. Run one deploy at a time.
 #
-# Needs the host set up as in guest/systemd/README.md: guest assets,
+# Needs the host set up as in scripts/host/systemd/README.md: guest assets,
 # firecracker, dassie-listener, caddy and the units. Plus a Rust toolchain
 # and erofs-utils for dassie-image.
 
@@ -38,7 +38,7 @@ shopt -s inherit_errexit
 export LC_ALL=C
 
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(dirname "$here")
+repo=$(cd "$here/../.." && pwd)
 vms=/var/lib/dassie/vms
 guest=/var/lib/dassie/guest
 caddy_json=/etc/dassie/caddy.json
@@ -78,7 +78,7 @@ case "$(uname -m)" in
 esac
 for need in "$kernel" "$guest/initramfs.cpio.gz" /usr/local/bin/firecracker \
   /usr/local/bin/dassie-listener /usr/local/bin/caddy /etc/dassie/dassie.nft; do
-  [[ -e "$need" ]] || die "$need is missing; set up the host as in guest/systemd/README.md"
+  [[ -e "$need" ]] || die "$need is missing; see scripts/host/systemd/README.md"
 done
 
 # get FILE KEY REGEX -> prints KEY's value from an env file, if it matches

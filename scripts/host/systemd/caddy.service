@@ -5,8 +5,8 @@
 # /etc/dassie/caddy.json is the whole config and its only source of truth:
 # `persist: false` stops Caddy saving its own copy, and every change is a
 # whole-file reload through the admin API on /run/caddy/admin.sock. There is
-# no admin port on TCP. In M1 guest/deploy-image.sh writes the file; from M2
-# the daemon does.
+# no admin port on TCP. In M1 scripts/host/deploy-image.sh writes the file;
+# from M2 the daemon does.
 #
 # Not ordered against any VM: a route to a VM that is not up yet answers 502
 # until it is.

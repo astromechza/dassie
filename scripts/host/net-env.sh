@@ -3,12 +3,12 @@
 # host and guest addresses, the guest MAC and its DNS resolvers. The TAP is
 # dt plus the index padded to 5 digits (dt00042), so names sort by index.
 #
-#   guest/net-env.sh INDEX >/var/lib/dassie/vms/NAME/net.env
+#   scripts/host/net-env.sh INDEX >/var/lib/dassie/vms/NAME/net.env
 #
 # INDEX is 0..32767 and must be unique per running VM. VM N gets the /31 at
 # POOL.0.0 + 2N: the host side is the even address and the guest's gateway,
 # the guest the odd one. The output is read by `dassie-tap@.service`
-# (systemd `EnvironmentFile=`) and by `guest/vm-config.sh` (FC_NET_ENV).
+# (systemd `EnvironmentFile=`) and by `scripts/host/vm-config.sh` (FC_NET_ENV).
 #
 # DASSIE_POOL sets the VM /16 as its first two octets (default 10.88, i.e.
 # 10.88.0.0/16). It must match the `vm_pool` set in systemd/dassie.nft.

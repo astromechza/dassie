@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Tests the VM network policy (guest/systemd/dassie.nft, ADR 0008) without
-# KVM: network namespaces stand in for the host, two VMs and the internet.
+# Tests the VM network policy (scripts/host/systemd/dassie.nft, ADR 0008)
+# without KVM: network namespaces stand in for the host, two VMs and the
+# internet.
 #
-#   sudo guest/net-policy-test.sh
+#   sudo scripts/test/net-policy-test.sh
 #
 #   dpt-vm1 --(dt00001)--+
 #                        +-- dpt-host --(up0)-- dpt-world
 #   dpt-vm2 --(dt00002)--+   (dassie.nft)       (answers on every IPv4
 #                                                address, like the internet)
 #
-# The VMs' addresses come from guest/net-env.sh, and the host end of each
+# The VMs' addresses come from scripts/host/net-env.sh, and the host end of each
 # veth is set up as dassie-tap@.service sets up a TAP. A fixed matrix checks
 # each flow in the ADR. Then NET_POLICY_CASES random TCP probes (default
 # 200, seed NET_POLICY_SEED) are checked against a model of the policy:
@@ -20,9 +21,9 @@
 
 set -euo pipefail
 
-here=$(cd "$(dirname "$0")" && pwd)
+host=$(cd "$(dirname "$0")/../host" && pwd)
 cases=${NET_POLICY_CASES:-200}
-nft_file=${NET_POLICY_NFT:-$here/systemd/dassie.nft}
+nft_file=${NET_POLICY_NFT:-$host/systemd/dassie.nft}
 seed=${NET_POLICY_SEED:-$(date +%s)}
 RANDOM=$seed
 uplink=198.18.0.1 world_ip=198.18.0.2
@@ -47,7 +48,7 @@ declare -A guest_ip host_ip
 vm() {
   local name=$1 index=$2 key value
   local -A env=()
-  while IFS='=' read -r key value; do env[$key]=$value; done < <("$here/net-env.sh" "$index")
+  while IFS='=' read -r key value; do env[$key]=$value; done < <("$host/net-env.sh" "$index")
   ip netns add "$name"
   ip -n dpt-host link add "${env[DASSIE_TAP]}" type veth peer name eth0 netns "$name"
   nsx dpt-host sysctl -q -w "net.ipv6.conf.${env[DASSIE_TAP]}.disable_ipv6=1"

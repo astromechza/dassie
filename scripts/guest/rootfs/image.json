@@ -14,5 +14,5 @@
     "Labels": null
   },
   "rootfs": { "type": "layers", "diff_ids": [] },
-  "history": [{ "created_by": "guest/rootfs.sh test image" }]
+  "history": [{ "created_by": "scripts/guest/rootfs.sh test image" }]
 }

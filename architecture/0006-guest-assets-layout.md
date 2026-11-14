@@ -19,18 +19,20 @@ starts with no `/proc`, `/sys` or device nodes beyond the kernel's built-in
 
 ## Decision
 
-**Layout.** Guest assets live in `guest/`, as scripts plus the inputs they
-need:
+**Layout.** Guest assets live in `scripts/`, as scripts plus the inputs they
+need, sharing `scripts/lib.sh`. (Moved from `guest/` on 2026-11-14, #31, to
+split guest builds from host tooling and tests. The paths changed; the
+decision did not.)
 
 | Path | Builds |
 | --- | --- |
-| `guest/kernel/build.sh`, `*.config` | `vmlinux` (x86_64) or `Image` (aarch64) |
-| `guest/initramfs.sh` | `initramfs.cpio.gz`, holding only `/init` = static musl `dassie-init` |
-| `guest/rootfs.sh`, `guest/rootfs/` | `rootfs.erofs`, the test app image |
-| `guest/firecracker.sh` | `firecracker`, the pinned release |
-| `guest/vm-config.sh` | a Firecracker `--config-file` for one VM |
-| `guest/smoke-test.sh` | the CI boot test |
-| `guest/systemd/` | the hand-written `fc@.service` and its runbook |
+| `scripts/guest/kernel/build.sh`, `*.config` | `vmlinux` (x86_64) or `Image` (aarch64) |
+| `scripts/guest/initramfs.sh` | `initramfs.cpio.gz`, holding only `/init` = static musl `dassie-init` |
+| `scripts/guest/rootfs.sh`, `scripts/guest/rootfs/` | `rootfs.erofs`, the test app image |
+| `scripts/host/firecracker.sh` | `firecracker`, the pinned release |
+| `scripts/host/vm-config.sh` | a Firecracker `--config-file` for one VM |
+| `scripts/test/smoke-test.sh` | the CI boot test |
+| `scripts/host/systemd/` | the hand-written `fc@.service` and its runbook |
 
 - Outputs go to `target/guest/<arch>/` (override with `OUT`). Downloads are
   cached in `~/.cache/dassie`.
@@ -45,9 +47,9 @@ need:
   - the cpio holds no device nodes.
 
 **Kernel.** A 6.18 LTS kernel uses Firecracker's
-`microvm-kernel-ci-<arch>-6.18.config`, merged with `guest/kernel/dassie.config`
-for both architectures. `build.sh` fails if `olddefconfig` drops any option in
-the fragment. The fragment states what init and the host contract rely on:
+`microvm-kernel-ci-<arch>-6.18.config`, merged with
+`scripts/guest/kernel/dassie.config` for both architectures. `build.sh` fails if
+`olddefconfig` drops any option in the fragment. The fragment states what init and the host contract rely on:
 
 - initrd (gzip), devtmpfs, proc, sysfs;
 - the virtio-mmio transport, virtio-blk, virtio-net and vsock;
@@ -122,8 +124,8 @@ each unit, so a host listener's socket survives VM restarts.
   (erofs since ADR 0009).
 - A kernel or init regression shows up in the `kvm-boot` CI job, which boots
   x86_64. aarch64 is only built and booted by hand, in a local Linux VM.
-- CI caches the built x86_64 kernel by the hash of `guest/kernel/`. A cache
-  miss costs a full kernel build.
+- CI caches the built x86_64 kernel by the hash of `scripts/guest/kernel/`. A
+  cache miss costs a full kernel build.
 - The initramfs has no shell or busybox, so a failed boot is debugged from the
   serial console alone. Every init failure is logged there before the reboot.
 - `fc@.service` is a template for M2's generated units, not their final form.

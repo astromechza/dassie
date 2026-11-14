@@ -22,15 +22,15 @@ What is still open is who owns Caddy's config, and how it changes:
 - **The admin API can do anything to the proxy.** It must not be reachable
   from the network, or by any local user.
 
-M1 drives all of this by hand, from `guest/deploy-image.sh`. This ADR records
-what M2 inherits, and not that script.
+M1 drives all of this by hand, from `scripts/host/deploy-image.sh`. This ADR
+records what M2 inherits, and not that script.
 
 ## Decision
 
 - **One `caddy.service`**, running a pinned upstream Caddy release
-  (`guest/caddy.sh`) under `DynamicUser`, with only `CAP_NET_BIND_SERVICE`. It
-  is not ordered against any VM: a route to a VM that is not up yet answers 502
-  until it is.
+  (`scripts/host/caddy.sh`) under `DynamicUser`, with only
+  `CAP_NET_BIND_SERVICE`. It is not ordered against any VM: a route to a VM
+  that is not up yet answers 502 until it is.
 - **`/etc/dassie/caddy.json` is the whole config and its only source of
   truth.** It is native Caddy JSON, not a Caddyfile, so it is generated rather
   than adapted. `admin.config.persist` is `false`, so Caddy never writes its

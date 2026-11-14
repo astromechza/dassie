@@ -1,13 +1,14 @@
-//! A trivial entrypoint for the test rootfs (`guest/rootfs.sh`): answers every
-//! HTTP request with `200 OK`. std only, so it builds as a static musl binary.
+//! A trivial entrypoint for the test rootfs (`scripts/guest/rootfs.sh`):
+//! answers every HTTP request with `200 OK`. std only, so it builds as a static
+//! musl binary.
 //!
 //! - `PORT`: TCP port to listen on, on all addresses (default 8080).
 //! - `EXIT_AFTER`: if set, exit with code 0 after this many seconds, so a
 //!   boot test sees `started`, `ready` and `exited` without a stop request.
 //! - `CRASH_AFTER`: if set, abort (SIGABRT) after this many seconds, for the
-//!   crash drills in `guest/systemd/README.md` on a VM with no NIC.
+//!   crash drills in `scripts/host/systemd/README.md` on a VM with no NIC.
 //! - `GET /crash` aborts the process (SIGABRT), for the "kill the
-//!   entrypoint" drill in `guest/systemd/README.md`.
+//!   entrypoint" drill in `scripts/host/systemd/README.md`.
 //! - `GET /dial?addr=HOST:PORT` opens a TCP connection from inside the guest,
 //!   resolving `HOST` through `/etc/resolv.conf`, and answers `200 ok ADDR`
 //!   or `502 error: …`. The network drills use it for isolation and egress.
