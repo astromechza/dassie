@@ -2,6 +2,10 @@
 
 use std::env;
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io;
+use std::os::fd::AsFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 
@@ -20,10 +24,18 @@ pub(crate) enum Journal {
 }
 
 impl Journal {
-    /// The journal when systemd connected stderr to it (`$JOURNAL_STREAM`),
-    /// stderr otherwise.
+    /// The journal when systemd connected stderr to it, stderr otherwise.
+    ///
+    /// `$JOURNAL_STREAM` is inherited, so a process whose stderr was
+    /// redirected (a CI runner that is itself a systemd service, a shell
+    /// with `2>file`) still has it. As `systemd.exec(5)` says, it counts only
+    /// when its `<device>:<inode>` is stderr's.
     pub(crate) fn from_env() -> Self {
-        if env::var_os("JOURNAL_STREAM").is_some() {
+        let to_journal = env::var("JOURNAL_STREAM")
+            .ok()
+            .zip(stderr_id().ok())
+            .is_some_and(|(var, (dev, ino))| is_stream(&var, dev, ino));
+        if to_journal {
             Self::Native(JOURNAL_SOCKET.into())
         } else {
             Self::Stderr
@@ -41,6 +53,20 @@ impl Journal {
         }
         eprintln!("{}", logfmt(entry));
     }
+}
+
+/// The device and inode of this process's stderr.
+fn stderr_id() -> io::Result<(u64, u64)> {
+    let meta = File::from(io::stderr().as_fd().try_clone_to_owned()?).metadata()?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// Whether `$JOURNAL_STREAM` (`<device>:<inode>`, in decimal) names this
+/// device and inode.
+fn is_stream(var: &str, dev: u64, ino: u64) -> bool {
+    var.split_once(':')
+        .and_then(|(d, i)| Some((d.parse::<u64>().ok()?, i.parse::<u64>().ok()?)))
+        == Some((dev, ino))
 }
 
 /// An entry in journald's native protocol: one `KEY=VALUE\n` per field.
@@ -69,6 +95,16 @@ pub(crate) fn logfmt(entry: &Entry) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_stream_must_name_stderr() {
+        assert!(is_stream("8:12345", 8, 12345));
+        assert!(!is_stream("8:12345", 8, 99), "another stream");
+        assert!(!is_stream("8:12345", 9, 12345), "another device");
+        for bad in ["", "8", "8:", ":1", "x:1", "8:1:2"] {
+            assert!(!is_stream(bad, 8, 1), "{bad:?}");
+        }
+    }
 
     fn sample() -> Entry {
         Entry {
