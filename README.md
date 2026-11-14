@@ -29,19 +29,27 @@ has diagrams of a VM's lifecycle and the vsock channels.
 
 ![Dassie on one host: built (solid) and planned (dashed) parts](architecture/diagrams/1-host-overview.svg)
 
-## Guest assets
+## Scripts
 
-[`guest/`](guest/) holds the scripts that build the guest kernel, the shared
-initramfs and a test app rootfs, plus the hand-written
-[`fc@.service`](guest/systemd/fc@.service), the networking units, and their
-[runbook](guest/systemd/README.md) (ADR 0006, ADR 0008). They run on Linux:
+[`scripts/`](scripts/) holds the shell tooling, all of it Linux-only, sharing
+[`scripts/lib.sh`](scripts/lib.sh):
+
+- [`scripts/guest/`](scripts/guest/) builds what boots inside a VM: the guest
+  kernel, the shared initramfs and a test app rootfs (ADR 0006).
+- [`scripts/host/`](scripts/host/) is the host side: pinned Firecracker and
+  Caddy binaries, VM addressing and config, `deploy-image.sh`, the
+  hand-written [`fc@.service`](scripts/host/systemd/fc@.service), the
+  networking and Caddy units, and their
+  [runbook](scripts/host/systemd/README.md) (ADR 0008, ADR 0010).
+- [`scripts/test/`](scripts/test/) holds the CI boot test and the network
+  tests.
 
 ```sh
-guest/kernel/build.sh x86_64   # target/guest/x86_64/vmlinux
-guest/initramfs.sh x86_64      # target/guest/x86_64/initramfs.cpio.gz
-guest/rootfs.sh x86_64         # target/guest/x86_64/rootfs.erofs
-guest/firecracker.sh x86_64    # target/guest/x86_64/firecracker
-guest/smoke-test.sh x86_64     # boot twice, expect started, ready, exited
+scripts/guest/kernel/build.sh x86_64   # target/guest/x86_64/vmlinux
+scripts/guest/initramfs.sh x86_64      # target/guest/x86_64/initramfs.cpio.gz
+scripts/guest/rootfs.sh x86_64         # target/guest/x86_64/rootfs.erofs
+scripts/host/firecracker.sh x86_64     # target/guest/x86_64/firecracker
+scripts/test/smoke-test.sh x86_64      # boot twice, expect started, ready, exited
 ```
 
 `rootfs.sh` needs `mkfs.erofs` (erofs-utils, any recent version). The root
@@ -98,9 +106,9 @@ untrusted guest input) also deny `unwrap`, `expect`, `panic!` and indexing at
 their crate roots.
 
 CI also runs [actionlint](https://github.com/rhysd/actionlint) and
-[zizmor](https://docs.zizmor.sh) on `.github/`, `shellcheck` on `guest/`,
-the `guest/net-env-test.sh` known-answer test for VM addressing, a
-`net-policy` job that runs `guest/net-policy-test.sh` (the nft policy
+[zizmor](https://docs.zizmor.sh) on `.github/`, `shellcheck` on `scripts/`,
+the `scripts/test/net-env-test.sh` known-answer test for VM addressing, a
+`net-policy` job that runs `scripts/test/net-policy-test.sh` (the nft policy
 against fake VMs in network namespaces), and a `kvm-boot` job that runs the
 guest smoke test on an x86_64 KVM runner.
 

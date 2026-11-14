@@ -2,7 +2,7 @@
 # Builds the shared initramfs: a gzip newc cpio whose only file is /init, the
 # static musl dassie-init (ADR 0006).
 #
-#   guest/initramfs.sh [x86_64|aarch64]
+#   scripts/guest/initramfs.sh [x86_64|aarch64]
 #
 # Outputs $OUT/initramfs.cpio.gz. Needs: cargo, GNU cpio, gzip.
 #
@@ -10,8 +10,8 @@
 # initramfs already holds /dev/console, which the external one is unpacked
 # over, and init mounts devtmpfs before anything else.
 
-# shellcheck source-path=SCRIPTDIR source=lib.sh
-source "$(dirname "$0")/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib.sh
+source "$(dirname "$0")/../lib.sh"
 
 log "building dassie-init for $TRIPLE"
 cargo_musl -p dassie-init --bin dassie-init

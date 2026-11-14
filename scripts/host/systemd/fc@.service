@@ -2,7 +2,7 @@
 # Install and drills: README.md next to this file.
 #
 # Instance %i reads /var/lib/dassie/vms/%i/config.json (from
-# guest/vm-config.sh) and gets the vsock socket /run/dassie/%i.vsock. The
+# scripts/host/vm-config.sh) and gets the vsock socket /run/dassie/%i.vsock. The
 # host listener for its events binds /run/dassie/%i.vsock_1024.
 # fc@.service.d/net.conf adds its TAP, dassie-tap@%i (ADR 0008).
 

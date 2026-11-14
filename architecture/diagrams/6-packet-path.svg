@@ -27,7 +27,7 @@
 
   <rect width="1000" height="680" rx="14" fill="#ffffff"/>
   <text x="30" y="38" font-size="20" font-weight="700" fill="#0f172a">One packet from a VM, hook by hook</text>
-  <text x="30" y="60" class="s">table inet dassie (guest/systemd/dassie.nft) · first matching rule wins · every chain is policy accept, so traffic not on a dt* TAP passes untouched</text>
+  <text x="30" y="60" class="s">table inet dassie (scripts/host/systemd/dassie.nft) · first matching rule wins · every chain is policy accept, so traffic not on a dt* TAP passes untouched</text>
 
   <!-- legend -->
   <rect x="742" y="22" width="58" height="20" rx="10" fill="#059669"/>

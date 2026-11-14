@@ -11,8 +11,8 @@ no daemon. It's hand-written for M0 (issue #2). systemd keeps the VM alive:
 exiting from looping forever.
 
 CI runs one part of this automatically: the `kvm-boot` job runs
-[`guest/smoke-test.sh`](../smoke-test.sh), which boots the test VM once and
-checks for `started`, `ready` and `exited`. The drills below need systemd, and
+[`scripts/test/smoke-test.sh`](../../test/smoke-test.sh), which boots the test
+VM once and checks for `started`, `ready` and `exited`. The drills below need systemd, and
 one of them needs a host reboot, so they run by hand. Use an x86_64 Linux host
 with KVM, or an aarch64 Linux VM with nested virtualisation (ADR 0003).
 Substitute `aarch64` and `Image` for `x86_64` and `vmlinux` there.
@@ -20,20 +20,20 @@ Substitute `aarch64` and `Image` for `x86_64` and `vmlinux` there.
 ## Install
 
 From the repo root, build the guest assets. They go to `target/guest/x86_64/`
-([ADR 0006](../../architecture/0006-guest-assets-layout.md)):
+([ADR 0006](../../../architecture/0006-guest-assets-layout.md)):
 
 ```sh
-guest/kernel/build.sh x86_64
-guest/initramfs.sh x86_64
-guest/rootfs.sh x86_64
-guest/firecracker.sh x86_64
+scripts/guest/kernel/build.sh x86_64
+scripts/guest/initramfs.sh x86_64
+scripts/guest/rootfs.sh x86_64
+scripts/host/firecracker.sh x86_64
 cargo build --release -p dassie-proto --example listener
 ```
 
 Install them, plus one instance called `test`. The rootfs goes in once, read-only,
 under `/var/lib/dassie/rootfs/`. Every instance attaches that same file as a
 read-only drive, and the guest writes only to a tmpfs overlay
-([ADR 0006](../../architecture/0006-guest-assets-layout.md)):
+([ADR 0006](../../../architecture/0006-guest-assets-layout.md)):
 
 ```sh
 G=target/guest/x86_64
@@ -42,10 +42,10 @@ sudo install -m 0755 target/release/examples/listener /usr/local/bin/dassie-list
 sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test /run/dassie
 sudo install -m 0644 $G/vmlinux $G/initramfs.cpio.gz /var/lib/dassie/guest/
 sudo install -m 0444 $G/rootfs.erofs /var/lib/dassie/rootfs/test.erofs
-guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
+scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
   /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock "dassie.instance=test" |
   sudo tee /var/lib/dassie/vms/test/config.json
-sudo install -m 0644 guest/systemd/fc@.service /etc/systemd/system/
+sudo install -m 0644 scripts/host/systemd/fc@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -81,7 +81,7 @@ two:
 Drill 1 and the network drill reach the testapp over HTTP, so the guest needs
 a NIC. Each VM gets a routed TAP and a /31 from `10.88.0.0/16`, and one nft
 table holds the policy for all of them
-([ADR 0008](../../architecture/0008-guest-networking.md)). Needs `iproute2`
+([ADR 0008](../../../architecture/0008-guest-networking.md)). Needs `iproute2`
 and `nftables` on the host.
 
 Every other firewall on the host must also let forwarded VM traffic, i.e.
@@ -121,11 +121,11 @@ Install the host units, then give `test` index 1 (TAP `dt00001`, guest
 
 ```sh
 sudo install -d /etc/dassie /etc/systemd/system/fc@.service.d
-sudo install -m 0644 guest/systemd/dassie.nft /etc/dassie/
-sudo install -m 0644 guest/systemd/dassie-net.service guest/systemd/dassie-tap@.service /etc/systemd/system/
-sudo install -m 0644 guest/systemd/fc@.service.d/net.conf /etc/systemd/system/fc@.service.d/
-guest/net-env.sh 1 | sudo tee /var/lib/dassie/vms/test/net.env
-FC_NET_ENV=/var/lib/dassie/vms/test/net.env guest/vm-config.sh /var/lib/dassie/guest/vmlinux \
+sudo install -m 0644 scripts/host/systemd/dassie.nft /etc/dassie/
+sudo install -m 0644 scripts/host/systemd/dassie-net.service scripts/host/systemd/dassie-tap@.service /etc/systemd/system/
+sudo install -m 0644 scripts/host/systemd/fc@.service.d/net.conf /etc/systemd/system/fc@.service.d/
+scripts/host/net-env.sh 1 | sudo tee /var/lib/dassie/vms/test/net.env
+FC_NET_ENV=/var/lib/dassie/vms/test/net.env scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux \
   /var/lib/dassie/guest/initramfs.cpio.gz /var/lib/dassie/rootfs/test.erofs \
   /run/dassie/test.vsock "dassie.instance=test" |
   sudo tee /var/lib/dassie/vms/test/config.json
@@ -159,8 +159,9 @@ curl http://10.88.0.3:8080/   # ok
 ### Optional: ingress, and deploying an image
 
 Caddy on the host serves `https://HOSTNAME/` for each VM that has a route,
-from its own local CA ([ADR 0010](../../architecture/0010-ingress-through-caddy.md)).
-`guest/deploy-image.sh` goes from an image reference to such a VM in one
+from its own local CA
+([ADR 0010](../../../architecture/0010-ingress-through-caddy.md)).
+`scripts/host/deploy-image.sh` goes from an image reference to such a VM in one
 command. Set up networking as above first. It also needs a Rust toolchain
 and erofs-utils ≥ 1.8 for `dassie-image`.
 
@@ -172,9 +173,9 @@ Install Caddy and its unit. `deploy-image.sh` writes `/etc/dassie/caddy.json`,
 then enables and starts Caddy:
 
 ```sh
-guest/caddy.sh x86_64
+scripts/host/caddy.sh x86_64
 sudo install -m 0755 target/guest/x86_64/caddy /usr/local/bin/caddy
-sudo install -m 0644 guest/systemd/caddy.service /etc/systemd/system/
+sudo install -m 0644 scripts/host/systemd/caddy.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -184,7 +185,7 @@ per VM, as for `net-env.sh`), and optionally a hostname and the guest port
 needs root:
 
 ```sh
-guest/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
+scripts/host/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
 ```
 
 It pulls the image and builds its rootfs, then writes
@@ -313,7 +314,7 @@ and no NIC, and make it crash every 20 s:
 
 ```sh
 sudo install -d /var/lib/dassie/vms/test2
-guest/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
+scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
   /var/lib/dassie/rootfs/test.erofs /run/dassie/test2.vsock \
   "dassie.instance=test2 dassie.env=CRASH_AFTER=20" |
   sudo tee /var/lib/dassie/vms/test2/config.json
@@ -375,7 +376,7 @@ curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
 ### 7. Deploy an image by reference
 
 ```sh
-guest/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
+scripts/host/deploy-image.sh docker.io/traefik/whoami:latest web 10 web.localhost
 curl --cacert caddy-root.crt https://web.localhost/
 curl -I http://web.localhost/
 ```
@@ -404,7 +405,7 @@ build a new rootfs and restart the VM.
 ### 9. A VM with no route
 
 ```sh
-guest/deploy-image.sh docker.io/nginxinc/nginx-unprivileged:alpine quiet 11
+scripts/host/deploy-image.sh docker.io/nginxinc/nginx-unprivileged:alpine quiet 11
 sudo dassie-listener health /run/dassie/quiet.vsock
 ```
 

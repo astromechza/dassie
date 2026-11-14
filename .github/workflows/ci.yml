@@ -145,10 +145,10 @@ jobs:
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
 
       - name: shellcheck
-        run: shellcheck -x guest/*.sh guest/kernel/*.sh
+        run: git ls-files -z 'scripts/*.sh' | xargs -0 shellcheck -x
 
       - name: net.env helper
-        run: guest/net-env-test.sh
+        run: scripts/test/net-env-test.sh
 
       - name: zizmor
         run: zizmor --format=github .github
@@ -164,8 +164,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # The VM network policy (guest/systemd/dassie.nft, ADR 0008) against fake
-  # VMs in network namespaces: a fixed matrix plus random probes checked
+  # The VM network policy (scripts/host/systemd/dassie.nft, ADR 0008) against
+  # fake VMs in network namespaces: a fixed matrix plus random probes checked
   # against a model. Needs root but no KVM, and leaves the runner's own
   # network alone.
   net-policy:
@@ -182,11 +182,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends nftables
 
       - name: Policy test
-        run: sudo NET_POLICY_CASES=500 guest/net-policy-test.sh
+        run: sudo NET_POLICY_CASES=500 scripts/test/net-policy-test.sh
 
   # Boots the x86_64 guest under Firecracker on KVM and checks the lifecycle
-  # events (guest/smoke-test.sh). The drills in guest/systemd/README.md stay
-  # manual.
+  # events (scripts/test/smoke-test.sh). The drills in
+  # scripts/host/systemd/README.md stay manual.
   kvm-boot:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -204,20 +204,21 @@ jobs:
       - name: Set guest output dir
         run: echo "OUT=$RUNNER_TEMP/guest/x86_64" >> "$GITHUB_ENV"
 
-      # The kernel only changes with guest/kernel/ (pins, fragments, script).
+      # The kernel only changes with scripts/guest/kernel/ (pins, fragments,
+      # script) and scripts/lib.sh.
       - name: Restore guest kernel
         id: kernel
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ runner.temp }}/guest/x86_64/vmlinux
-          key: guest-kernel-x86_64-${{ hashFiles('guest/kernel/**', 'guest/lib.sh') }}
+          key: guest-kernel-x86_64-${{ hashFiles('scripts/guest/kernel/**', 'scripts/lib.sh') }}
 
       - name: Build guest kernel
         if: steps.kernel.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bc bison flex libelf-dev libssl-dev
-          guest/kernel/build.sh x86_64
+          scripts/guest/kernel/build.sh x86_64
 
       # Saved straight away, so a failing boot does not mean a rebuild.
       - name: Save guest kernel
@@ -232,11 +233,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends erofs-utils
-          guest/initramfs.sh x86_64
-          guest/rootfs.sh x86_64
+          scripts/guest/initramfs.sh x86_64
+          scripts/guest/rootfs.sh x86_64
 
       - name: Install Firecracker
-        run: guest/firecracker.sh x86_64
+        run: scripts/host/firecracker.sh x86_64
 
       # Runners have /dev/kvm, but only root can open it by default.
       - name: Enable KVM
@@ -247,4 +248,4 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Boot smoke test
-        run: guest/smoke-test.sh x86_64
+        run: scripts/test/smoke-test.sh x86_64

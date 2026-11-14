@@ -5,14 +5,14 @@
 # artefacts (ADR 0009), read-only (0444) like them, and booted the same way:
 # as the lower layer of the guest's overlay root (ADR 0006).
 #
-#   guest/rootfs.sh [x86_64|aarch64]
+#   scripts/guest/rootfs.sh [x86_64|aarch64]
 #
 # Outputs $OUT/rootfs.erofs. Needs: cargo, mkfs.erofs (erofs-utils).
 # Runs without root: mkfs.erofs copies a staging directory, and --all-root
 # makes every file root-owned, as in an image.
 
-# shellcheck source-path=SCRIPTDIR source=lib.sh
-source "$(dirname "$0")/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib.sh
+source "$(dirname "$0")/../lib.sh"
 
 case "$ARCH" in
   x86_64) oci_arch=amd64 ;;
@@ -29,7 +29,7 @@ mkdir -p "$staging"/{.dassie,dev,proc,sys,tmp,etc,usr/local/bin,home/app}
 chmod 0755 "$staging"
 chmod 1777 "$staging/tmp"
 install -m 0755 "$MUSL_RELEASE/examples/testapp" "$staging/usr/local/bin/testapp"
-sed "s/@ARCH@/$oci_arch/" "$REPO/guest/rootfs/image.json" >"$staging/.dassie/image.json"
+sed "s/@ARCH@/$oci_arch/" "$REPO/scripts/guest/rootfs/image.json" >"$staging/.dassie/image.json"
 cat >"$staging/etc/passwd" <<'EOF'
 root:x:0:0:root:/root:/bin/sh
 app:x:1000:1000:app:/home/app:/bin/sh

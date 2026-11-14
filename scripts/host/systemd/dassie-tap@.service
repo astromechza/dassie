@@ -1,5 +1,5 @@
 # The routed TAP for VM %i (ADR 0008), from /var/lib/dassie/vms/%i/net.env
-# (guest/net-env.sh). fc@%i requires it through fc@.service.d/net.conf.
+# (scripts/host/net-env.sh). fc@%i requires it through fc@.service.d/net.conf.
 #
 # A VM without net.env has no NIC: the condition skips this unit, which
 # counts as success, so fc@%i still starts, even if dassie-net has failed.

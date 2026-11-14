@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared helpers for the guest asset scripts. Source it; do not run it.
+# Shared helpers for the scripts under scripts/. Source it; do not run it.
 #
 # Sets:
 #   REPO       repo root

@@ -39,7 +39,7 @@ forces shape it:
   administered and unicast, as in Firecracker's examples, so a capture names
   its VM.
 - The guest gets its address from the kernel's `ip=` autoconfig
-  (`CONFIG_IP_PNP`, pinned in `guest/kernel/dassie.config`), as
+  (`CONFIG_IP_PNP`, pinned in `scripts/guest/kernel/dassie.config`), as
   `ip=GUEST::HOST:255.255.255.254::eth0:off`. No DHCP runs anywhere.
 - The TAP is IPv4 only, with IPv6 and multicast off on the host end. That
   way the host's own link-local services (mDNS, LLMNR, router solicitations)
@@ -47,7 +47,7 @@ forces shape it:
 
 **Per-VM state is one file, `/var/lib/dassie/vms/<name>/net.env`.** It holds
 the index, TAP name, host IP, guest IP, MAC and DNS resolvers, in systemd
-`EnvironmentFile=` syntax. `guest/net-env.sh <index>` writes it in M1. M2
+`EnvironmentFile=` syntax. `scripts/host/net-env.sh <index>` writes it in M1. M2
 allocates it in SQLite, per VM instance rather than per app, so blue and green
 get different addresses.
 

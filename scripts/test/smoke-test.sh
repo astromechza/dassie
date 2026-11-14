@@ -11,13 +11,13 @@
 # boot's writes were discarded. The rootfs must be byte-for-byte unchanged
 # afterwards (ADR 0006).
 #
-#   guest/smoke-test.sh [x86_64|aarch64]
+#   scripts/test/smoke-test.sh [x86_64|aarch64]
 #
 # Expects the outputs of kernel/build.sh, initramfs.sh, rootfs.sh and
 # firecracker.sh in $OUT, and read-write access to /dev/kvm.
 
-# shellcheck source-path=SCRIPTDIR source=lib.sh
-source "$(dirname "$0")/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib.sh
+source "$(dirname "$0")/../lib.sh"
 
 case "$ARCH" in
   x86_64) kernel="$OUT/vmlinux" ;;
@@ -37,7 +37,7 @@ boot() {
   rm -rf "$run"
   mkdir -p "$run"
   local uds="$run/vm.vsock"
-  "$REPO/guest/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" "$uds" \
+  "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" "$uds" \
     "dassie.instance=smoke-$1 dassie.env=EXIT_AFTER=3" >"$run/config.json"
 
   "$listener" events "$uds" --until exited --timeout "$timeout_secs" \

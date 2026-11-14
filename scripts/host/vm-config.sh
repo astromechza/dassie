@@ -7,14 +7,14 @@
 # then write /dev/vda. dassie-init overlays a tmpfs on it, so every VM of an
 # image shares the file and every boot starts clean (ADR 0006).
 #
-#   guest/vm-config.sh KERNEL INITRD ROOTFS VSOCK_UDS [EXTRA_BOOT_ARGS]
+#   scripts/host/vm-config.sh KERNEL INITRD ROOTFS VSOCK_UDS [EXTRA_BOOT_ARGS]
 #
 # EXTRA_BOOT_ARGS carries per-VM `dassie.*` args (ADR 0005), and may use the
 # kernel's double quotes (`dassie.env="GREETING=hello world"`).
 #
-# Set FC_NET_ENV to a VM's net.env (from guest/net-env.sh, ADR 0008) to give
-# the guest an eth0: its TAP and MAC go into the NIC, and its address and DNS
-# into the `ip=` and `dassie.dns=` boot args.
+# Set FC_NET_ENV to a VM's net.env (from scripts/host/net-env.sh, ADR 0008) to
+# give the guest an eth0: its TAP and MAC go into the NIC, and its address and
+# DNS into the `ip=` and `dassie.dns=` boot args.
 
 set -euo pipefail
 

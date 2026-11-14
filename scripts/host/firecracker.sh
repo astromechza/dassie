@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Downloads the pinned Firecracker release and verifies its checksum.
 #
-#   guest/firecracker.sh [x86_64|aarch64]
+#   scripts/host/firecracker.sh [x86_64|aarch64]
 #
 # Outputs $OUT/firecracker.
 
-# shellcheck source-path=SCRIPTDIR source=lib.sh
-source "$(dirname "$0")/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=../lib.sh
+source "$(dirname "$0")/../lib.sh"
 
 FC_VERSION=v1.17.0
 case "$ARCH" in
