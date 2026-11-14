@@ -110,7 +110,10 @@ impl ControlClient {
         let mut writer = stream;
 
         // Firecracker's host-initiated handshake: `CONNECT <port>\n` -> `OK <n>\n`.
-        writeln!(writer, "CONNECT {CONTROL_PORT}")?;
+        // One write: Firecracker reads the line without blocking, and drops
+        // the connection if only part of it has arrived. `writeln!` on an
+        // unbuffered stream would write it in pieces.
+        writer.write_all(format!("CONNECT {CONTROL_PORT}\n").as_bytes())?;
         let mut ack = String::new();
         Read::by_ref(&mut reader)
             .take(MAX_ACK)
