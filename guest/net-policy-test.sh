@@ -205,7 +205,8 @@ for _ in {1..50}; do
   (($(wc -l <"$logs/world.log") >= 2)) && break
   sleep 0.1
 done
-if grep -q "^$uplink " "$logs/world.log" && ! grep -q '^10\.88\.' "$logs/world.log"; then
+masqueraded=$(grep -c "^$uplink " "$logs/world.log" || true)
+if ((masqueraded >= 2)) && ! grep -q '^10\.88\.' "$logs/world.log"; then
   expect masq masq "egress arrives masqueraded as $uplink"
 else
   expect masq "$(cut -d' ' -f1 "$logs/world.log" | sort -u | tr '\n' ' ')" "egress masqueraded"
