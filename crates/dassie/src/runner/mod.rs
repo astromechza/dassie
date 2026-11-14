@@ -13,10 +13,10 @@ mod notify;
 mod outcome;
 
 use std::io;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::{Path, PathBuf};
 use std::process::{self, Child, Command};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,18 @@ const STOP_WAIT: Duration = Duration::from_secs(15);
 /// How long to wait, once Firecracker has exited, for the events connection
 /// to reach EOF.
 const DRAIN: Duration = Duration::from_secs(1);
+
+/// How long to wait, once Firecracker has exited, for a guest connection the
+/// events thread has not reported yet, when it has reported none.
+const ACCEPT_GRACE: Duration = Duration::from_millis(200);
+
+/// Messages the main loop may be behind by. A guest writing events faster
+/// than vm-run reports them is held back, so it cannot grow vm-run's memory.
+const QUEUE: usize = 64;
+
+/// Bounds each journal or notify datagram, so a stuck journald or service
+/// manager cannot stall the main loop.
+const SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// What the main loop hears about.
 #[derive(Debug)]
@@ -81,7 +93,7 @@ pub(crate) struct Reporting {
 
 /// Runs `dassie vm-run` and returns its exit status.
 pub(crate) fn vm_run(config: &Path, firecracker: &Path) -> u8 {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(QUEUE);
     // First, so a SIGTERM during setup is a stop, not a kill.
     if let Err(e) = forward_signals(tx.clone()) {
         eprintln!("vm-run: install signal handlers: {e}");
@@ -113,7 +125,7 @@ pub(crate) fn vm_run(config: &Path, firecracker: &Path) -> u8 {
 }
 
 /// Sends a [`Msg::Stop`] for every SIGTERM or SIGINT.
-fn forward_signals(tx: Sender<Msg>) -> io::Result<()> {
+fn forward_signals(tx: SyncSender<Msg>) -> io::Result<()> {
     let mut signals = Signals::new([SIGTERM, SIGINT])?;
     thread::spawn(move || {
         for _ in signals.forever() {
@@ -133,6 +145,13 @@ pub(crate) fn prepare(uds: &Path) -> io::Result<UnixListener> {
     remove_stale_socket(&events)?;
     UnixListener::bind(&events)
         .map_err(|e| io::Error::new(e.kind(), format!("bind {}: {e}", events.display())))
+}
+
+/// Sends one datagram to `socket`, waiting at most [`SEND_TIMEOUT`].
+pub(crate) fn send_datagram(socket: &Path, bytes: &[u8]) -> io::Result<()> {
+    let sender = UnixDatagram::unbound()?;
+    sender.set_write_timeout(Some(SEND_TIMEOUT))?;
+    sender.send_to(bytes, socket).map(drop)
 }
 
 /// The host socket the guest's events arrive on.
@@ -157,7 +176,7 @@ pub(crate) fn run(
     listener: UnixListener,
     vm: &mut dyn Vm,
     reporting: &Reporting,
-    tx: &Sender<Msg>,
+    tx: &SyncSender<Msg>,
     rx: &Receiver<Msg>,
 ) -> u8 {
     events::spawn(listener, tx.clone());
@@ -192,11 +211,19 @@ pub(crate) fn run(
         }
     };
 
-    // The guest may have written `exited` just before it rebooted.
-    let deadline = Instant::now() + DRAIN;
-    while state.connected {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
+    // The guest may have written `exited` just before it rebooted, on a
+    // connection the events thread has not reported yet. With none reported
+    // this boot, wait briefly for one.
+    let start = Instant::now();
+    loop {
+        let until = if state.connected {
+            start + DRAIN
+        } else if !state.seen {
+            start + ACCEPT_GRACE
+        } else {
+            break;
+        };
+        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
             Ok(msg) => state.handle(msg, reporting),
             Err(_) => break,
         }
@@ -213,13 +240,18 @@ pub(crate) fn run(
 struct State {
     stopped: bool,
     connected: bool,
+    /// Whether any events connection was reported this boot.
+    seen: bool,
     exited: Option<dassie_proto::ExitStatus>,
 }
 
 impl State {
     fn handle(&mut self, msg: Msg, reporting: &Reporting) {
         match msg {
-            Msg::Connected => self.connected = true,
+            Msg::Connected => {
+                self.connected = true;
+                self.seen = true;
+            }
             Msg::Disconnected => self.connected = false,
             Msg::Stop => {}
             Msg::Event(event) => {

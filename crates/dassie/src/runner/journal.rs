@@ -6,10 +6,10 @@ use std::fs::File;
 use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 
 use super::outcome::Entry;
+use super::send_datagram;
 
 /// journald's native protocol socket.
 const JOURNAL_SOCKET: &str = "/run/systemd/journal/socket";
@@ -45,9 +45,8 @@ impl Journal {
     /// Writes one entry. A failed journal send falls back to stderr.
     pub(crate) fn send(&self, entry: &Entry) {
         if let Self::Native(socket) = self {
-            let sent = UnixDatagram::unbound().and_then(|s| s.send_to(&native(entry), socket));
-            match sent {
-                Ok(_) => return,
+            match send_datagram(socket, &native(entry)) {
+                Ok(()) => return,
                 Err(e) => eprintln!("vm-run: journal {}: {e}", socket.display()),
             }
         }

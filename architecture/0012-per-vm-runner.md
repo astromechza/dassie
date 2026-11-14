@@ -75,7 +75,14 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
   and 127 too. vm-run writes the reason for a 196 or 197 to stderr.
 - **Drain.** When Firecracker exits, vm-run waits up to 1 s for the events
   thread to reach EOF before it settles the exit status. An `exited` frame
-  still being read while the guest reboots is not lost.
+  still being read while the guest reboots is not lost. If the events thread
+  has reported no connection at all this boot, vm-run first waits 200 ms for
+  one, since a short-lived guest's connection may still be queued.
+- **Bounded.** The events thread hands frames to the main loop through a
+  queue of 64. When the loop is behind, the thread stops reading and the
+  guest's writes wait, so a guest cannot grow vm-run's memory. Each journal
+  and notify datagram has a 1 s send timeout, so a stuck journald cannot
+  stall a stop.
 - vm-run is sync and std-only, apart from `signal-hook` for the signals and
   `clap` for the CLI. It runs no async runtime. The vsock handshake and
   stale-socket handling come from `dassie_vm::vsock`.

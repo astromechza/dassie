@@ -1,8 +1,9 @@
 //! `sd_notify` over `$NOTIFY_SOCKET`, std only.
 
 use std::env;
-use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
+
+use super::send_datagram;
 
 /// The service manager's notification socket, if there is one to use.
 #[derive(Debug, Clone, Default)]
@@ -37,8 +38,7 @@ impl Notify {
         let Some(socket) = &self.0 else {
             return;
         };
-        let sent = UnixDatagram::unbound().and_then(|s| s.send_to(message.as_bytes(), socket));
-        if let Err(e) = sent {
+        if let Err(e) = send_datagram(socket, message.as_bytes()) {
             eprintln!("vm-run: notify {}: {e}", socket.display());
         }
     }

@@ -57,14 +57,17 @@ boot() {
         >"$run/console.log" 2>"$run/vm-run.log" || status=$?
       ;;
     systemd)
-      # Without READY=1 the unit's result would be `protocol` or `timeout`,
-      # not `exit-code`.
+      # systemd runs ExecStartPost only once READY=1 has arrived, so the
+      # marker proves vm-run notified. An exit before READY=1 also ends in
+      # `exit-code`.
       sudo -n systemd-run --wait --collect --unit "dassie-smoke-$n-$$" \
         -p Type=notify -p NotifyAccess=main -p KillMode=mixed \
         -p RuntimeMaxSec="$timeout_secs" \
+        -p "ExecStartPost=$(command -v touch) $run/notified" \
         -p StandardOutput="file:$run/console.log" -p StandardError="file:$run/vm-run.log" \
         "${vm_run[@]}" 2>"$run/systemd-run.log" || true
-      if ! grep -qF "Finished with result: exit-code" "$run/systemd-run.log"; then
+      if ! grep -qF "Finished with result: exit-code" "$run/systemd-run.log" ||
+        [[ ! -f "$run/notified" ]]; then
         status=-1
       else
         status=$(sed -n 's/.*code=exited.*status=\([0-9]*\).*/\1/p' "$run/systemd-run.log")
@@ -83,7 +86,7 @@ boot() {
   if [[ "$status" != "$want_code" ]]; then
     dump
     echo "FAIL: boot $n ($mode): vm-run exited with ${status:-?}, want $want_code" \
-      "(124: timed out, 196: no exited event, 197: VM failed, -1: unit did not end in exit-code)" >&2
+      "(124: timed out, 196: no exited event, 197: VM failed, -1: unit did not end in exit-code, or never got READY=1)" >&2
     exit 1
   fi
   if ! awk '/event=started/ { s = NR } /event=ready/ && s { r = NR }

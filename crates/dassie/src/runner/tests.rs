@@ -35,6 +35,8 @@ fn spawn_lock() -> std::sync::MutexGuard<'static, ()> {
 struct FakeVm {
     exit: Arc<Mutex<Option<process::ExitStatus>>>,
     killed: Arc<AtomicBool>,
+    /// Set once vm-run has seen the exit.
+    reaped: Arc<AtomicBool>,
 }
 
 impl FakeVm {
@@ -46,7 +48,9 @@ impl FakeVm {
 
 impl Vm for FakeVm {
     fn try_wait(&mut self) -> io::Result<Option<process::ExitStatus>> {
-        Ok(*self.exit.lock().unwrap())
+        let exit = *self.exit.lock().unwrap();
+        self.reaped.store(exit.is_some(), Ordering::SeqCst);
+        Ok(exit)
     }
 
     fn kill(&mut self) -> io::Result<()> {
@@ -61,7 +65,7 @@ struct Harness {
     uds: PathBuf,
     journal: UnixDatagram,
     notify: UnixDatagram,
-    tx: Sender<Msg>,
+    tx: SyncSender<Msg>,
     run: JoinHandle<u8>,
 }
 
@@ -80,7 +84,7 @@ impl Harness {
             notify: Notify::new(Some(dir.path().join("notify.sock"))),
         };
         let listener = prepare(&uds).unwrap();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(QUEUE);
         let (run_uds, run_tx) = (uds.clone(), tx.clone());
         let mut vm = vm;
         let run = thread::spawn(move || run(&run_uds, listener, &mut vm, &reporting, &run_tx, &rx));
@@ -247,6 +251,26 @@ fn an_exited_event_racing_firecracker_exit_is_not_lost() {
         .unwrap();
     vm.exit(0);
     thread::sleep(Duration::from_millis(200));
+    drop(guest);
+    assert_eq!(h.finish(), 3);
+}
+
+#[test]
+fn an_exited_event_on_an_unreported_connection_is_not_lost() {
+    // A short-lived guest: Firecracker has exited before the events thread
+    // reports the guest's connection.
+    let vm = FakeVm::default();
+    vm.exit(0);
+    let h = Harness::start(vm.clone());
+    while !vm.reaped.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let mut guest = h.guest();
+    guest
+        .send(&Event::Exited {
+            status: ExitStatus::Code(3),
+        })
+        .unwrap();
     drop(guest);
     assert_eq!(h.finish(), 3);
 }

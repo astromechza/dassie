@@ -284,6 +284,8 @@ Kill Firecracker alone, then vm-run, the unit's main process:
 
 ```sh
 sudo kill -KILL $(pgrep -P $(systemctl show -p MainPID --value fc@test))
+# Wait for the restarted unit: during RestartSec=1, MainPID is 0.
+until systemctl is-active -q fc@test; do sleep 0.2; done
 sudo kill -KILL $(systemctl show -p MainPID --value fc@test)
 ```
 
