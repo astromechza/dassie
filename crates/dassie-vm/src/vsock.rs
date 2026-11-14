@@ -99,10 +99,10 @@ pub struct ControlClient {
 
 impl ControlClient {
     /// Connects to the guest's control port via `uds`, the vsock device's
-    /// `uds_path`. `timeout` bounds every read and write, the handshake's
-    /// included.
+    /// `uds_path`. `timeout` bounds the connect and every read and write, the
+    /// handshake's included.
     pub fn connect(uds: &Path, timeout: Duration) -> Result<Self, ControlError> {
-        let stream = UnixStream::connect(uds)
+        let stream = connect_within(uds, timeout)
             .map_err(|e| io::Error::new(e.kind(), format!("connect {}: {e}", uds.display())))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
@@ -170,29 +170,39 @@ pub fn remove_stale_socket(path: &Path) -> io::Result<()> {
         Ok(_) => {}
     }
     // Only a refused connection proves nobody is listening; any other error
-    // (e.g. permission denied) leaves the socket alone. On Linux a connect to
-    // a live socket with a full accept queue blocks, so bound the probe.
-    let (tx, rx) = mpsc::channel();
-    let probe_path = path.to_owned();
-    thread::spawn(move || {
-        // If the receiver already timed out, dropping the result closes the stream.
-        drop(tx.send(UnixStream::connect(probe_path)));
-    });
-    let probe = rx.recv_timeout(PROBE_TIMEOUT).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("probe {shown}: timed out; is another listener busy?"),
-        )
-    })?;
-    match probe {
+    // (e.g. permission denied) leaves the socket alone.
+    match connect_within(path, PROBE_TIMEOUT) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             format!("{shown} is in use by another listener"),
         )),
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path)
             .map_err(|e| io::Error::new(e.kind(), format!("remove stale {shown}: {e}"))),
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => Err(io::Error::new(
+            e.kind(),
+            format!("probe {shown}: {e}; is another listener busy?"),
+        )),
         Err(e) => Err(io::Error::new(e.kind(), format!("probe {shown}: {e}"))),
     }
+}
+
+/// `UnixStream::connect`, giving up after `timeout`. On Linux a connect to a
+/// live socket whose accept queue is full blocks until there is room, and std
+/// has no `connect_timeout` for Unix sockets, so the connect runs on its own
+/// thread.
+fn connect_within(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
+    let (tx, rx) = mpsc::channel();
+    let path = path.to_owned();
+    thread::spawn(move || {
+        // If the receiver already timed out, dropping the result closes the stream.
+        drop(tx.send(UnixStream::connect(path)));
+    });
+    rx.recv_timeout(timeout).unwrap_or_else(|_| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("timed out after {timeout:?}"),
+        ))
+    })
 }
 
 #[cfg(test)]

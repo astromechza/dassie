@@ -111,6 +111,10 @@ daemon needs it, then moves to `dassie-vm`.
 _Amended 2026-11-14:_ it has moved, as `dassie_vm::vsock::ControlClient`.
 The listener example moved with it, to `crates/dassie-vm/examples/`.
 
+_Amended 2026-11-14:_ the host end of each VM's events channel is
+`dassie vm-run`, which turns events into journal entries, `READY=1` and its
+exit status ([ADR 0012](0012-per-vm-runner.md)).
+
 ## Consequences
 
 - The protocol can be debugged with `socat`/`nc` and `jq`, and needs only

@@ -12,12 +12,13 @@ same change that makes the decision. Start new ones from
 | [0003](0003-linux-only-targets.md) | Linux-only targets | Accepted |
 | [0004](0004-host-guest-wire-protocol.md) | Host <-> guest wire protocol | Accepted |
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted |
-| [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted |
+| [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted (host unit superseded by 0012) |
 | [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009, retries by 0011) |
 | [0008](0008-guest-networking.md) | Guest networking | Accepted |
 | [0009](0009-read-only-rootfs-format-erofs.md) | Read-only rootfs format: erofs | Accepted |
 | [0010](0010-ingress-through-caddy.md) | Ingress through Caddy | Accepted |
 | [0011](0011-registry-pull-retries.md) | Registry pull retries | Accepted |
+| [0012](0012-per-vm-runner.md) | Per-VM runner | Accepted |
 
 ## Diagrams
 
@@ -30,13 +31,14 @@ address (ADR 0010).
 
 ![Dassie on one host](diagrams/1-host-overview.svg)
 
-**One VM, from boot to restart.** The loop systemd runs with no daemon
-(ADR 0005, ADR 0006).
+**One VM, from boot to restart.** The loop systemd runs with no daemon,
+with `dassie vm-run` as each unit's main process (ADR 0005, ADR 0006,
+ADR 0012).
 
 ![One VM, from boot to restart](diagrams/2-vm-lifecycle.svg)
 
 **Host ↔ guest over vsock.** Events on port 1024, control on port 1025
-(ADR 0004).
+(ADR 0004). `dassie vm-run` is the host end of both (ADR 0012).
 
 ![Host and guest over vsock](diagrams/3-vsock-channels.svg)
 

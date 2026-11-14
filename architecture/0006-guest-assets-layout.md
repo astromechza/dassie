@@ -117,6 +117,10 @@ kernel.
 `/var/lib/dassie/guest/`. vsock sockets go in `/run/dassie/`, which outlives
 each unit, so a host listener's socket survives VM restarts.
 
+_Amended 2026-11-14:_ `fc@.service` now runs Firecracker under
+`dassie vm-run --config …`, a `Type=notify` unit that owns the vsock sockets
+for one boot ([ADR 0012](0012-per-vm-runner.md)).
+
 ## Consequences
 
 - Updating init means rebuilding one initramfs, not any app image. M1's image

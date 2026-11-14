@@ -29,7 +29,7 @@
 # as you, everything else runs through sudo. Run one deploy at a time.
 #
 # Needs the host set up as in scripts/host/systemd/README.md: guest assets,
-# firecracker, dassie-listener, caddy and the units. Plus a Rust toolchain
+# firecracker, dassie, caddy and the units. Plus a Rust toolchain
 # and erofs-utils for dassie-image.
 
 set -euo pipefail
@@ -77,7 +77,7 @@ case "$(uname -m)" in
   *) die "unsupported host arch $(uname -m)" ;;
 esac
 for need in "$kernel" "$guest/initramfs.cpio.gz" /usr/local/bin/firecracker \
-  /usr/local/bin/dassie-listener /usr/local/bin/caddy /etc/dassie/dassie.nft; do
+  /usr/local/bin/dassie /usr/local/bin/caddy /etc/dassie/dassie.nft; do
   [[ -e "$need" ]] || die "$need is missing; see scripts/host/systemd/README.md"
 done
 
