@@ -10,28 +10,28 @@
 //! on `<uds_path>_1024` for guest-initiated connections and logs every event.
 //! `health` and `stop` connect to `<uds_path>`, do Firecracker's
 //! `CONNECT 1025` handshake, send one control request and print the response.
+//! Both use [`dassie_vm::vsock`].
 
 // A CLI: stdout is its output.
 #![allow(clippy::print_stdout)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::FileTypeExt;
+use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
-use std::{env, fs, io, thread};
+use std::{env, thread};
 
-use dassie_proto::{
-    CONTROL_PORT, EVENTS_PORT, Error, Event, FrameReader, FrameWriter, Request, Response,
-};
+use dassie_proto::{EVENTS_PORT, Error, Event, FrameReader, Request, Response};
+use dassie_vm::{ControlClient, guest_port_path, remove_stale_socket};
 
 /// Concurrent event connections served; a guest normally holds one.
 const MAX_CONNECTIONS: usize = 8;
 
-/// How long to wait when probing whether an existing socket is live.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bounds each read and write of a control request.
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
 const USAGE: &str = "usage:
   listener events <uds_path> [--until exited] [--timeout SECS]
@@ -88,10 +88,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 /// Logs guest events. With `until_exited`, returns success after the first
 /// `exited` event, or failure once `timeout` elapses.
 fn events(uds: &str, until_exited: bool, timeout: Option<Duration>) -> Result<ExitCode, String> {
-    let path = format!("{uds}_{EVENTS_PORT}");
-    remove_stale_socket(&path)?;
-    let listener = UnixListener::bind(&path).map_err(|e| format!("bind {path}: {e}"))?;
-    eprintln!("listening on {path}");
+    let path = guest_port_path(Path::new(uds), EVENTS_PORT);
+    remove_stale_socket(&path).map_err(|e| e.to_string())?;
+    let listener =
+        UnixListener::bind(&path).map_err(|e| format!("bind {}: {e}", path.display()))?;
+    eprintln!("listening on {}", path.display());
 
     let (exited_tx, exited_rx) = mpsc::channel();
     let active = Arc::new(AtomicUsize::new(0));
@@ -133,38 +134,6 @@ fn events(uds: &str, until_exited: bool, timeout: Option<Duration>) -> Result<Ex
     }
 }
 
-/// Removes a socket left behind by a previous run. Refuses a path that is not
-/// a socket or that another listener is still serving.
-fn remove_stale_socket(path: &str) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("stat {path}: {e}")),
-        Ok(meta) if !meta.file_type().is_socket() => {
-            return Err(format!("{path} exists and is not a socket"));
-        }
-        Ok(_) => {}
-    }
-    // Only a refused connection proves nobody is listening; any other error
-    // (e.g. permission denied) leaves the socket alone. On Linux a connect to
-    // a live socket with a full accept queue blocks, so bound the probe.
-    let (tx, rx) = mpsc::channel();
-    let probe_path = path.to_owned();
-    thread::spawn(move || {
-        // If the receiver already timed out, dropping the result closes the stream.
-        drop(tx.send(UnixStream::connect(probe_path)));
-    });
-    let probe = rx
-        .recv_timeout(PROBE_TIMEOUT)
-        .map_err(|_| format!("probe {path}: timed out; is another listener busy?"))?;
-    match probe {
-        Ok(_) => Err(format!("{path} is in use by another listener")),
-        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-            fs::remove_file(path).map_err(|e| format!("remove stale {path}: {e}"))
-        }
-        Err(e) => Err(format!("probe {path}: {e}")),
-    }
-}
-
 fn log_events(conn_id: usize, conn: UnixStream, exited_tx: &mpsc::Sender<()>) {
     eprintln!("[conn {conn_id}] connected");
     let mut reader = FrameReader::new(BufReader::new(conn));
@@ -193,38 +162,16 @@ fn log_events(conn_id: usize, conn: UnixStream, exited_tx: &mpsc::Sender<()>) {
 /// Sends one control request through the Firecracker vsock mux and prints the
 /// response.
 fn control(uds: &str, request: &Request) -> Result<ExitCode, String> {
-    let stream = UnixStream::connect(uds).map_err(|e| format!("connect {uds}: {e}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| e.to_string())?;
-    let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
-    let mut writer = stream;
-
-    // Firecracker's host-initiated handshake: `CONNECT <port>\n` -> `OK <n>\n`.
-    writeln!(writer, "CONNECT {CONTROL_PORT}").map_err(|e| format!("handshake: {e}"))?;
-    let mut ack = String::new();
-    reader
-        .read_line(&mut ack)
-        .map_err(|e| format!("handshake: {e}"))?;
-    if !ack.starts_with("OK ") {
-        return Err(format!(
-            "handshake refused ({ack:?}); is the guest listening on port {CONTROL_PORT}?"
-        ));
-    }
-
-    FrameWriter::new(writer)
-        .send(request)
-        .map_err(|e| format!("send: {e}"))?;
-    match FrameReader::new(reader).recv::<Response>() {
-        Ok(Some(response @ Response::Health(_))) => {
+    let mut client =
+        ControlClient::connect(Path::new(uds), CONTROL_TIMEOUT).map_err(|e| e.to_string())?;
+    match client.request(request).map_err(|e| e.to_string())? {
+        response @ Response::Health(_) => {
             println!("{response:?}");
             Ok(ExitCode::SUCCESS)
         }
-        Ok(Some(response)) => {
+        response => {
             println!("{response:?}");
             Ok(ExitCode::FAILURE)
         }
-        Ok(None) => Err("guest closed the connection without a response".into()),
-        Err(e) => Err(format!("receive: {e}")),
     }
 }

@@ -172,6 +172,12 @@ dependencies = [
 [[package]]
 name = "dassie-vm"
 version = "0.1.0"
+dependencies = [
+ "dassie-proto",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "derive_arbitrary"
