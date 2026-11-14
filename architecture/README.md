@@ -13,10 +13,11 @@ same change that makes the decision. Start new ones from
 | [0004](0004-host-guest-wire-protocol.md) | Host <-> guest wire protocol | Accepted |
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted |
 | [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted |
-| [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009) |
+| [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009, retries by 0011) |
 | [0008](0008-guest-networking.md) | Guest networking | Accepted |
 | [0009](0009-read-only-rootfs-format-erofs.md) | Read-only rootfs format: erofs | Accepted |
 | [0010](0010-ingress-through-caddy.md) | Ingress through Caddy | Accepted |
+| [0011](0011-registry-pull-retries.md) | Registry pull retries | Accepted |
 
 ## Diagrams
 

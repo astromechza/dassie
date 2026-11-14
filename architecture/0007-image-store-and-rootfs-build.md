@@ -153,17 +153,15 @@ _Amended 2026-11-13, when slice B added the write side and the pull:_
     in their build scripts, which would need a musl C cross toolchain just to
     run clippy on macOS and in CI. It is younger than ring; swapping
     providers later is a one-line change.
-  - Timeouts cover connect, response and each read. A manifest or blob GET
-    that fails transiently (I/O error, timeout, a body cut short, HTTP 408,
-    429 or 5xx) is retried, by default 3 attempts in all with pauses of 1 s
-    then 2 s; a blob restarts from its first byte. A wrong digest or size,
-    or another 4xx, fails at once.
+  - Timeouts cover connect, response and each read. There are no retries.
+    _(Superseded by [ADR 0011](0011-registry-pull-retries.md): transient
+    failures are retried.)_
   - Bounds: JSON bodies are capped at 4 MiB, a blob at its declared size,
     and a manifest at 128 layers (Docker has long refused more than 127).
     The total image size is not capped yet.
   - `Client::pull_with` reports the plan (the resolved manifest and every
     blob's size) before any download, then each blob as present, fetching
-    (bytes so far), retrying or stored, so a caller can show progress for the whole
+    (bytes so far) or stored, so a caller can show progress for the whole
     image.
 - **References** follow Docker's rules. The first component is a registry
   only if it contains `.` or `:` or is `localhost`; otherwise it is

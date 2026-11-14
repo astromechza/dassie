@@ -4,8 +4,8 @@
 //! It speaks just enough of the distribution API for public images:
 //! anonymous access, the bearer-token challenge Docker Hub and GHCR use, an
 //! index down to the platform manifest, and blobs streamed into the store
-//! with their digests checked, retrying transient failures. Credentials and
-//! private registries are out of scope for now.
+//! with their digests checked, retrying transient failures (ADR 0011).
+//! Credentials and private registries are out of scope for now.
 
 use std::collections::BTreeMap;
 use std::fmt;
