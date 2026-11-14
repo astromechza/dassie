@@ -105,7 +105,10 @@ impl Jail {
         fs::create_dir_all(&root).map_err(|e| ctx(&e, "create", &root))?;
         for link in links {
             let target = root.join(&link.name);
-            fs::hard_link(&link.host, &target).map_err(|e| {
+            // Link the file itself: on Linux, `link(2)` of a symlink links the
+            // symlink, whose target the chroot cannot see.
+            let linked = fs::canonicalize(&link.host).and_then(|host| fs::hard_link(host, &target));
+            linked.map_err(|e| {
                 io::Error::new(
                     e.kind(),
                     format!(
@@ -357,9 +360,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().join("assets");
         fs::create_dir(&assets).unwrap();
-        for name in ["vmlinux", "initramfs.cpio.gz", "rootfs.erofs"] {
+        for name in ["vmlinux-6.1", "initramfs.cpio.gz", "rootfs.erofs"] {
             fs::write(assets.join(name), name).unwrap();
         }
+        // A symlinked asset is linked in as the file it points to.
+        std::os::unix::fs::symlink("vmlinux-6.1", assets.join("vmlinux")).unwrap();
         let config = dir.path().join("config.json");
         fs::write(&config, host_config(&assets).to_string()).unwrap();
         let firecracker = assets.join("firecracker");
@@ -392,6 +397,9 @@ mod tests {
             ino(&root.join("drive-rootfs")),
             ino(&assets.join("rootfs.erofs"))
         );
+        let kernel = fs::symlink_metadata(root.join("kernel")).unwrap();
+        assert!(kernel.is_file());
+        assert_eq!(kernel.ino(), ino(&assets.join("vmlinux-6.1")));
         let jailed: Value =
             serde_json::from_slice(&fs::read(root.join("config.json")).unwrap()).unwrap();
         assert_eq!(jailed["vsock"]["uds_path"], "/vsock");
