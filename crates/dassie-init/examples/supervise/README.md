@@ -3,8 +3,8 @@
 `supervise` runs the real `dassie-init` supervisor as an ordinary process. It
 loads config with `config::load`, as PID 1 will, and plays Firecracker's part
 for vsock, using Unix sockets. That lets you watch the whole host <-> guest
-contract (ADR 0004, ADR 0005) on a laptop, with the `dassie-proto` listener as
-the host:
+contract (ADR 0004, ADR 0005) on a laptop, with the `dassie-vm` listener
+example as the host:
 
 | In a VM | Here |
 | --- | --- |
@@ -23,7 +23,7 @@ The sample images run host binaries (`python3`, `sh`), so `PATH` and
 Build once, from the repo root:
 
 ```sh
-cargo build -p dassie-proto --example listener
+cargo build -p dassie-vm --example listener
 cargo build -p dassie-init --example supervise
 mkdir -p target/demo
 L=target/debug/examples/listener

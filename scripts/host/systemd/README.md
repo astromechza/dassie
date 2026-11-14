@@ -27,7 +27,7 @@ scripts/guest/kernel/build.sh x86_64
 scripts/guest/initramfs.sh x86_64
 scripts/guest/rootfs.sh x86_64
 scripts/host/firecracker.sh x86_64
-cargo build --release -p dassie-proto --example listener
+cargo build --release -p dassie-vm --example listener
 ```
 
 Install them, plus one instance called `test`. The rootfs goes in once, read-only,
