@@ -89,7 +89,13 @@ pub(crate) fn sweep(dir: &Path, grace: Duration) -> io::Result<Vec<PathBuf>> {
             continue;
         }
         // Not following symlinks: only regular files are ever written here.
-        let meta = entry.metadata()?;
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            // Renamed into place by its writer, or removed by another
+            // sweeper, since it was listed.
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
         // `elapsed` fails for an mtime in the future: treat that as fresh.
         let stale = meta.modified()?.elapsed().is_ok_and(|age| age > grace);
         if !meta.is_file() || !stale {
