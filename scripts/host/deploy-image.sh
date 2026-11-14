@@ -29,7 +29,7 @@
 # as you, everything else runs through sudo. Run one deploy at a time.
 #
 # Needs the host set up as in scripts/host/systemd/README.md: guest assets,
-# firecracker, dassie, caddy and the units. Plus a Rust toolchain
+# firecracker, jailer, dassie, caddy and the units. Plus a Rust toolchain
 # and erofs-utils for dassie-image.
 
 set -euo pipefail
@@ -77,7 +77,7 @@ case "$(uname -m)" in
   *) die "unsupported host arch $(uname -m)" ;;
 esac
 for need in "$kernel" "$guest/initramfs.cpio.gz" /usr/local/bin/firecracker \
-  /usr/local/bin/dassie /usr/local/bin/caddy /etc/dassie/dassie.nft; do
+  /usr/local/bin/jailer /usr/local/bin/dassie /usr/local/bin/caddy /etc/dassie/dassie.nft; do
   [[ -e "$need" ]] || die "$need is missing; see scripts/host/systemd/README.md"
 done
 
@@ -116,6 +116,7 @@ rootfs=$("${sudo[@]}" "$image_tool" build "$digest")
 
 # --- The VM's files, staged, then compared with the live ones.
 "$here/net-env.sh" "$index" >"$stage/net.env"
+"$here/jail-env.sh" "$index" >"$stage/jail.env"
 FC_NET_ENV=$stage/net.env "$here/vm-config.sh" "$kernel" "$guest/initramfs.cpio.gz" \
   "$rootfs" "/run/dassie/$name.vsock" "dassie.instance=$name" >"$stage/config.json"
 if [[ -n "$hostname" ]]; then
@@ -212,7 +213,7 @@ render_caddy >"$stage/caddy.json"
 
 dir=$vms/$name
 vm_changed=0
-for f in net.env config.json; do
+for f in net.env jail.env config.json; do
   same "$stage/$f" "$dir/$f" || vm_changed=1
 done
 
@@ -224,10 +225,10 @@ if ((vm_changed)); then
   "${sudo[@]}" systemctl stop "$unit" "dassie-tap@$name.service"
   "${sudo[@]}" install -d -m 0755 "$dir"
   "${sudo[@]}" sync "$vms"
-  # Not one atomic switch: a power cut between these two renames can leave
-  # a new net.env beside an old config.json. Running the same deploy again
+  # Not one atomic switch: a power cut between these renames can leave a
+  # new net.env beside an old config.json. Running the same deploy again
   # sees the mismatch and rewrites both. M2 keeps this state in SQLite.
-  for f in net.env config.json; do put "$stage/$f" "$dir/$f"; done
+  for f in net.env jail.env config.json; do put "$stage/$f" "$dir/$f"; done
 fi
 if [[ -n "$hostname" ]]; then
   same "$stage/route.env" "$dir/route.env" || put "$stage/route.env" "$dir/route.env"

@@ -121,4 +121,6 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
   on another port and the journal's binary field encoding.
 - The jailer slice changes what vm-run spawns and adds a chroot prefix to the
   socket paths. It must keep Firecracker in the foreground with the same
-  pid, so vm-run can keep waiting on its child.
+  pid, so vm-run can keep waiting on its child. _Amended 2026-11-14:_ done in
+  [ADR 0013](0013-jailed-firecracker.md). The jail's socket is
+  `/var/lib/dassie/jail/firecracker/<id>/root/vsock`.

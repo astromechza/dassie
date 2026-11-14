@@ -3,9 +3,9 @@
 //!
 //! vm-run owns the VM's vsock sockets. It turns the guest's best-effort
 //! events into state systemd keeps: journal entries, `READY=1`, and its own
-//! exit status. A SIGTERM becomes a graceful `stop` request. Sync and
-//! portable: only the binary's `main` touches the process environment and
-//! signals.
+//! exit status. A SIGTERM becomes a graceful `stop` request. With a uid and
+//! gid it boots Firecracker in the jailer (ADR 0013). Sync and portable: only
+//! [`vm_run`] touches the process environment and signals.
 
 mod events;
 mod journal;
@@ -13,6 +13,7 @@ mod notify;
 mod outcome;
 
 use std::io;
+use std::os::unix::fs::chown;
 use std::os::unix::net::{UnixDatagram, UnixListener};
 use std::path::{Path, PathBuf};
 use std::process::{self, Child, Command};
@@ -21,7 +22,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dassie_proto::{EVENTS_PORT, Event, Request, Response};
-use dassie_vm::{ControlClient, guest_port_path, remove_stale_socket, vsock_uds_path};
+use dassie_vm::{ControlClient, Jail, guest_port_path, remove_stale_socket, vsock_uds_path};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 
@@ -91,8 +92,27 @@ pub(crate) struct Reporting {
     pub(crate) notify: Notify,
 }
 
+/// What vm-run boots.
+#[derive(Debug, Clone)]
+pub(crate) struct Launch {
+    /// Firecracker config with host paths.
+    pub(crate) config: PathBuf,
+    pub(crate) firecracker: PathBuf,
+    /// Boot in the jailer; without it, run Firecracker directly.
+    pub(crate) jail: Option<JailArgs>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct JailArgs {
+    pub(crate) jailer: PathBuf,
+    pub(crate) chroot_base: PathBuf,
+    pub(crate) id: String,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+}
+
 /// Runs `dassie vm-run` and returns its exit status.
-pub(crate) fn vm_run(config: &Path, firecracker: &Path) -> u8 {
+pub(crate) fn vm_run(launch: &Launch) -> u8 {
     let (tx, rx) = mpsc::sync_channel(QUEUE);
     // First, so a SIGTERM during setup is a stop, not a kill.
     if let Err(e) = forward_signals(tx.clone()) {
@@ -103,25 +123,54 @@ pub(crate) fn vm_run(config: &Path, firecracker: &Path) -> u8 {
         journal: Journal::from_env(),
         notify: Notify::from_env(),
     };
-    let prepared = vsock_uds_path(config).and_then(|uds| {
-        let listener = prepare(&uds)?;
-        Ok((uds, listener))
-    });
-    let (uds, listener) = match prepared {
+    let (uds, listener, mut command) = match setup(launch) {
         Ok(prepared) => prepared,
         Err(e) => {
             eprintln!("vm-run: {e}");
             return VM_FAILED;
         }
     };
-    let mut child = match spawn_firecracker(firecracker, config) {
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
-            eprintln!("vm-run: spawn {}: {e}", firecracker.display());
+            eprintln!("vm-run: spawn {}: {e}", command.get_program().display());
             return VM_FAILED;
         }
     };
     run(&uds, listener, &mut child, &reporting, &tx, &rx)
+}
+
+/// Gets the VM ready to boot: clears what a previous boot left, builds the
+/// jail if there is one, and listens for the guest's events. Returns the
+/// vsock socket's host path, the events listener and the command to spawn.
+pub(crate) fn setup(launch: &Launch) -> io::Result<(PathBuf, UnixListener, Command)> {
+    let Some(args) = &launch.jail else {
+        let uds = vsock_uds_path(&launch.config)?;
+        let listener = prepare(&uds)?;
+        return Ok((
+            uds,
+            listener,
+            firecracker_command(&launch.firecracker, &launch.config),
+        ));
+    };
+    let jail = Jail::new(
+        &args.chroot_base,
+        &args.id,
+        args.uid,
+        args.gid,
+        &launch.firecracker,
+    )?;
+    let uds = jail.vsock();
+    // A live socket means this VM is still running: leave its jail alone.
+    remove_stale_socket(&uds)?;
+    remove_stale_socket(&events_path(&uds))?;
+    jail.prepare(&launch.config)?;
+    let listener = prepare(&uds)?;
+    // Firecracker connects to it as the jail's uid.
+    let events = events_path(&uds);
+    chown(&events, Some(jail.uid()), Some(jail.gid()))
+        .map_err(|e| io::Error::new(e.kind(), format!("chown {}: {e}", events.display())))?;
+    Ok((uds, listener, jail.command(&args.jailer)))
 }
 
 /// Sends a [`Msg::Stop`] for every SIGTERM or SIGINT.
@@ -159,14 +208,12 @@ fn events_path(uds: &Path) -> PathBuf {
     guest_port_path(uds, EVENTS_PORT)
 }
 
-pub(crate) fn spawn_firecracker(firecracker: &Path, config: &Path) -> io::Result<Child> {
+fn firecracker_command(firecracker: &Path, config: &Path) -> Command {
     // --no-api: the config file is the whole VM, and there is no API socket
     // to collide on.
-    Command::new(firecracker)
-        .arg("--no-api")
-        .arg("--config-file")
-        .arg(config)
-        .spawn()
+    let mut cmd = Command::new(firecracker);
+    cmd.arg("--no-api").arg("--config-file").arg(config);
+    cmd
 }
 
 /// The main loop: reports events until Firecracker exits, handling a stop

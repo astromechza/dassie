@@ -60,7 +60,9 @@ dassie does not depend on, or fight, whichever network manager the host uses.
 - `dassie-tap@<name>.service` (oneshot, `RemainAfterExit`) creates the TAP
   from `net.env`, gives it the host address, and deletes it on stop. With
   `StopWhenUnneeded=` it goes away with its VM, but stays up across the VM's
-  `Restart=always` cycles.
+  `Restart=always` cycles. _Amended 2026-11-14:_ the TAP is owned by the VM's
+  jail uid and gid, so only that VM's jailed Firecracker can attach to it
+  ([ADR 0013](0013-jailed-firecracker.md)).
 - A drop-in makes every `fc@<name>` require its TAP unit, ordered after it.
   The TAP unit has `ConditionPathExists=` on `net.env`. Without that file the
   unit is skipped, which counts as success, so a VM without `net.env` boots

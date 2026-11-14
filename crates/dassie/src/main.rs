@@ -34,17 +34,49 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct VmRunArgs {
-    /// Firecracker `--config-file`. Its vsock `uds_path` names the VM's
-    /// sockets.
+    /// Firecracker `--config-file`, with host paths. Unjailed, its vsock
+    /// `uds_path` names the VM's sockets.
     #[arg(long)]
     config: PathBuf,
     /// The Firecracker binary.
     #[arg(long, default_value = "firecracker")]
     firecracker: PathBuf,
+    /// Boot in the jailer as this uid (ADR 0013). Needs --gid and --id.
+    #[arg(long, requires_all = ["gid", "id"])]
+    uid: Option<u32>,
+    /// The jail's gid.
+    #[arg(long, requires = "uid")]
+    gid: Option<u32>,
+    /// The jail's id: the instance name, 1-64 letters, digits or -.
+    #[arg(long, requires = "uid")]
+    id: Option<String>,
+    /// The jailer binary.
+    #[arg(long, default_value = "jailer")]
+    jailer: PathBuf,
+    /// Where jails are built. Must be on the same filesystem as the VM's
+    /// assets, which are hard-linked in.
+    #[arg(long, default_value = dassie_vm::jail::DEFAULT_CHROOT_BASE)]
+    chroot_base: PathBuf,
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Command::VmRun(args) => ExitCode::from(runner::vm_run(&args.config, &args.firecracker)),
+        Command::VmRun(args) => {
+            let jail = match (args.uid, args.gid, args.id) {
+                (Some(uid), Some(gid), Some(id)) => Some(runner::JailArgs {
+                    jailer: args.jailer,
+                    chroot_base: args.chroot_base,
+                    id,
+                    uid,
+                    gid,
+                }),
+                _ => None,
+            };
+            ExitCode::from(runner::vm_run(&runner::Launch {
+                config: args.config,
+                firecracker: args.firecracker,
+                jail,
+            }))
+        }
     }
 }

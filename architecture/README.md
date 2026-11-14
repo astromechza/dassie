@@ -19,6 +19,7 @@ same change that makes the decision. Start new ones from
 | [0010](0010-ingress-through-caddy.md) | Ingress through Caddy | Accepted |
 | [0011](0011-registry-pull-retries.md) | Registry pull retries | Accepted |
 | [0012](0012-per-vm-runner.md) | Per-VM runner | Accepted |
+| [0013](0013-jailed-firecracker.md) | Firecracker runs in the jailer | Accepted |
 
 ## Diagrams
 
@@ -32,8 +33,8 @@ address (ADR 0010).
 ![Dassie on one host](diagrams/1-host-overview.svg)
 
 **One VM, from boot to restart.** The loop systemd runs with no daemon,
-with `dassie vm-run` as each unit's main process (ADR 0005, ADR 0006,
-ADR 0012).
+with `dassie vm-run` as each unit's main process and Firecracker in its
+jailer (ADR 0005, ADR 0006, ADR 0012, ADR 0013).
 
 ![One VM, from boot to restart](diagrams/2-vm-lifecycle.svg)
 
