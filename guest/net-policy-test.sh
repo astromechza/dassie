@@ -198,7 +198,13 @@ done
 expect open "$(tcp dpt-vm1 1.1.1.1 80)" "vm1 -> 1.1.1.1 (egress)"
 expect open "$(tcp dpt-vm2 "$world_ip" 80)" "vm2 -> world uplink"
 # The world's log holds the source of every connection it accepted. VM
-# egress must arrive from the uplink address, never from a VM's own.
+# egress must arrive from the uplink address, never from a VM's own. A probe's
+# connect() returns once the connection is queued, which can be before the
+# world has accepted and logged it, so wait up to 5 s for both entries.
+for _ in {1..50}; do
+  (($(wc -l <"$logs/world.log") >= 2)) && break
+  sleep 0.1
+done
 if grep -q "^$uplink " "$logs/world.log" && ! grep -q '^10\.88\.' "$logs/world.log"; then
   expect masq masq "egress arrives masqueraded as $uplink"
 else
