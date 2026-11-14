@@ -154,6 +154,8 @@ _Amended 2026-11-13, when slice B added the write side and the pull:_
     run clippy on macOS and in CI. It is younger than ring; swapping
     providers later is a one-line change.
   - Timeouts cover connect, response and each read. There are no retries.
+    _(Superseded by [ADR 0011](0011-registry-pull-retries.md): transient
+    failures are retried.)_
   - Bounds: JSON bodies are capped at 4 MiB, a blob at its declared size,
     and a manifest at 128 layers (Docker has long refused more than 127).
     The total image size is not capped yet.

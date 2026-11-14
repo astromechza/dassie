@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use super::fake::Fake;
+use super::fake::{Fake, Fault};
 use super::*;
 
 const DOCKER_MANIFEST: &str = "application/vnd.docker.distribution.manifest.v2+json";
@@ -67,6 +67,10 @@ fn event(e: Event<'_>) -> String {
         Event::Present(d) => format!("present {}", short(d)),
         Event::Fetching { blob, done } => format!("fetching {} {done}", short(blob)),
         Event::Stored(d) => format!("stored {}", short(d)),
+        Event::Retrying { blob, attempt, .. } => {
+            let what = blob.map_or_else(|| "manifest".to_owned(), short);
+            format!("retrying {what} {attempt}")
+        }
         Event::Planned {
             digest,
             config,
@@ -232,6 +236,8 @@ fn tampered_blob_is_rejected_and_not_stored() {
         matches!(err, Error::Store(store::Error::Tampered(ref d)) if *d == layer),
         "{err}"
     );
+    // Asking again would not fix the wrong bytes.
+    assert_eq!(fake.count(&format!("/storage/{}", layer.hex())), 1);
     assert!(!store.has_blob(&layer));
     assert!(!store.has_blob(&Digest::of(&manifest)));
     assert_eq!(leftovers(dir.path()), Vec::<String>::new());
@@ -242,37 +248,124 @@ fn tampered_blob_is_rejected_and_not_stored() {
     ));
 }
 
-#[test]
-fn interrupted_blob_leaves_no_partial_file() {
-    let fake = Fake::start();
-    let big = vec![7u8; 200_000];
-    let manifest = image(&fake, "arm64", &[(TAR, &big)]);
+/// A pull of a one-layer image whose layer is `bytes`, with `faults` queued
+/// for its storage URL.
+fn pull_faulty(
+    fake: &Fake,
+    bytes: &[u8],
+    faults: &[Fault],
+) -> (Result<Pulled, Error>, Vec<String>) {
+    let manifest = image(fake, "arm64", &[(TAR, bytes)]);
     fake.manifest("v1", DOCKER_MANIFEST, &manifest);
-    let layer = Digest::of(&big);
-    fake.state
-        .lock()
-        .unwrap()
-        .truncate
-        .insert(layer.hex().to_owned());
-
+    fake.fail(&format!("/storage/{}", Digest::of(bytes).hex()), faults);
     let dir = tempfile::tempdir().unwrap();
     let store = Store::init(dir.path()).unwrap();
-    let err = Client::plain_http()
+    let mut events = Vec::new();
+    let result = Client::plain_http().pull_with(
+        &store,
+        &reference(fake, ":v1"),
+        &Platform::new("linux", "arm64"),
+        &mut |e| events.push(event(e)),
+    );
+    assert_eq!(leftovers(dir.path()), Vec::<String>::new());
+    (result, events)
+}
+
+#[test]
+fn blob_cut_short_is_fetched_again() {
+    let fake = Fake::start();
+    let big = vec![7u8; 200_000];
+    let (result, events) = pull_faulty(&fake, &big, &[Fault::Cut]);
+    let hex = Digest::of(&big).hex().to_owned();
+    assert_eq!(result.unwrap().blobs_fetched, 2);
+    assert_eq!(fake.count(&format!("/storage/{hex}")), 2);
+    // Progress starts again from 0 on the retry.
+    let short = &hex[..8];
+    let mine: Vec<_> = events
+        .iter()
+        .filter(|e| e.contains(short) && (!e.starts_with("fetching") || e.ends_with(" 0")))
+        .cloned()
+        .collect();
+    assert_eq!(
+        mine,
+        [
+            format!("fetching {short} 0"),
+            format!("retrying {short} 2"),
+            format!("fetching {short} 0"),
+            format!("stored {short}"),
+        ],
+        "{events:?}"
+    );
+}
+
+#[test]
+fn server_errors_are_retried() {
+    let fake = Fake::start();
+    fake.fail("/v2/team/app/manifests/v1", &[Fault::Status(503)]);
+    let (result, events) = pull_faulty(&fake, b"layer", &[Fault::Status(502), Fault::Status(429)]);
+    result.unwrap();
+    let layer = Digest::of(b"layer");
+    let short = &layer.hex()[..8];
+    let retries: Vec<_> = events
+        .iter()
+        .filter(|e| e.starts_with("retrying"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        retries,
+        [
+            "retrying manifest 2".to_owned(),
+            format!("retrying {short} 2"),
+            format!("retrying {short} 3"),
+        ]
+    );
+}
+
+#[test]
+fn client_errors_are_not_retried() {
+    let fake = Fake::start();
+    let (result, events) = pull_faulty(&fake, b"layer", &[Fault::Status(404)]);
+    let err = result.unwrap_err();
+    assert!(matches!(err, Error::Status(_, 404, _)), "{err}");
+    assert_eq!(
+        fake.count(&format!("/storage/{}", Digest::of(b"layer").hex())),
+        1
+    );
+    assert!(!events.iter().any(|e| e.starts_with("retrying")));
+}
+
+#[test]
+fn interrupted_blob_gives_up_and_leaves_no_partial_file() {
+    let fake = Fake::start();
+    let big = vec![7u8; 200_000];
+    let (result, _) = pull_faulty(&fake, &big, &[Fault::Cut; 10]);
+    let err = result.unwrap_err();
+    assert!(matches!(err, Error::Store(store::Error::Read(..))), "{err}");
+    assert_eq!(
+        fake.count(&format!("/storage/{}", Digest::of(&big).hex())),
+        Retry::default().attempts as usize
+    );
+}
+
+#[test]
+fn retries_can_be_turned_off() {
+    let fake = Fake::start();
+    let manifest = image(&fake, "arm64", &[(TAR, b"layer")]);
+    fake.manifest("v1", DOCKER_MANIFEST, &manifest);
+    fake.fail("/v2/team/app/manifests/v1", &[Fault::Status(503)]);
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::plain_http().with_retry(Retry {
+        attempts: 1,
+        delay: Duration::ZERO,
+    });
+    let err = client
         .pull(
-            &store,
+            &Store::init(dir.path()).unwrap(),
             &reference(&fake, ":v1"),
             &Platform::new("linux", "arm64"),
         )
         .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            Error::Store(store::Error::Read(..) | store::Error::WrongSize(..))
-        ),
-        "{err}"
-    );
-    assert!(!store.has_blob(&layer));
-    assert_eq!(leftovers(dir.path()), Vec::<String>::new());
+    assert!(matches!(err, Error::Status(_, 503, _)), "{err}");
 }
 
 #[test]

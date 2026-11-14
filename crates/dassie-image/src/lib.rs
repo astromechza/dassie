@@ -34,7 +34,7 @@ pub use digest::{Digest, ParseError, VerifyingReader};
 pub use flatten::Tree;
 pub use oci::{Compression, Descriptor, Index, Manifest, Platform};
 pub use reference::{Reference, ReferenceError};
-pub use registry::{Client, Event, MAX_LAYERS, Pulled};
+pub use registry::{Client, Event, MAX_LAYERS, Pulled, Retry};
 pub use store::{Image, Store};
 
 /// Errors from each stage.

@@ -91,6 +91,14 @@ fn pull(store: PathBuf, platform: &Platform, reference: &str) -> Result<(), Stri
         Event::Stored(blob) => {
             eprintln!("  stored {} ({:.1} MiB)", blob.digest, mib(blob.size));
         }
+        Event::Retrying {
+            blob,
+            attempt,
+            error,
+        } => {
+            let what = blob.map_or_else(|| "manifest".to_owned(), |b| b.digest.to_string());
+            eprintln!("  retrying {what} (attempt {attempt}): {error}");
+        }
         _ => {}
     };
     let pulled = Client::new()
