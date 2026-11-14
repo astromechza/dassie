@@ -44,6 +44,10 @@ pub enum ControlError {
     Proto(dassie_proto::Error),
     /// The guest closed the connection without a response.
     Closed,
+    /// An earlier request on this connection failed, so its response may
+    /// still arrive and be mistaken for the next one's. Open a new
+    /// connection.
+    Broken,
 }
 
 impl fmt::Display for ControlError {
@@ -56,6 +60,10 @@ impl fmt::Display for ControlError {
             ),
             Self::Proto(e) => write!(f, "{e}"),
             Self::Closed => write!(f, "guest closed the connection without a response"),
+            Self::Broken => write!(
+                f,
+                "an earlier request on this control connection failed; reconnect"
+            ),
         }
     }
 }
@@ -65,7 +73,7 @@ impl std::error::Error for ControlError {
         match self {
             Self::Io(e) => Some(e),
             Self::Proto(e) => Some(e),
-            Self::Refused(_) | Self::Closed => None,
+            Self::Refused(_) | Self::Closed | Self::Broken => None,
         }
     }
 }
@@ -78,10 +86,15 @@ impl From<io::Error> for ControlError {
 
 /// A connection to the guest's control channel, through Firecracker's vsock
 /// socket. Carries any number of requests, one response each, in order.
+///
+/// Responses carry no request id, so after a failed request (a timeout, say)
+/// its response could still arrive and answer the next one. The client then
+/// refuses further requests with [`ControlError::Broken`].
 #[derive(Debug)]
 pub struct ControlClient {
     reader: FrameReader<BufReader<UnixStream>>,
     writer: FrameWriter<UnixStream>,
+    broken: bool,
 }
 
 impl ControlClient {
@@ -110,11 +123,23 @@ impl ControlClient {
         Ok(Self {
             reader: FrameReader::new(reader),
             writer: FrameWriter::new(writer),
+            broken: false,
         })
     }
 
-    /// Sends one request and waits for its response.
+    /// Sends one request and waits for its response. After any failure,
+    /// every later call fails with [`ControlError::Broken`] without touching
+    /// the socket.
     pub fn request(&mut self, request: &Request) -> Result<Response, ControlError> {
+        if self.broken {
+            return Err(ControlError::Broken);
+        }
+        let result = self.exchange(request);
+        self.broken = result.is_err();
+        result
+    }
+
+    fn exchange(&mut self, request: &Request) -> Result<Response, ControlError> {
         self.writer.send(request).map_err(ControlError::Proto)?;
         self.reader
             .recv::<Response>()
@@ -239,6 +264,39 @@ mod tests {
         }
         drop(client);
         assert_eq!(fake.join().unwrap(), "CONNECT 1025\n");
+    }
+
+    #[test]
+    fn a_failed_request_breaks_the_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let uds = dir.path().join("vm.vsock");
+        let listener = UnixListener::bind(&uds).unwrap();
+        // Answers each request late, after the client has given up on it.
+        let fake = thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            reader.read_line(&mut String::new()).unwrap();
+            (&conn).write_all(b"OK 1\n").unwrap();
+            let mut frames = FrameReader::new(reader);
+            let mut writer = FrameWriter::new(conn);
+            let mut requests = 0;
+            while let Ok(Some(request)) = frames.recv::<Request>() {
+                requests += 1;
+                thread::sleep(Duration::from_millis(300));
+                drop(writer.send(&ready(request)));
+            }
+            requests
+        });
+
+        let mut client = ControlClient::connect(&uds, Duration::from_millis(100)).unwrap();
+        let err = client.request(&Request::Health).unwrap_err();
+        assert!(matches!(err, ControlError::Proto(_)), "{err}");
+        // The late answer to the first request must not answer this one.
+        thread::sleep(Duration::from_millis(400));
+        let err = client.request(&Request::Health).unwrap_err();
+        assert!(matches!(err, ControlError::Broken), "{err}");
+        drop(client);
+        assert_eq!(fake.join().unwrap(), 1, "the second request was sent");
     }
 
     #[test]
