@@ -108,6 +108,9 @@ The Firecracker `CONNECT` handshake is a Firecracker detail rather than part of
 this protocol. It lives in the `dassie-proto` listener example until the
 daemon needs it, then moves to `dassie-vm`.
 
+_Amended 2026-11-14:_ it has moved, as `dassie_vm::vsock::ControlClient`.
+The listener example moved with it, to `crates/dassie-vm/examples/`.
+
 ## Consequences
 
 - The protocol can be debugged with `socat`/`nc` and `jq`, and needs only

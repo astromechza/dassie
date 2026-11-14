@@ -25,7 +25,7 @@ case "$ARCH" in
 esac
 timeout_secs=${SMOKE_TIMEOUT:-60}
 
-cargo build --locked -p dassie-proto --example listener --manifest-path "$REPO/Cargo.toml"
+cargo build --locked -p dassie-vm --example listener --manifest-path "$REPO/Cargo.toml"
 listener="$REPO/target/debug/examples/listener"
 
 rootfs="$OUT/rootfs.erofs"
