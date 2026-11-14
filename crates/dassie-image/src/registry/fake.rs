@@ -6,8 +6,11 @@
 //!   token from `/token`;
 //! - blobs redirect (307) to `/storage/<hex>`, which refuses any request
 //!   carrying an `Authorization` header, like a presigned CDN URL.
+//!
+//! [`Fake::fail`] queues faults for a path, each spoiling one response that
+//! would otherwise have been a 200.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -23,10 +26,18 @@ pub(crate) struct State {
     pub(crate) manifests: HashMap<String, (String, Vec<u8>)>,
     /// Blobs by hex digest.
     pub(crate) blobs: HashMap<String, Vec<u8>>,
-    /// Blobs (hex) whose body is cut short after half its length.
-    pub(crate) truncate: HashSet<String>,
+    /// Faults still to apply, by request path.
+    pub(crate) faults: HashMap<String, VecDeque<Fault>>,
     /// Every request: `<path> [auth]`.
     pub(crate) log: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Fault {
+    /// Send the headers but only half the body, then close.
+    Cut,
+    /// Answer with this status and an empty body.
+    Status(u16),
 }
 
 pub(crate) struct Fake {
@@ -60,6 +71,12 @@ impl Fake {
         let mut st = self.state.lock().unwrap();
         st.blobs.insert(d.hex().to_owned(), bytes.to_vec());
         d
+    }
+
+    /// Spoils the next 200 responses for `path`, one fault each.
+    pub(crate) fn fail(&self, path: &str, faults: &[Fault]) {
+        let mut st = self.state.lock().unwrap();
+        st.faults.entry(path.to_owned()).or_default().extend(faults);
     }
 
     /// Requests whose path starts with `prefix`.
@@ -97,29 +114,27 @@ fn serve(conn: &TcpStream, addr: &str, state: &Mutex<State>) {
     let challenge = format!(
         "WWW-Authenticate: Bearer realm=\"http://{addr}/token\",service=\"fake\",scope=\"repository:team/app:pull\""
     );
-    let (status, headers, body, cut) = if path.starts_with("/token?") {
+    let (status, headers, body) = if path.starts_with("/token?") {
         let ok = path.contains("scope=repository") && path.contains("service=fake");
         if ok {
             (
                 200,
                 String::new(),
                 format!(r#"{{"token":"{TOKEN}"}}"#).into_bytes(),
-                false,
             )
         } else {
-            (400, String::new(), b"bad token request".to_vec(), false)
+            (400, String::new(), b"bad token request".to_vec())
         }
     } else if let Some(rest) = path.strip_prefix("/v2/team/app/") {
         if auth.as_deref() != Some(&format!("Bearer {TOKEN}")) {
-            (401, challenge, b"{}".to_vec(), false)
+            (401, challenge, b"{}".to_vec())
         } else if let Some(key) = rest.strip_prefix("manifests/") {
             match st.manifests.get(key) {
-                Some((ct, bytes)) => (200, format!("Content-Type: {ct}"), bytes.clone(), false),
+                Some((ct, bytes)) => (200, format!("Content-Type: {ct}"), bytes.clone()),
                 None => (
                     404,
                     String::new(),
                     br#"{"errors":[{"code":"MANIFEST_UNKNOWN"}]}"#.to_vec(),
-                    false,
                 ),
             }
         } else if let Some(d) = rest.strip_prefix("blobs/sha256:") {
@@ -127,24 +142,27 @@ fn serve(conn: &TcpStream, addr: &str, state: &Mutex<State>) {
                 307,
                 format!("Location: http://{addr}/storage/{d}"),
                 Vec::new(),
-                false,
             )
         } else {
-            (404, String::new(), Vec::new(), false)
+            (404, String::new(), Vec::new())
         }
     } else if let Some(hex) = path.strip_prefix("/storage/") {
         match (auth, st.blobs.get(hex)) {
-            (Some(_), _) => (
-                400,
-                String::new(),
-                b"unexpected Authorization".to_vec(),
-                false,
-            ),
-            (None, Some(b)) => (200, String::new(), b.clone(), st.truncate.contains(hex)),
-            (None, None) => (404, String::new(), Vec::new(), false),
+            (Some(_), _) => (400, String::new(), b"unexpected Authorization".to_vec()),
+            (None, Some(b)) => (200, String::new(), b.clone()),
+            (None, None) => (404, String::new(), Vec::new()),
         }
     } else {
-        (404, String::new(), Vec::new(), false)
+        (404, String::new(), Vec::new())
+    };
+    let fault = match status {
+        200 => st.faults.get_mut(&path).and_then(VecDeque::pop_front),
+        _ => None,
+    };
+    let (status, headers, body, cut) = match fault {
+        None => (status, headers, body, false),
+        Some(Fault::Cut) => (status, headers, body, true),
+        Some(Fault::Status(code)) => (code, String::new(), Vec::new(), false),
     };
     drop(st);
 

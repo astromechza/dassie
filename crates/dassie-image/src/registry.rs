@@ -4,13 +4,14 @@
 //! It speaks just enough of the distribution API for public images:
 //! anonymous access, the bearer-token challenge Docker Hub and GHCR use, an
 //! index down to the platform manifest, and blobs streamed into the store
-//! with their digests checked. Credentials, private registries and retries
-//! are out of scope for now.
+//! with their digests checked, retrying transient failures. Credentials and
+//! private registries are out of scope for now.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -99,8 +100,16 @@ pub enum Event<'a> {
     /// The blob is already in the store and will not be fetched.
     Present(&'a Descriptor),
     /// `done` of the blob's `size` bytes have arrived: first with `done` 0,
-    /// then after every read.
+    /// then after every read. A retried blob starts again from 0.
     Fetching { blob: &'a Descriptor, done: u64 },
+    /// A GET failed in a way that may not happen again, and attempt number
+    /// `attempt` (from 2) starts after a pause. `blob` is `None` for a
+    /// manifest.
+    Retrying {
+        blob: Option<&'a Descriptor>,
+        attempt: u32,
+        error: &'a Error,
+    },
     /// The blob was verified and is in the store.
     Stored(&'a Descriptor),
 }
@@ -120,10 +129,31 @@ pub struct Pulled {
     pub blobs_present: usize,
 }
 
+/// How [`Client`] retries a manifest or blob GET that failed in a way that
+/// may not happen again: an I/O error, a timeout, a body cut short, or HTTP
+/// 408, 429 or 5xx. A blob starts again from its first byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retry {
+    /// Tries in all, including the first; 1 turns retries off.
+    pub attempts: u32,
+    /// The pause before the first retry. Each later pause doubles it.
+    pub delay: Duration,
+}
+
+impl Default for Retry {
+    fn default() -> Self {
+        Self {
+            attempts: 3,
+            delay: Duration::from_secs(1),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Client {
     agent: Agent,
     scheme: &'static str,
+    retry: Retry,
 }
 
 impl Default for Client {
@@ -138,10 +168,21 @@ impl Client {
         Self::with_scheme("https")
     }
 
-    /// Plain HTTP, for the in-process fake registry in tests.
+    /// Plain HTTP, for the in-process fake registry in tests, retrying
+    /// without pauses.
     #[cfg(test)]
     pub(crate) fn plain_http() -> Self {
-        Self::with_scheme("http")
+        Self::with_scheme("http").with_retry(Retry {
+            delay: Duration::ZERO,
+            ..Retry::default()
+        })
+    }
+
+    /// Replaces the [`Retry`] policy.
+    #[must_use]
+    pub fn with_retry(mut self, retry: Retry) -> Self {
+        self.retry = retry;
+        self
     }
 
     fn with_scheme(scheme: &'static str) -> Self {
@@ -164,7 +205,11 @@ impl Client {
             .user_agent(concat!("dassie-image/", env!("CARGO_PKG_VERSION")))
             .build()
             .into();
-        Self { agent, scheme }
+        Self {
+            agent,
+            scheme,
+            retry: Retry::default(),
+        }
     }
 
     /// Pulls `reference` for `platform` into `store`, fetching only the
@@ -395,14 +440,16 @@ impl Session<'_> {
     /// A manifest's bytes (at most [`MAX_JSON`]) and its media type.
     fn manifest(&mut self, target: &str) -> Result<(Vec<u8>, String), Error> {
         let url = format!("{}/manifests/{target}", self.base);
-        let resp = self.get(&url, Some(ACCEPT))?;
-        let media_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map_or_default(|v| v.split(';').next().unwrap_or_default().trim().to_owned());
-        let bytes = read_json(resp, &url)?;
-        Ok((bytes, media_type))
+        self.retrying(None, |s| {
+            let resp = s.get(&url, Some(ACCEPT))?;
+            let media_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map_or_default(|v| v.split(';').next().unwrap_or_default().trim().to_owned());
+            let bytes = read_json(resp, &url)?;
+            Ok((bytes, media_type))
+        })
     }
 
     /// Streams a blob into the store, unless it is there already.
@@ -413,22 +460,50 @@ impl Session<'_> {
             return Ok(());
         }
         let url = format!("{}/blobs/{}", self.base, desc.digest);
-        let resp = self.get(&url, None)?;
-        (self.on)(Event::Fetching {
-            blob: desc,
-            done: 0,
-        });
-        let body = Counting {
-            inner: resp.into_body().into_reader(),
-            blob: desc,
-            done: 0,
-            on: &mut *self.on,
-        };
-        store.put(&desc.digest, desc.size, body)?;
+        self.retrying(Some(desc), |s| {
+            let resp = s.get(&url, None)?;
+            (s.on)(Event::Fetching {
+                blob: desc,
+                done: 0,
+            });
+            let body = Counting {
+                inner: resp.into_body().into_reader(),
+                blob: desc,
+                done: 0,
+                on: &mut *s.on,
+            };
+            store.put(&desc.digest, desc.size, body)?;
+            Ok(())
+        })?;
         (self.on)(Event::Stored(desc));
         pulled.blobs_fetched += 1;
         pulled.bytes_fetched = pulled.bytes_fetched.saturating_add(desc.size);
         Ok(())
+    }
+
+    /// Runs `attempt` until it succeeds, fails for good, or has been tried
+    /// [`Retry::attempts`] times, pausing between tries.
+    fn retrying<T>(
+        &mut self,
+        blob: Option<&Descriptor>,
+        mut attempt: impl FnMut(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let Retry { attempts, delay } = self.client.retry;
+        let mut n = 1;
+        loop {
+            match attempt(self) {
+                Err(error) if n < attempts && transient(&error) => {
+                    n += 1;
+                    (self.on)(Event::Retrying {
+                        blob,
+                        attempt: n,
+                        error: &error,
+                    });
+                    thread::sleep(delay.saturating_mul(2u32.saturating_pow(n - 2)));
+                }
+                result => return result,
+            }
+        }
     }
 
     /// GETs `url`. On a 401 with a bearer challenge, fetches an anonymous
@@ -496,6 +571,19 @@ impl Session<'_> {
             .filter(|t| !t.is_empty())
             .ok_or_else(|| Error::Auth(format!("{realm} returned no token")))
     }
+}
+
+/// Whether asking again might succeed. A wrong digest or size is not
+/// transient: the registry served the wrong bytes. Every `Http` error counts,
+/// even the few (TLS, bad URL) that will fail the same way again; a retry of
+/// those costs only the pauses.
+fn transient(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Http(..)
+            | Error::Status(_, 408 | 429 | 500..=599, _)
+            | Error::Store(store::Error::Read(..))
+    )
 }
 
 /// Reports [`Event::Fetching`] after every read of a blob body.
