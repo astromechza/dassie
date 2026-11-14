@@ -17,6 +17,19 @@ use super::*;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Held by tests that spawn a process, and by tests that need a closed
+/// socket to stay closed. macOS has no `SOCK_CLOEXEC`, so std marks a new
+/// socket close-on-exec only after creating it. A spawn on another test
+/// thread in between hands the socket to the child, which keeps a "stale"
+/// socket live. Linux creates sockets close-on-exec atomically.
+static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+fn spawn_lock() -> std::sync::MutexGuard<'static, ()> {
+    SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A Firecracker that exits when the test says so, or when killed.
 #[derive(Clone, Default)]
 struct FakeVm {
@@ -248,6 +261,7 @@ fn a_failed_firecracker_is_reserved_code() {
 
 #[test]
 fn spawns_a_real_process() {
+    let _spawn = spawn_lock();
     // Neither boots a guest, so neither sends an `exited` event.
     for (bin, want) in [
         ("/usr/bin/true", NO_EXITED_EVENT),
@@ -260,6 +274,7 @@ fn spawns_a_real_process() {
 
 #[test]
 fn prepare_clears_stale_sockets_but_not_live_ones() {
+    let _spawn = spawn_lock();
     let dir = tempfile::tempdir().unwrap();
     let uds = dir.path().join("vm.vsock");
     // A killed Firecracker and a killed vm-run leave both sockets behind.
