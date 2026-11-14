@@ -125,6 +125,20 @@ impl Store {
             fs::write(tmp, &out).map_err(|e| Error::Io(tmp.to_path_buf(), e))
         })
     }
+
+    /// Removes temporary files that writes killed partway (SIGKILL, OOM,
+    /// power loss) left in the store, and returns their paths. Only files
+    /// over an hour old are removed, so a pull still running in another
+    /// process is never touched. Run it from the store's owner, e.g. once at
+    /// startup; [`Store::open`] never writes.
+    pub fn sweep(&self) -> Result<Vec<PathBuf>, Error> {
+        let mut removed = Vec::new();
+        for dir in [self.root.clone(), self.root.join("blobs/sha256")] {
+            let swept = atomic::sweep(&dir, atomic::STALE_AFTER).map_err(|e| Error::Io(dir, e))?;
+            removed.extend(swept);
+        }
+        Ok(removed)
+    }
 }
 
 fn write_if_absent(path: &Path, content: &str) -> Result<(), Error> {
@@ -249,5 +263,23 @@ mod tests {
         assert_eq!(manifests[1]["digest"], Digest::of(b"two").to_string());
         assert_eq!(manifests[1]["annotations"][oci::REF_NAME], "app");
         assert_eq!(entries(dir.path()), ["blobs", "index.json", "oci-layout"]);
+    }
+
+    #[test]
+    fn sweep_removes_stale_temporary_files_from_root_and_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::init(dir.path()).unwrap();
+        let stale = std::time::SystemTime::now() - 2 * atomic::STALE_AFTER;
+        let old_index = dir.path().join(".index.json.tmp.1.0");
+        let old_blob = dir.path().join("blobs/sha256/.abc.tmp.1.1");
+        let fresh_blob = dir.path().join("blobs/sha256/.abc.tmp.2.0");
+        for path in [&old_index, &old_blob] {
+            File::create(path).unwrap().set_modified(stale).unwrap();
+        }
+        File::create(&fresh_blob).unwrap();
+
+        assert_eq!(store.sweep().unwrap(), [old_index, old_blob]);
+        assert_eq!(entries(dir.path()), ["blobs", "index.json", "oci-layout"]);
+        assert!(fresh_blob.exists());
     }
 }

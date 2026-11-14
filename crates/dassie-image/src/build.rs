@@ -54,6 +54,8 @@ const COMPRESSION: &str = "lz4hc,level=12";
 pub struct BuildOutput {
     /// The read-only erofs artefact (see [`artefact_path`]).
     pub path: PathBuf,
+    /// Stale temporary files from killed builds, removed from `out_dir`.
+    pub swept: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,15 +128,21 @@ pub fn artefact_path(out_dir: &Path, image: &Digest) -> PathBuf {
 /// The file is written to a temporary name and renamed into place, so a
 /// crash never leaves a partial artefact at the final path. Artefacts are
 /// read-only (`0444`) and never modified once written.
+///
+/// A build killed partway leaves its temporary file behind, which can be
+/// hundreds of MiB. Every call removes those that are over an hour old, so a
+/// build still running in another process is never touched.
 pub fn build(
     store: &Store,
     image: &Image,
     out_dir: &Path,
     opts: &Options,
 ) -> Result<BuildOutput, Error> {
+    let swept = atomic::sweep(out_dir, atomic::STALE_AFTER)
+        .map_err(|e| Error::Io(out_dir.to_path_buf(), e))?;
     let path = artefact_path(out_dir, &image.digest);
     if path.exists() {
-        return Ok(BuildOutput { path });
+        return Ok(BuildOutput { path, swept });
     }
     for layer in &image.manifest.layers {
         if Compression::of_layer(&layer.media_type).is_none() {
@@ -157,7 +165,7 @@ pub fn build(
         fs::set_permissions(tmp, fs::Permissions::from_mode(0o444))
             .map_err(|e| Error::Io(tmp.to_path_buf(), e))
     })?;
-    Ok(BuildOutput { path })
+    Ok(BuildOutput { path, swept })
 }
 
 /// Runs `mkfs.erofs --tar=f` on `tmp`, streaming the flattened tar to it.
@@ -330,15 +338,24 @@ mod tests {
         let mut image = store.image("app", &Platform::host()).unwrap();
         let out = tempfile::tempdir().unwrap();
 
-        // An existing artefact is returned without running mkfs at all.
+        // An existing artefact is returned without running mkfs at all,
+        // and a stale temporary file from a killed build is swept.
         let existing = artefact_path(out.path(), &image.digest);
         fs::write(&existing, b"").unwrap();
+        let stale = atomic::temp_for(&existing);
+        File::create(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - 2 * atomic::STALE_AFTER)
+            .unwrap();
         let opts = Options {
             mkfs: PathBuf::from("/nonexistent/mkfs"),
         };
         assert_eq!(
-            build(&store, &image, out.path(), &opts).unwrap().path,
-            existing
+            build(&store, &image, out.path(), &opts).unwrap(),
+            BuildOutput {
+                path: existing,
+                swept: vec![stale],
+            }
         );
 
         image.manifest.layers.push(Descriptor {
