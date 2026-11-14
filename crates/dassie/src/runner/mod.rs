@@ -221,7 +221,15 @@ pub(crate) fn run(
         } else if !state.seen {
             start + ACCEPT_GRACE
         } else {
-            break;
+            // Take what is already queued, such as a reconnection, without
+            // waiting for more.
+            match rx.try_recv() {
+                Ok(msg) => {
+                    state.handle(msg, reporting);
+                    continue;
+                }
+                Err(_) => break,
+            }
         };
         match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
             Ok(msg) => state.handle(msg, reporting),

@@ -59,11 +59,14 @@ boot() {
     systemd)
       # systemd runs ExecStartPost only once READY=1 has arrived, so the
       # marker proves vm-run notified. An exit before READY=1 also ends in
-      # `exit-code`.
+      # `exit-code`. RuntimeMaxSec only counts once the unit is active, so
+      # TimeoutStartSec bounds a boot that never becomes ready. systemd splits
+      # the ExecStartPost command line itself, hence the inner quotes.
       sudo -n systemd-run --wait --collect --unit "dassie-smoke-$n-$$" \
         -p Type=notify -p NotifyAccess=main -p KillMode=mixed \
-        -p RuntimeMaxSec="$timeout_secs" \
-        -p "ExecStartPost=$(command -v touch) $run/notified" \
+        -p TimeoutStartSec="$timeout_secs" -p RuntimeMaxSec="$timeout_secs" \
+        -p TimeoutStopSec=30 \
+        -p "ExecStartPost=$(command -v touch) \"$run/notified\"" \
         -p StandardOutput="file:$run/console.log" -p StandardError="file:$run/vm-run.log" \
         "${vm_run[@]}" 2>"$run/systemd-run.log" || true
       if ! grep -qF "Finished with result: exit-code" "$run/systemd-run.log" ||

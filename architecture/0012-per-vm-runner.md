@@ -96,7 +96,9 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
 - systemd now holds the VM's state with no daemon running.
   `ExecMainStatus` and `Result` give the app's exit, the unit's `active`
   state means the app is ready, and `journalctl -u fc@<id> DASSIE_EVENT=exited`
-  gives the history. #27's job exit codes need nothing more.
+  gives the history. `ExecMainStatus` describes only the latest boot:
+  with `Restart=always` the next boot replaces it, so #27's jobs need units
+  that do not restart, or must read each boot's result from the journal.
 - Events are still best effort. A lost `exited` shows up as a 196 rather
   than as a wrong code, and `health` stays the source of truth (ADR 0004).
 - An app that exits with 196 or 197 looks like a lost event or a failed VM.
@@ -106,6 +108,9 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
   `active` as soon as Firecracker started.
 - A guest that ignores `stop` costs at most 15 s, and the unit still stops
   cleanly. It does not hit systemd's `TimeoutStopSec` and end up `failed`.
+  The exception is a stalled journald: the `stop` can then wait behind up to
+  64 queued events at 1 s each, and systemd's `TimeoutStopSec` kills the
+  unit instead.
 - vm-run owns `<uds>_1024`, so the listener example's `events` subcommand
   now only works with no VM, as in the `supervise` example. Its `health` and
   `stop` subcommands still work next to vm-run.
