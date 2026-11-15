@@ -93,9 +93,13 @@ replace.
   which leaves the other half of the 2 MiB `execve` budget (below) to the
   image's own `Env` and `Cmd`. So 250,000 empty arguments, which fit in a
   small `guest.json`, are refused too. A config that would fail with
-  `E2BIG` is refused when the drive is written, not at boot, unless the
-  image's own share is what overflows. The store's stricter rules (key syntax, no `DASSIE_*` keys,
-  ADR 0014) are the daemon's to enforce. `DASSIE_INSTANCE_ID` is set after
+  `E2BIG` is refused when the drive is written, not at boot. The image's
+  own `Entrypoint`, `Cmd` and `Env` are only known in the guest, so init
+  also checks the merged argv and env, image values included, against the
+  per-string limit and the full 2 MiB before the spawn, and an overflow is
+  a boot error that says so rather than a bare `E2BIG`. The store's
+  stricter rules (key syntax, no `DASSIE_*` keys, ADR 0014) are the
+  daemon's to enforce. `DASSIE_INSTANCE_ID` is set after
   `env`, so it wins regardless.
 - **No numeric hostnames.** A name whose every dot-separated label is a
   number (decimal, octal or `0x` hex), such as `127.0.0.1` or `10`, is

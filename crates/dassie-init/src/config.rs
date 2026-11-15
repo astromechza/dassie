@@ -16,6 +16,7 @@ use std::time::Duration;
 use std::{fs, io};
 
 use dassie_proto::GuestConfig;
+use dassie_proto::guest_config::{EXEC_LIMIT, MAX_ARG_STRLEN, exec_cost};
 use serde::Deserialize;
 
 use crate::user::{self, Accounts};
@@ -54,6 +55,8 @@ pub enum Error {
     Io(PathBuf, io::Error),
     Image(serde_json::Error),
     NoCommand,
+    /// The merged argv and env would fail `execve` with `E2BIG`.
+    TooBig(String),
     User(user::Error),
 }
 
@@ -66,6 +69,7 @@ impl fmt::Display for Error {
                 f,
                 "no command: neither the guest nor the image config has one"
             ),
+            Self::TooBig(msg) => write!(f, "{msg}"),
             Self::User(e) => write!(f, "{e}"),
         }
     }
@@ -141,6 +145,8 @@ pub fn build(
         Some(dir) => PathBuf::from(dir),
     };
 
+    check_exec_size(&argv, &env.0)?;
+
     Ok(RunSpec {
         argv,
         env: env.0,
@@ -150,6 +156,32 @@ pub fn build(
         ready_addrs,
         stop_timeout: guest.sigterm_timeout(),
     })
+}
+
+/// Refuses an argv and env that `execve` would reject with `E2BIG`: a string
+/// of [`MAX_ARG_STRLEN`] or more, or a total over [`EXEC_LIMIT`]. The guest
+/// config alone is bounded when the drive is written, but the image's own
+/// `Entrypoint`, `Cmd` and `Env` are only known here (ADR 0015).
+fn check_exec_size(argv: &[String], env: &[(String, String)]) -> Result<(), Error> {
+    let lens = argv
+        .iter()
+        .map(String::len)
+        .chain(env.iter().map(|(k, v)| k.len() + 1 + v.len()));
+    let mut total = 0;
+    for len in lens {
+        if len >= MAX_ARG_STRLEN {
+            return Err(Error::TooBig(format!(
+                "an argument or env entry is {len} bytes; execve takes under {MAX_ARG_STRLEN}"
+            )));
+        }
+        total += exec_cost(len);
+    }
+    if total > EXEC_LIMIT {
+        return Err(Error::TooBig(format!(
+            "argv and env take {total} bytes for execve, over {EXEC_LIMIT}"
+        )));
+    }
+    Ok(())
 }
 
 /// argv by the Kubernetes rules: the guest `entrypoint` replaces the
@@ -386,6 +418,23 @@ mod tests {
             let config = format!(r#"{{"Cmd":["/app"],"ExposedPorts":{ports}}}"#);
             assert_eq!(spec(&config, &guest()).unwrap().ready_port, want, "{ports}");
         }
+    }
+
+    #[test]
+    fn refuses_what_execve_would() {
+        // The image's own share is only checked here.
+        let big = "x".repeat(MAX_ARG_STRLEN);
+        let config = format!(r#"{{"Cmd":["/app","{big}"]}}"#);
+        assert!(matches!(spec(&config, &guest()), Err(Error::TooBig(_))));
+
+        let entry = "x".repeat(100_000);
+        let env: Vec<String> = (0..25).map(|i| format!(r#""K{i}={entry}""#)).collect();
+        let config = format!(r#"{{"Cmd":["/app"],"Env":[{}]}}"#, env.join(","));
+        assert!(matches!(spec(&config, &guest()), Err(Error::TooBig(_))));
+
+        let env = env[..10].join(",");
+        let config = format!(r#"{{"Cmd":["/app"],"Env":[{env}]}}"#);
+        assert!(spec(&config, &guest()).is_ok());
     }
 
     #[test]

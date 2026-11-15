@@ -33,11 +33,20 @@ pub const MAX_CONFIG_BYTES: usize = 1 << 20;
 /// must be shorter, counting its terminating NUL.
 pub const MAX_ARG_STRLEN: usize = 128 * 1024;
 
-/// Most bytes `env`, `entrypoint` and `cmd` may take on the new process's
-/// stack together: each string, its NUL and its 8-byte pointer. Half of the
-/// 2 MiB `execve` allows with the default 8 MiB stack rlimit, so the
-/// image's own `Env` and `Cmd` keep the other half.
-pub const MAX_EXEC_BYTES: usize = 1 << 20;
+/// What `execve` allows argv and env together with the default 8 MiB stack
+/// rlimit: a quarter of it, counted with [`exec_cost`].
+pub const EXEC_LIMIT: usize = 2 << 20;
+
+/// Most bytes `env`, `entrypoint` and `cmd` may take together, counted with
+/// [`exec_cost`]: half of [`EXEC_LIMIT`], so the image's own `Env` and
+/// `Cmd` keep the other half. Init checks the merged total at boot.
+pub const MAX_EXEC_BYTES: usize = EXEC_LIMIT / 2;
+
+/// What one argv or env string of `len` bytes takes on the new process's
+/// stack: the bytes, its NUL and its 8-byte pointer.
+pub const fn exec_cost(len: usize) -> usize {
+    len + 1 + size_of::<u64>()
+}
 
 /// Longest `sigterm_timeout_seconds`.
 pub const MAX_SIGTERM_TIMEOUT_SECONDS: u64 = 10;
@@ -159,8 +168,6 @@ impl GuestConfig {
                 Ok(())
             }
         };
-        // Each string's NUL and pointer, on top of its bytes.
-        let overhead = 1 + size_of::<u64>();
         let mut exec_bytes = 0;
         for (k, v) in &self.env {
             if k.is_empty() || k.contains('=') {
@@ -169,12 +176,12 @@ impl GuestConfig {
             nul("env key", k)?;
             nul("env value", v)?;
             too_long(&format!("env entry {k}"), k.len() + 1 + v.len())?;
-            exec_bytes += k.len() + 1 + v.len() + overhead;
+            exec_bytes += exec_cost(k.len() + 1 + v.len());
         }
         for arg in self.entrypoint.iter().chain(&self.cmd) {
             nul("argument", arg)?;
             too_long("an argument", arg.len())?;
-            exec_bytes += arg.len() + overhead;
+            exec_bytes += exec_cost(arg.len());
         }
         if exec_bytes > MAX_EXEC_BYTES {
             return invalid(format!(
