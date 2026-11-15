@@ -193,8 +193,33 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
 
 **Reserved, not built.** Files beyond `guest.json` go in the same erofs
 under `files/`, with their modes and owners set in the tar, for init to
-bind-mount into the app root at paths `guest.json` will name. Secrets as
-files would use the same mechanism.
+bind-mount into the app root at paths `guest.json` will name.
+
+**Secrets: intended, not built.** A later ADR builds them; this one fixes
+the direction so nothing built now gets in the way:
+
+- **Never in `guest.json`.** `guest.json` is plain config: readable on the
+  host for debugging, printed by tools, and safe to show in a diff. So a
+  secret value never goes in its `env` or any other field, and the
+  daemon never copies one there.
+- **Files by default.** Secret values go on the same guest drive under
+  `secrets/<name>`, `0400 root` in the tar. Before the spawn, init copies
+  each to a tmpfs at `/run/secrets/<name>`, mode `0400` and owned by the
+  app's user, as Docker and Kubernetes mount them. `guest.json` names the
+  secrets but never holds their values. A file is read only by code that
+  asks for it, is not inherited by child processes, and does not end up in
+  crash dumps or `/proc/<pid>/environ`.
+- **Env only by opt-in.** Many images read config only from env, so a
+  `guest.json` field will map an env var to a secret by name (as a
+  Kubernetes `secretKeyRef`), and init reads the value from the drive at
+  spawn. The value is still never in `guest.json`, but it is then in the
+  app's environment, visible to its uid in `/proc/<pid>/environ` and
+  inherited by everything it starts. That is the app owner's trade-off to
+  make per variable, not a default.
+- **Open for that ADR:** secrets at rest on the host (the drive sits in
+  `vms/<id>/`, on the jail's filesystem for the hard link, unless both
+  move to a tmpfs), their size cap, and rotation, which with a drive means
+  a restart unless vsock later pushes new values.
 
 **Why not vsock.** init could instead fetch its config from vm-run over a
 new vsock port before it launches the app. That needs no drive and no
@@ -218,8 +243,8 @@ image config, merge, readiness, supervision and exit rules stand.
   newlines.
 - The app no longer sees its config in `/proc/cmdline`. `/dev/vdb` stays in
   the guest's devtmpfs as `root:disk 0660`, so a non-root app cannot read
-  the drive and a root app can. Secrets remain out of scope and must not
-  go in `env` until a later ADR says how they travel.
+  the drive and a root app can. Secrets are not built yet and must never
+  go in `guest.json`'s `env`; the section above says how they will travel.
 - The app's env var is now `DASSIE_INSTANCE_ID`, not `DASSIE_INSTANCE`, and
   there is no `DASSIE_COLOUR`.
 - Each VM costs one more virtio-blk device and a few KiB on disk, and each
