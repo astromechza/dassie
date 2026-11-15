@@ -27,8 +27,9 @@ Hand-written SVGs in [diagrams/](diagrams/). Update them in the same change as
 the ADR or code they describe. Solid lines are built; dashed lines are planned.
 
 **The host.** The daemon writes files and drives systemd and Caddy, but stays
-outside the data path (ADR 0002). Caddy proxies HTTPS to each VM's guest
-address (ADR 0010).
+outside the data path (ADR 0002). Each VM's unit runs `dassie vm-run`, which
+runs Firecracker in its jailer (ADR 0012, ADR 0013). Caddy proxies HTTPS to
+each VM's guest address (ADR 0010).
 
 ![Dassie on one host](diagrams/1-host-overview.svg)
 

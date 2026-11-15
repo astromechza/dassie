@@ -35,7 +35,7 @@
     <text x="68" y="117" class="t">systemd → vm-run</text>
     <text x="45" y="142" class="s">fc@&lt;id&gt; runs dassie vm-run:</text>
     <text x="45" y="160" class="s">clears the old jail,</text>
-    <text x="45" y="176" class="m">binds &lt;uds&gt;_1024</text>
+    <text x="45" y="176" class="s">binds <tspan class="m">vsock_1024</tspan> in it</text>
   </g>
   <g>
     <rect x="223" y="92" width="170" height="104" rx="10" class="host"/>
