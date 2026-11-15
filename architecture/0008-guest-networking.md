@@ -101,6 +101,9 @@ rules. The runbook gives the rules.
 writes `/etc/resolv.conf` from it. `net-env.sh` defaults to public resolvers
 (`1.1.1.1,9.9.9.9`), because the host's own resolver is often a loopback stub
 (systemd-resolved on `127.0.0.53`) that a guest cannot reach.
+_Amended 2026-11-15:_ the resolvers now travel in the guest drive's
+`nameservers` field, not `dassie.dns` ([ADR 0015](0015-guest-config-drive.md)). `net-env.sh`
+still picks them.
 
 **Why not a bridge.** A Linux bridge puts every VM in one L2 domain, which is
 open VM↔VM unless ebtables or per-port isolation is added, and it is capped at

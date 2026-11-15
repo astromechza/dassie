@@ -82,6 +82,10 @@ dassie vm-run --config <config.json> --id <id> --uid <uid> --gid <gid>
   - The files keep their root ownership and modes (0644 assets, the 0444
     rootfs). The jail uid can read them but not write them, and the drive
     stays `is_read_only`.
+  - _Amended 2026-11-15:_ the per-instance guest drive
+    ([ADR 0015](0015-guest-config-drive.md)) is one more drive, linked as
+    `/drive-guest`. It lives in `/var/lib/dassie/vms/<id>/`, also on this
+    filesystem, and is `0640 root:<jail gid>`.
 - **Stable socket paths.** The VM's vsock is always
   `/var/lib/dassie/jail/firecracker/<id>/root/vsock` on the host, whatever
   `uds_path` the host config names. vm-run binds `vsock_1024` next to it

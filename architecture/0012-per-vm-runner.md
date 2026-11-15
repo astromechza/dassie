@@ -57,7 +57,9 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
   port (the guest is not up yet), or the guest answered with an `error`. A
   connection that closes after the request went out still counts as
   stopping, because a guest whose entrypoint exits on SIGTERM may reboot
-  before its answer is written. A second signal is ignored. The unit uses
+  before its answer is written. _Amended 2026-11-15:_ with `--guest`, the
+  wait is the guest's `sigterm_timeout_seconds` + 5 s instead of 15 s
+  ([ADR 0015](0015-guest-config-drive.md)). A second signal is ignored. The unit uses
   `KillMode=mixed`, so systemd's SIGTERM reaches vm-run alone.
 - **Exit status.** One vm-run process is one boot, because the guest reboots
   after `exited` and Firecracker then exits. Its exit status is:

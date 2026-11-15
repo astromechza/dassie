@@ -67,6 +67,10 @@ channel's `stop` on both architectures (ADR 0004).
 the per-VM `dassie.*` args and `ip=` when the VM has a NIC.
 `is_root_device` is false, so Firecracker adds nothing of its own.
 
+_Amended 2026-11-15:_ the `dassie.*` args are gone. Per-VM config is on a
+second read-only drive, `/dev/vdb`, which init mounts on `/guest` in the
+initramfs before the switch-root ([ADR 0015](0015-guest-config-drive.md)).
+
 _Amended 2026-11-13, for M1 slice C:_ the root drive is attached with
 `is_read_only: true` and the boot args say `ro` (they said `rw` before).
 Firecracker run as root ignores a `0444` file mode. init mounts the drive
