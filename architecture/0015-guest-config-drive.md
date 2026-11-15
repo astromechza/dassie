@@ -29,10 +29,6 @@ images with `mkfs.erofs --tar=f` (ADR 0007). The jailer setup hard-links
 every drive into the jail, so a drive file has to sit on the jail's
 filesystem (ADR 0013).
 
-The stop timeout also has a gap today: vm-run SIGKILLs Firecracker 15 s
-after a stop request (ADR 0012), so a guest grace period longer than that
-was silently cut short.
-
 ## Decision
 
 **Per-VM guest config travels on a read-only guest drive, not the
@@ -77,7 +73,7 @@ apart from `config.json`, which is Firecracker's config.)
 | `entrypoint` | list of strings | no | Replaces the image `Entrypoint`. Empty means unset. |
 | `cmd` | list of strings | no | Replaces the image `Cmd`. Empty means unset. |
 | `readiness_port` | integer 1..65535 | no | TCP port whose connect means ready. Unset: the lowest `ExposedPorts` tcp port, else ready on spawn (ADR 0005). |
-| `sigterm_timeout_seconds` | integer 0..300 | no | Grace period between SIGTERM and SIGKILL. Unset: 10 s. |
+| `sigterm_timeout_seconds` | integer 0..10 | no | Grace period between SIGTERM and SIGKILL. Unset: 10 s. |
 | `nameservers` | list of up to 3 IP strings | no | Resolvers for `/etc/resolv.conf`. Unset: the image's file stays. |
 
 `entrypoint` and `cmd` are named after the OCI image config fields they
@@ -109,12 +105,13 @@ replace.
     users will already know.
   The cap covers `guest.json` only. Files under `files/` (below) are not
   passed through `execve` and will get bounds of their own.
-- **Why at most 300 s.** The host has to wait out the grace period before
-  it may kill the VM, and systemd's `TimeoutStopSec` must cover that wait.
-  A bound keeps both finite. Five minutes is well past what a web app
-  needs to drain.
+- **Why at most 10 s.** vm-run SIGKILLs Firecracker 15 s after its stop
+  request (ADR 0012), whatever the guest's grace period. A longer period
+  would be cut short without a word, as `dassie.stop_timeout` already was,
+  so the schema refuses it instead. 10 s leaves 5 s for the guest to sync
+  and reboot. Raising the cap needs vm-run to learn the value first.
 - The schema and its checks live in `dassie-proto` (`guest_config`), shared
-  by init, vm-run and the drive writer, and are fuzzed with the rest of
+  by init and the drive writer, and are fuzzed with the rest of
   init's config loading.
 
 **Merge rules are ADR 0005's.** Drive values win over the image config. Env
@@ -157,15 +154,6 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
 - **Modes.** Both files are `0640 root:<jail gid>` on the host, so only
   that VM's jailed Firecracker and root can read them.
 
-**vm-run honours the SIGTERM timeout.** `dassie vm-run` takes
-`--guest <guest.json>` and decodes it before the boot, so a bad file fails
-the start with exit 197 (ADR 0012) instead of a boot loop. After its stop
-request it waits `sigterm_timeout_seconds` + 5 s, not a fixed 15 s, before
-it kills Firecracker. `fc@.service` passes
-`--guest /var/lib/dassie/vms/%i/guest.json` and sets `TimeoutStopSec=330`,
-which covers the longest wait. Without `--guest`, vm-run keeps the 10 s
-default and its 15 s wait.
-
 **Init.**
 
 1. Before the switch-root (ADR 0006), init waits up to 5 s for `/dev/vdb`,
@@ -203,7 +191,7 @@ next to the drive.
 there is no transition period with both channels.
 
 This supersedes the cmdline half of ADR 0005's config delivery and its
-`dassie.dns` amendment, and ADR 0012's fixed 15 s stop wait. ADR 0005's
+`dassie.dns` amendment. ADR 0005's
 image config, merge, readiness, supervision and exit rules stand.
 
 ## Consequences
@@ -221,8 +209,8 @@ image config, merge, readiness, supervision and exit rules stand.
   deploy one `mkfs.erofs` run of a few milliseconds. The host keeps needing
   erofs-utils 1.8, as image builds already do.
 - `guest.json` and `guest.drive` are two copies of one config. The drive is
-  always built from the JSON in the same step, and vm-run reads only the
-  JSON's timeout, so a mismatch takes a hand edit of one of them.
+  always built from the JSON in the same step, so a mismatch takes a hand
+  edit of one of them. Nothing on the host reads `guest.json` at runtime.
 - A new host with an old init boots the image's defaults, because an old
   init never looks at the drive. Init and dassie must be upgraded together;
   the reverse mismatch fails loudly.
@@ -230,15 +218,12 @@ image config, merge, readiness, supervision and exit rules stand.
 - The drive is written before the VM starts and never changes underneath
   it: changing config means a new drive and a restart, which M2's
   revisions already imply.
-- A bad `guest.json` on the host fails the unit's start with 197. A bad
-  drive that gets past vm-run (a corrupt file, or a version mismatch with
-  init) is a boot error with no event of its own: vm-run exits 196, as for
-  a lost `exited` event, and `Restart=always` retries until systemd's start
-  limit fails the unit. The cause is only in the console text in the
-  journal.
-- A stop takes up to `sigterm_timeout_seconds` + 5 s, at most 305 s. The
-  daemon will render `TimeoutStopSec` per unit instead of the template's
-  330 s.
+- A bad config is a boot error with no event of its own. vm-run exits 196,
+  as for a lost `exited` event (ADR 0012), and `Restart=always` retries
+  until systemd's start limit fails the unit. The cause is only in the
+  console text in the journal. The drive writer runs the same checks, so
+  this takes a version mismatch or a corrupt file.
+- Apps that need more than 10 s to drain cannot have it yet.
 - Every guest has a real hostname that resolves inside it, with or without
   a NIC, which `ip=`'s hostname slot could not give. An image's own
   `/etc/hostname` and `/etc/hosts` are always replaced, not merged.
