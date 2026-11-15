@@ -8,7 +8,7 @@
 #![allow(let_underscore_drop)]
 
 use std::io::{self, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{Ipv4Addr, TcpListener};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,7 +114,7 @@ impl Guest {
             workdir: "/".into(),
             ready_port,
             stop_timeout: Duration::from_secs(10),
-            dns: vec![],
+            ready_addrs: vec![Ipv4Addr::LOCALHOST],
         })
     }
 
@@ -376,7 +376,7 @@ fn ready_precedes_exit_for_a_fast_entrypoint() {
 
 #[test]
 fn oversized_stop_timeout_does_not_panic() {
-    // `u64::MAX` seconds (`dassie.stop_timeout`) overflows `Instant`;
+    // `u64::MAX` seconds overflows `Instant`;
     // `u64::MAX` milliseconds would not.
     let guest = Guest::start_spec(RunSpec {
         argv: vec!["sleep".into(), "30".into()],
@@ -385,7 +385,7 @@ fn oversized_stop_timeout_does_not_panic() {
         workdir: "/".into(),
         ready_port: None,
         stop_timeout: Duration::from_secs(u64::MAX),
-        dns: vec![],
+        ready_addrs: vec![Ipv4Addr::LOCALHOST],
     });
     let host = guest.listen();
     assert!(matches!(host.next(), Event::Started { .. }));

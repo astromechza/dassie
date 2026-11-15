@@ -1,5 +1,6 @@
-//! The PID-1 layer's system calls: early mounts and the switch-root
-//! (ADR 0006), interface bring-up, and the vsock transports (ADR 0004).
+//! The PID-1 layer's system calls: early mounts, the guest drive (ADR 0015)
+//! and the switch-root (ADR 0006), the hostname, interface bring-up, and the
+//! vsock transports (ADR 0004).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -10,15 +11,17 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dassie_init::boot::RootSpec;
+use dassie_init::boot::{GUEST_DEVICE, GUEST_MOUNT, RootSpec};
 use dassie_init::control::ControlListener;
+use dassie_proto::GuestConfig;
+use dassie_proto::guest_config::{GUEST_FILE, MAX_CONFIG_BYTES};
 use nix::errno::Errno;
 use nix::libc;
 use nix::mount::{MsFlags, mount};
 use nix::sys::socket::{
     AddressFamily, Backlog, SockFlag, SockType, VsockAddr, accept4, bind, connect, listen, socket,
 };
-use nix::unistd::{chdir, chroot, dup2_stderr, dup2_stdin, dup2_stdout};
+use nix::unistd::{chdir, chroot, dup2_stderr, dup2_stdin, dup2_stdout, sethostname};
 
 use super::Result;
 
@@ -34,8 +37,8 @@ const WORK: &str = "/rw/work";
 const NEW_ROOT: &str = "/newroot";
 /// Mounts carried over from the initramfs into the app rootfs.
 const MOVED: [&str; 3] = ["/dev", "/proc", "/sys"];
-/// How long to wait for the root drive's device node to appear.
-const ROOT_WAIT: Duration = Duration::from_secs(5);
+/// How long to wait for a drive's device node to appear.
+const DRIVE_WAIT: Duration = Duration::from_secs(5);
 
 /// Mounts devtmpfs, proc and sysfs in the initramfs.
 pub(super) fn early() -> Result<()> {
@@ -74,6 +77,31 @@ pub(super) fn reopen_console() -> Result<()> {
         .and_then(|()| dup2_stderr(&console))
         .map_err(|e| format!("dup /dev/console: {e}"))?;
     Ok(())
+}
+
+/// Mounts the guest drive read-only at `/guest` in the initramfs and reads
+/// `guest.json` from it. After the switch-root the mount is out of the app's
+/// reach, like `/lower`.
+pub(super) fn read_guest_config() -> Result<GuestConfig> {
+    wait_for(GUEST_DEVICE)?;
+    mkdir(GUEST_MOUNT)?;
+    let flags = MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC;
+    mount(
+        Some(GUEST_DEVICE),
+        GUEST_MOUNT,
+        Some("erofs"),
+        flags,
+        None::<&str>,
+    )
+    .map_err(|e| format!("mount guest drive {GUEST_DEVICE} on {GUEST_MOUNT}: {e}"))?;
+    let path = format!("{GUEST_MOUNT}/{GUEST_FILE}");
+    // One byte over the cap, so decode reports an oversized file.
+    let limit = u64::try_from(MAX_CONFIG_BYTES)? + 1;
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .and_then(|f| f.take(limit).read_to_end(&mut bytes))
+        .map_err(|e| format!("read {path}: {e}"))?;
+    Ok(GuestConfig::decode(&bytes).map_err(|e| format!("{path}: {e}"))?)
 }
 
 /// Mounts the root drive read-only at `/lower` and a tmpfs at `/rw`, and
@@ -194,15 +222,21 @@ pub(super) fn give_console(uid: u32, gid: u32) -> Result<()> {
         .map_err(|e| format!("chown /dev/console to {uid}:{gid}: {e}").into())
 }
 
-/// Replaces `/etc/resolv.conf` with `contents`. Images often ship it as a
-/// symlink into a resolver's runtime dir (systemd-resolved's stub), which does
-/// not exist here, so the link is removed rather than written through.
-pub(super) fn write_resolv_conf(contents: &str) -> Result<()> {
-    const PATH: &str = "/etc/resolv.conf";
+/// Sets the kernel hostname, which `uname` and `hostname` report.
+pub(super) fn set_hostname(name: &str) -> Result<()> {
+    sethostname(name).map_err(|e| format!("set hostname {name:?}: {e}").into())
+}
+
+/// Replaces `/etc/<name>` with `contents`, mode `0644`. Images often ship
+/// these as symlinks into a runtime dir that does not exist here, such as
+/// systemd-resolved's stub `resolv.conf`, so a link is removed rather than
+/// written through.
+pub(super) fn replace_etc(name: &str, contents: &str) -> Result<()> {
+    let path = format!("/etc/{name}");
     mkdir("/etc")?;
-    match fs::remove_file(PATH) {
+    match fs::remove_file(&path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            return Err(format!("remove {PATH}: {e}").into());
+            return Err(format!("remove {path}: {e}").into());
         }
         _ => {}
     }
@@ -210,9 +244,9 @@ pub(super) fn write_resolv_conf(contents: &str) -> Result<()> {
         .write(true)
         .create_new(true)
         .mode(0o644)
-        .open(PATH)
+        .open(&path)
         .and_then(|mut f| f.write_all(contents.as_bytes()))
-        .map_err(|e| format!("write {PATH}: {e}").into())
+        .map_err(|e| format!("write {path}: {e}").into())
 }
 
 /// Creates a directory if it is missing. In the app rootfs it lands in the
@@ -230,10 +264,10 @@ fn mkdir(path: &str) -> Result<()> {
 /// Waits for devtmpfs to show the device node, in case the drive is probed
 /// after init starts.
 fn wait_for(device: &str) -> Result<()> {
-    let deadline = Instant::now() + ROOT_WAIT;
+    let deadline = Instant::now() + DRIVE_WAIT;
     while !Path::new(device).exists() {
         if Instant::now() >= deadline {
-            return Err(format!("root device {device} did not appear").into());
+            return Err(format!("device {device} did not appear").into());
         }
         thread::sleep(Duration::from_millis(50));
     }

@@ -6,7 +6,7 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ChildStdin, Command, ExitStatus, Stdio};
 use std::thread;
 
 use flate2::read::MultiGzDecoder;
@@ -177,11 +177,31 @@ fn mkfs(
     opts: &Options,
 ) -> Result<(), Error> {
     let uuid = image.digest.uuid();
-    let mut child = Command::new(&opts.mkfs)
-        // Stamps every inode; see FAKE_TIME.
-        .env_remove("SOURCE_DATE_EPOCH")
-        .args(["--quiet", "--tar=f", "-z", COMPRESSION])
-        .args(["-T", FAKE_TIME, "--mkfs-time", "-U", &uuid, "-L", LABEL])
+    run_mkfs(opts, tmp, &uuid, Some(COMPRESSION), |stdin| {
+        tree.emit(|i| layer_at(store, image, i), &image.config, stdin)
+            .and_then(|mut w| w.flush().map_err(flatten::Error::Io))
+            .map_err(Error::Flatten)
+    })
+}
+
+/// Runs `mkfs.erofs --tar=f` on `tmp` with a fixed clock, `uuid` and label,
+/// while `feed` writes the tar to its stdin.
+pub(crate) fn run_mkfs(
+    opts: &Options,
+    tmp: &Path,
+    uuid: &str,
+    compression: Option<&str>,
+    feed: impl FnOnce(BufWriter<ChildStdin>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut cmd = Command::new(&opts.mkfs);
+    // Stamps every inode; see FAKE_TIME.
+    cmd.env_remove("SOURCE_DATE_EPOCH")
+        .args(["--quiet", "--tar=f"]);
+    if let Some(compression) = compression {
+        cmd.args(["-z", compression]);
+    }
+    let mut child = cmd
+        .args(["-T", FAKE_TIME, "--mkfs-time", "-U", uuid, "-L", LABEL])
         // With no source argument, the tar comes from stdin.
         .arg(tmp)
         .stdin(Stdio::piped())
@@ -199,13 +219,7 @@ fn mkfs(
         })
     });
     let streamed = match child.stdin.take() {
-        Some(stdin) => tree
-            .emit(
-                |i| layer_at(store, image, i),
-                &image.config,
-                BufWriter::new(stdin),
-            )
-            .and_then(|mut w| w.flush().map_err(flatten::Error::Io)),
+        Some(stdin) => feed(BufWriter::new(stdin)),
         None => Ok(()),
     };
     let exit = child.wait().map_err(|e| Error::Io(opts.mkfs.clone(), e))?;
@@ -214,7 +228,7 @@ fn mkfs(
     if !exit.success() {
         return Err(Error::Mkfs(exit, stderr));
     }
-    streamed.map_err(Error::Flatten)
+    streamed
 }
 
 fn layer_at(store: &Store, image: &Image, i: usize) -> Result<LayerReader, flatten::Error> {

@@ -15,7 +15,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{fs, panic, thread};
 
-use dassie_init::boot::RootSpec;
+use dassie_init::boot::Cmdline;
 use dassie_init::config;
 use dassie_init::supervisor::{self, Control, Deps};
 use dassie_proto::{CONTROL_PORT, EVENTS_PORT, ExitStatus};
@@ -47,8 +47,10 @@ fn run() -> Result<ExitStatus> {
     sys::reopen_console()?;
     let cmdline =
         fs::read_to_string("/proc/cmdline").map_err(|e| format!("read /proc/cmdline: {e}"))?;
-    let root = RootSpec::from_cmdline(&cmdline);
-    sys::switch_root(&root)?;
+    let boot = Cmdline::parse(&cmdline)?;
+    // Before the switch-root, so the mount stays in the initramfs.
+    let guest = sys::read_guest_config()?;
+    sys::switch_root(&boot.root)?;
     sys::dev_extras()?;
 
     sys::interface_up("lo")?;
@@ -59,10 +61,17 @@ fn run() -> Result<ExitStatus> {
     // Ctrl-Alt-Del becomes SIGINT to PID 1 instead of an immediate reboot.
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;
 
-    let spec = config::load(Path::new("/"), &cmdline)?;
-    // After the switch-root, so this lands in the writable root.
-    if !spec.dns.is_empty() {
-        sys::write_resolv_conf(&config::resolv_conf(&spec.dns))?;
+    // The hostname maps to the guest's own address, or to 127.0.1.1 with
+    // no NIC, and the readiness probe tries that address too.
+    let address = boot.address.unwrap_or(config::NO_NIC_ADDRESS);
+    let spec = config::load(Path::new("/"), &guest, address)?;
+    // After the switch-root, so these land in the writable root.
+    let hostname = guest.hostname();
+    sys::set_hostname(hostname)?;
+    sys::replace_etc("hostname", &format!("{hostname}\n"))?;
+    sys::replace_etc("hosts", &config::hosts(hostname, address))?;
+    if !guest.nameservers.is_empty() {
+        sys::replace_etc("resolv.conf", &config::resolv_conf(&guest.nameservers))?;
     }
     if let Some((uid, gid)) = spec.user {
         sys::give_console(uid, gid)?;

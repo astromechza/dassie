@@ -67,13 +67,32 @@ sudo install -m 0755 target/release/examples/listener /usr/local/bin/dassie-list
 sudo install -d /var/lib/dassie/guest /var/lib/dassie/rootfs /var/lib/dassie/vms/test
 sudo install -m 0644 $G/vmlinux $G/initramfs.cpio.gz /var/lib/dassie/guest/
 sudo install -m 0444 $G/rootfs.erofs /var/lib/dassie/rootfs/test.erofs
-scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
-  /var/lib/dassie/rootfs/test.erofs /run/dassie/test.vsock "dassie.instance=test" |
-  sudo tee /var/lib/dassie/vms/test/config.json
 scripts/host/jail-env.sh 1 | sudo tee /var/lib/dassie/vms/test/jail.env
+
+# guest NAME [FIELDS] -> writes the VM's guest.json and builds its guest
+# drive (ADR 0015), readable only by root and the VM's jail gid. FIELDS are
+# more JSON members, such as '"env":{"CRASH_AFTER":"20"}'. The drills below
+# use it; restart the VM afterwards.
+guest() {
+  local dir=/var/lib/dassie/vms/$1 gid
+  gid=$(sed -n 's/^DASSIE_GID=//p' "$dir/jail.env")
+  printf '{"version":1,"instance_id":"%s"%s}\n' "$1" "${2:+,$2}" |
+    sudo tee "$dir/guest.json" | sudo dassie guest-drive --out "$dir/guest.drive"
+  sudo chown "root:$gid" "$dir/guest.json" "$dir/guest.drive"
+  sudo chmod 0640 "$dir/guest.json" "$dir/guest.drive"
+}
+guest test
+scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
+  /var/lib/dassie/rootfs/test.erofs /var/lib/dassie/vms/test/guest.drive /run/dassie/test.vsock |
+  sudo tee /var/lib/dassie/vms/test/config.json
 sudo install -m 0644 scripts/host/systemd/fc@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
+
+The guest's per-instance config is its `guest.json`: the instance id (also
+its hostname), env, argv overrides and resolvers. Firecracker attaches the
+drive built from it as `/dev/vdb`, and `deploy-image.sh` writes both for
+you.
 
 Start the VM, and watch its journal in another terminal. The guest's events
 are journal entries of their own. Show them with their fields:
@@ -90,7 +109,8 @@ journalctl -u fc@test DASSIE_EVENT=exited   # only the exits
 - `systemctl start` returns only once the guest reports `ready`, about 1.5 s.
   The unit is then `active (running)`, with `Status: "ready"`.
 - The journal shows the kernel booting, then
-  `dassie-init: starting ["/usr/local/bin/testapp"]` and
+  `dassie-init: starting ["/usr/local/bin/testapp", "image-cmd"]`,
+  `testapp: hostname test -> 127.0.1.1` and
   `testapp: listening on port 8080`.
 - It also shows `entrypoint started, pid …` and `entrypoint ready` from
   `dassie-vm-run`, with `DASSIE_EVENT=started` and `DASSIE_EVENT=ready`.
@@ -167,9 +187,10 @@ sudo install -m 0644 scripts/host/systemd/dassie.nft /etc/dassie/
 sudo install -m 0644 scripts/host/systemd/dassie-net.service scripts/host/systemd/dassie-tap@.service /etc/systemd/system/
 sudo install -m 0644 scripts/host/systemd/fc@.service.d/net.conf /etc/systemd/system/fc@.service.d/
 scripts/host/net-env.sh 1 | sudo tee /var/lib/dassie/vms/test/net.env
+guest test '"nameservers":["1.1.1.1","9.9.9.9"]'
 FC_NET_ENV=/var/lib/dassie/vms/test/net.env scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux \
   /var/lib/dassie/guest/initramfs.cpio.gz /var/lib/dassie/rootfs/test.erofs \
-  /run/dassie/test.vsock "dassie.instance=test" |
+  /var/lib/dassie/vms/test/guest.drive /run/dassie/test.vsock |
   sudo tee /var/lib/dassie/vms/test/config.json
 sudo systemctl daemon-reload
 sudo systemctl enable --now dassie-net
@@ -191,8 +212,9 @@ curl http://10.88.0.3:8080/   # ok
   every `net-env.sh` run, and change the `vm_pool` element in
   `/etc/dassie/dassie.nft` to match (`172.31.0.0/16`), then reload.
 - `net.env` also carries `DASSIE_DNS` (default `1.1.1.1,9.9.9.9`; set
-  `DASSIE_DNS` when running `net-env.sh` to change it), which reaches init as
-  `dassie.dns` and becomes the guest's `/etc/resolv.conf`.
+  `DASSIE_DNS` when running `net-env.sh` to change it). `deploy-image.sh`
+  copies it into `guest.json`'s `nameservers`, which init writes to the
+  guest's `/etc/resolv.conf`; by hand, pass them to `guest` as above.
 - After editing `/etc/dassie/dassie.nft`, run `sudo systemctl reload
   dassie-net`. It swaps the table atomically. A `restart` would also restart
   every TAP and VM.
@@ -280,8 +302,8 @@ With the NIC:
 curl http://10.88.0.3:8080/crash
 ```
 
-`/crash` makes the testapp abort, so it dies of SIGABRT. Without a NIC, put
-`dassie.env=CRASH_AFTER=20` into the config's extra boot args instead. The
+`/crash` makes the testapp abort, so it dies of SIGABRT. Without a NIC, run
+`guest test '"env":{"CRASH_AFTER":"20"}'` and restart the unit instead. The
 testapp then aborts on its own 20 s after every start.
 
 **Expected:**
@@ -330,10 +352,10 @@ new=$(next_runner "$old") && sudo kill -KILL "$new"
 
 ### 3. The app's exit code reaches systemd
 
-Put `dassie.env=EXIT_AFTER=5 dassie.env=EXIT_CODE=3` into the config's extra
-boot args, then restart the unit:
+Make the testapp exit with code 3 after 5 s, then restart the unit:
 
 ```sh
+guest test '"env":{"EXIT_AFTER":"5","EXIT_CODE":"3"}'
 sudo systemctl restart fc@test
 sleep 6
 systemctl show fc@test -p ExecMainStatus -p Result -p NRestarts
@@ -372,9 +394,9 @@ make it crash every 20 s:
 ```sh
 sudo install -d /var/lib/dassie/vms/test2
 scripts/host/jail-env.sh 3 | sudo tee /var/lib/dassie/vms/test2/jail.env
+guest test2 '"env":{"CRASH_AFTER":"20"}'
 scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
-  /var/lib/dassie/rootfs/test.erofs /run/dassie/test2.vsock \
-  "dassie.instance=test2 dassie.env=CRASH_AFTER=20" |
+  /var/lib/dassie/rootfs/test.erofs /var/lib/dassie/vms/test2/guest.drive /run/dassie/test2.vsock |
   sudo tee /var/lib/dassie/vms/test2/config.json
 sha256sum /var/lib/dassie/rootfs/test.erofs
 sudo systemctl start fc@test fc@test2
@@ -412,7 +434,7 @@ shares.
 
 Two networked VMs, `a` (index 1, `10.88.0.3`) and `b` (index 2, `10.88.0.5`).
 Set them up as for `test` above. They share `test.erofs`, and each has its own
-directory, `net.env`, `jail.env` and config. `a` reuses `test`'s index, and starting its
+directory, `net.env`, `jail.env`, guest drive and config. `a` reuses `test`'s index, and starting its
 TAP would delete `test`'s live `dt00001`, so first run
 `sudo systemctl stop fc@test`, which also removes its TAP. The testapp's
 `/dial?addr=HOST:PORT` opens a TCP connection from inside the guest and
@@ -431,7 +453,7 @@ curl 'http://10.88.0.5:8080/dial?addr=example.com:443'
 - VM → VM, VM → host and VM → metadata: `error: Host is unreachable` at
   once. The forward and input chains reject them with ICMP admin-prohibited.
 - Egress: `ok <ip>:443` from both VMs, through the masquerade, with the name
-  resolved by the guest from `dassie.dns`.
+  resolved by the guest from its `nameservers`.
 - `curl http://10.88.0.5:8080/` from the host still answers `ok`.
 - Stopping `fc@a` removes `dt00001`. Starting it again recreates it, even if a
   stale `dt00001` was left behind.
@@ -491,8 +513,7 @@ are up. `curl --cacert caddy-root.crt https://web.localhost/` answers, and
 
 ### Bonus: the start limit
 
-Set `dassie.env=EXIT_AFTER=1` in the config's extra boot args and restart the
-unit.
+Run `guest test '"env":{"EXIT_AFTER":"1"}'` and restart the unit.
 
 **Expected:** each boot exits within seconds. After 5 starts in 60 s, the unit
 is `failed` with `start-limit-hit`, and it stays down. To recover, fix the

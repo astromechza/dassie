@@ -11,6 +11,12 @@
 # reach `ready` through READY=1 and end with result `exit-code` and status
 # 3, and the jail must belong to the jail uid (ADR 0013).
 #
+# Each boot gets its own guest drive (ADR 0015): its env tells testapp when
+# and how to exit, and testapp logs its argv, env and hostname. Boot 1 sets
+# only `cmd`, so argv is the image Entrypoint plus that cmd; boot 2 sets
+# `entrypoint`, `cmd` and `hostname`. Neither VM has a NIC, so the hostname
+# must resolve to 127.0.1.1 through the /etc/hosts init writes.
+#
 # Both boots use the built, read-only rootfs itself, as every VM of an image
 # shares its artefact. testapp writes a file to the overlay root at startup
 # and fails if one is already there, so the second boot proves the first
@@ -43,6 +49,10 @@ jail_base="$OUT/smoke/jail"
 rootfs="$OUT/rootfs.erofs"
 before=$(sha256sum "$rootfs")
 
+testapp=/usr/local/bin/testapp
+greeting='hello "quoted" world'
+env_json="\"env\":{\"EXIT_AFTER\":\"3\",\"EXIT_CODE\":\"$want_code\",\"GREETING\":\"hello \\\"quoted\\\" world\"}"
+
 # boot N direct|systemd: boots the VM once, with its files in $OUT/smoke/N.
 boot() {
   local n=$1 mode=$2
@@ -50,9 +60,23 @@ boot() {
   # A systemd boot leaves root-owned files; the directory is ours to empty.
   rm -rf "$run"
   mkdir -p "$run"
-  "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" "$run/vm.vsock" \
-    "dassie.instance=smoke-$n dassie.env=EXIT_AFTER=3 dassie.env=EXIT_CODE=$want_code" \
-    >"$run/config.json"
+  local guest_json want_argv want_host
+  case "$n" in
+    1)
+      guest_json="{\"version\":1,\"instance_id\":\"smoke-1\",$env_json,\"cmd\":[\"from-guest\",\"a b\"]}"
+      want_argv="[\"$testapp\", \"from-guest\", \"a b\"]"
+      want_host=smoke-1
+      ;;
+    2)
+      guest_json="{\"version\":1,\"instance_id\":\"smoke-2\",\"hostname\":\"smoke-two.test\",$env_json,\"entrypoint\":[\"$testapp\"],\"cmd\":[\"second\"]}"
+      want_argv="[\"$testapp\", \"second\"]"
+      want_host=smoke-two.test
+      ;;
+  esac
+  printf '%s\n' "$guest_json" >"$run/guest.json"
+  "$dassie" guest-drive --out "$run/guest.drive" <"$run/guest.json"
+  "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" \
+    "$run/guest.drive" "$run/vm.vsock" >"$run/config.json"
   local vm_run=("$dassie" vm-run --config "$run/config.json" --firecracker "$OUT/firecracker")
 
   log "booting $ARCH VM ($n, $mode)"
@@ -113,7 +137,9 @@ boot() {
   # overlay root is 0755 root and holds no file from an earlier boot.
   local want
   for want in "testapp: /dev/stderr ok" "testapp: /dev/shm ok" \
-    "testapp: / is 0755 root" "testapp: clean root, write ok"; do
+    "testapp: / is 0755 root" "testapp: clean root, write ok" \
+    "testapp: argv $want_argv" "testapp: GREETING=\"${greeting//\"/\\\"}\"" \
+    "testapp: DASSIE_INSTANCE_ID=\"smoke-$n\"" "testapp: hostname $want_host -> 127.0.1.1"; do
     if ! grep -qF "$want" "$run/console.log"; then
       dump
       echo "FAIL: boot $n ($mode): console has no \"$want\"" >&2
@@ -149,4 +175,5 @@ if [[ "$(sha256sum "$rootfs")" != "$before" ]]; then
 fi
 [[ "$second" == systemd ]] && second="systemd + jailer"
 log "PASS: two boots of one read-only rootfs (direct, $second): started, ready, exited;" \
-  "vm-run exited $want_code; non-root /dev ok; clean overlay root each time; rootfs unchanged"
+  "vm-run exited $want_code; guest drive argv, env and hostname; non-root /dev ok;" \
+  "clean overlay root each time; rootfs unchanged"

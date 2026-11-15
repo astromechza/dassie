@@ -15,7 +15,11 @@
 //!   resolving `HOST` through `/etc/resolv.conf`, and answers `200 ok ADDR`
 //!   or `502 error: …`. The network drills use it for isolation and egress.
 //!
-//! At startup it reopens its stderr through `/dev/stderr` and writes to
+//! At startup it logs its argv, `GREETING`, `DASSIE_INSTANCE_ID` and its
+//! hostname with the address it resolves to, so the boot test can check the
+//! guest drive's config reached it (ADR 0015).
+//!
+//! It then reopens its stderr through `/dev/stderr` and writes to
 //! `/dev/shm`, and exits if either fails. It runs as a non-root user, so the
 //! boot test also checks that init gives such apps the `/dev` that OCI
 //! runtimes do.
@@ -55,6 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 
+    report_config();
     check_dev()?;
     check_root()?;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
@@ -72,6 +77,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+/// Logs what the guest config sets, for the boot test to match.
+fn report_config() {
+    let args: Vec<String> = env::args().collect();
+    eprintln!("testapp: argv {args:?}");
+    for key in ["GREETING", "DASSIE_INSTANCE_ID"] {
+        eprintln!("testapp: {key}={:?}", env::var(key).unwrap_or_default());
+    }
+    let hostname = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let hostname = hostname.trim_end();
+    match (hostname, 0).to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(sa) => eprintln!("testapp: hostname {hostname} -> {}", sa.ip()),
+            None => eprintln!("testapp: hostname {hostname} has no address"),
+        },
+        Err(e) => eprintln!("testapp: hostname {hostname}: {e}"),
+    }
 }
 
 /// What an image like nginx does at startup: log through `/dev/stderr`, and
