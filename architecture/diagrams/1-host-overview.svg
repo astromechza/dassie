@@ -50,14 +50,15 @@
   <text x="125" y="426" text-anchor="middle" class="s">intent lives here</text>
 
   <!-- files on disk -->
-  <rect x="300" y="70" width="200" height="112" rx="10" fill="#fefce8" class="plan"/>
+  <rect x="300" y="70" width="200" height="128" rx="10" fill="#fefce8" class="plan"/>
   <text x="400" y="94" text-anchor="middle" class="t">Files on disk</text>
   <text x="314" y="114" class="m">/etc/systemd/system/*</text>
   <text x="314" y="130" class="m">/etc/dassie/dassie.nft</text>
   <text x="314" y="146" class="m">caddy.json (autosave off)</text>
   <text x="314" y="162" class="m">vms/&lt;id&gt;/config.json</text>
   <text x="314" y="178" class="m">vms/&lt;id&gt;/net.env</text>
-  <text x="400" y="200" text-anchor="middle" class="s">what runs lives here</text>
+  <text x="314" y="194" class="m">vms/&lt;id&gt;/jail.env</text>
+  <text x="400" y="214" text-anchor="middle" class="s">what runs lives here</text>
   <path d="M220,165 L298,165" class="lnp" marker-end="url(#a)"/>
   <text x="226" y="158" class="lbl">render, write</text>
   <path d="M500,126 L558,126" class="lnp" marker-end="url(#a)"/>
@@ -84,36 +85,45 @@
   <!-- fc@app-blue (built) -->
   <rect x="580" y="98" width="180" height="340" rx="10" fill="#ffffff" class="built"/>
   <text x="670" y="120" text-anchor="middle" class="m" font-weight="600">fc@app-blue.service</text>
-  <rect x="592" y="132" width="156" height="38" rx="7" fill="#f1f5f9" class="built"/>
-  <text x="670" y="156" text-anchor="middle" class="t" font-size="13">firecracker</text>
-  <rect x="592" y="180" width="156" height="226" rx="9" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
-  <text x="604" y="198" font-size="11" font-weight="600" fill="#047857">microVM</text>
-  <rect x="604" y="208" width="132" height="34" rx="6" fill="#ffffff" class="built"/>
-  <text x="670" y="230" text-anchor="middle" class="s">guest kernel 6.18</text>
-  <rect x="604" y="252" width="132" height="58" rx="6" fill="#ffffff" stroke="#059669" stroke-width="2"/>
-  <text x="670" y="276" text-anchor="middle" class="t" font-size="13">dassie-init</text>
-  <text x="670" y="294" text-anchor="middle" class="s">PID 1 · shared initramfs</text>
-  <rect x="604" y="320" width="132" height="58" rx="6" fill="#ffffff" class="built"/>
-  <text x="670" y="344" text-anchor="middle" class="t" font-size="13">app entrypoint</text>
-  <text x="670" y="362" text-anchor="middle" class="s">from the image rootfs</text>
-  <text x="670" y="398" text-anchor="middle" font-size="10.5" fill="#047857">exit → reboot → restart</text>
-  <text x="670" y="428" text-anchor="middle" class="s">Restart=always · 5 / 60 s</text>
+  <!-- process tree: vm-run (MainPID) → jailer, which execs firecracker in place (ADR 0012, ADR 0013) -->
+  <rect x="588" y="130" width="164" height="276" rx="9" fill="#f1f5f9" class="built"/>
+  <text x="670" y="148" text-anchor="middle" class="t" font-size="13">dassie vm-run</text>
+  <text x="670" y="163" text-anchor="middle" font-size="10.5" fill="#475569">MainPID · events → journal</text>
+  <rect x="596" y="172" width="148" height="226" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+  <text x="670" y="189" text-anchor="middle" class="t" font-size="12.5">jailer → firecracker</text>
+  <text x="670" y="203" text-anchor="middle" font-size="10.5" fill="#9a3412">chroot · own uid · seccomp</text>
+  <rect x="604" y="210" width="132" height="180" rx="7" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="612" y="225" font-size="11" font-weight="600" fill="#047857">microVM</text>
+  <rect x="612" y="231" width="116" height="26" rx="5" fill="#ffffff" class="built"/>
+  <text x="670" y="248" text-anchor="middle" font-size="10.5" fill="#475569">guest kernel 6.18</text>
+  <rect x="612" y="263" width="116" height="46" rx="5" fill="#ffffff" stroke="#059669" stroke-width="2"/>
+  <text x="670" y="282" text-anchor="middle" class="t" font-size="12.5">dassie-init</text>
+  <text x="670" y="299" text-anchor="middle" font-size="10.5" fill="#475569">PID 1 · initramfs</text>
+  <rect x="612" y="315" width="116" height="46" rx="5" fill="#ffffff" class="built"/>
+  <text x="670" y="334" text-anchor="middle" class="t" font-size="12.5">app entrypoint</text>
+  <text x="670" y="351" text-anchor="middle" font-size="10.5" fill="#475569">image rootfs</text>
+  <text x="670" y="380" text-anchor="middle" font-size="10.5" fill="#047857">exit → reboot → restart</text>
+  <text x="670" y="426" text-anchor="middle" class="s">Restart=always · 5 / 60 s</text>
 
   <!-- fc@app-green (planned) -->
   <rect x="776" y="98" width="180" height="340" rx="10" fill="#ffffff" class="plan"/>
   <text x="866" y="120" text-anchor="middle" class="m" font-weight="600">fc@app-green.service</text>
-  <rect x="788" y="132" width="156" height="38" rx="7" fill="#f1f5f9" class="plan"/>
-  <text x="866" y="156" text-anchor="middle" class="t" font-size="13">firecracker</text>
-  <rect x="788" y="180" width="156" height="226" rx="9" fill="#f0fdf4" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 4"/>
-  <text x="800" y="198" font-size="11" font-weight="600" fill="#047857">microVM</text>
-  <rect x="800" y="208" width="132" height="34" rx="6" fill="#ffffff" class="plan"/>
-  <text x="866" y="230" text-anchor="middle" class="s">guest kernel 6.18</text>
-  <rect x="800" y="252" width="132" height="58" rx="6" fill="#ffffff" class="plan"/>
-  <text x="866" y="276" text-anchor="middle" class="t" font-size="13">dassie-init</text>
-  <text x="866" y="294" text-anchor="middle" class="s">same initramfs</text>
-  <rect x="800" y="320" width="132" height="58" rx="6" fill="#ffffff" class="plan"/>
-  <text x="866" y="344" text-anchor="middle" class="t" font-size="13">app entrypoint</text>
-  <text x="866" y="362" text-anchor="middle" class="s">new version</text>
+  <rect x="784" y="130" width="164" height="276" rx="9" fill="#f1f5f9" class="plan"/>
+  <text x="866" y="148" text-anchor="middle" class="t" font-size="13">dassie vm-run</text>
+  <text x="866" y="163" text-anchor="middle" font-size="10.5" fill="#475569">its own runner</text>
+  <rect x="792" y="172" width="148" height="226" rx="8" fill="#fffbf5" stroke="#fdba74" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="866" y="189" text-anchor="middle" class="t" font-size="12.5">jailer → firecracker</text>
+  <text x="866" y="203" text-anchor="middle" font-size="10.5" fill="#9a3412">its own chroot and uid</text>
+  <rect x="800" y="210" width="132" height="180" rx="7" fill="#f0fdf4" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="808" y="225" font-size="11" font-weight="600" fill="#047857">microVM</text>
+  <rect x="808" y="231" width="116" height="26" rx="5" fill="#ffffff" class="plan"/>
+  <text x="866" y="248" text-anchor="middle" font-size="10.5" fill="#475569">guest kernel 6.18</text>
+  <rect x="808" y="263" width="116" height="46" rx="5" fill="#ffffff" class="plan"/>
+  <text x="866" y="282" text-anchor="middle" class="t" font-size="12.5">dassie-init</text>
+  <text x="866" y="299" text-anchor="middle" font-size="10.5" fill="#475569">same initramfs</text>
+  <rect x="808" y="315" width="116" height="46" rx="5" fill="#ffffff" class="plan"/>
+  <text x="866" y="334" text-anchor="middle" class="t" font-size="12.5">app entrypoint</text>
+  <text x="866" y="351" text-anchor="middle" font-size="10.5" fill="#475569">new version</text>
   <text x="866" y="428" text-anchor="middle" class="s">during a deploy (M4)</text>
 
   <!-- TAPs (ADR 0008) -->
@@ -141,8 +151,8 @@
   <path d="M578,643 L222,643" class="ln" marker-end="url(#a)"/>
   <text x="389" y="635" text-anchor="middle" class="lbl">egress, masqueraded (no metadata, no LAN)</text>
   <!-- vsock -->
-  <path d="M220,282 L602,282" stroke="#059669" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-start="url(#ag)" marker-end="url(#ag)"/>
-  <text x="389" y="274" text-anchor="middle" font-size="11" fill="#047857">vsock: events, health, stop</text>
+  <path d="M220,282 L610,282" stroke="#059669" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-start="url(#ag)" marker-end="url(#ag)"/>
+  <text x="389" y="274" text-anchor="middle" font-size="11" fill="#047857">vsock: health, stop (events go to vm-run)</text>
 
   <!-- clients arrow -->
   <path d="M220,567 L578,567" class="ln" marker-end="url(#a)"/>
