@@ -68,7 +68,7 @@ apart from `config.json`, which is Firecracker's config.)
 | --- | --- | --- | --- |
 | `version` | integer | yes | Must be `1`. |
 | `instance_id` | string | yes | Sets `DASSIE_INSTANCE_ID` in the app env. Same character rules as `hostname`, which it defaults. |
-| `hostname` | string | no | The guest's hostname, 1–64 ASCII letters, digits, `-` or `.`, and not a number or address (below). Unset: `instance_id`. |
+| `hostname` | string | no | The guest's hostname, 1–64 ASCII letters, digits, `-` or `.`, and not a number, an address or a loopback name (below). Unset: `instance_id`. |
 | `env` | object of string to string | no | Merged into the image `Env` by key. |
 | `entrypoint` | list of strings | no | Replaces the image `Entrypoint`. Empty means unset. |
 | `cmd` | list of strings | no | Replaces the image `Cmd`. Empty means unset. |
@@ -96,16 +96,20 @@ replace.
   `E2BIG` is refused when the drive is written, not at boot. The image's
   own `Entrypoint`, `Cmd` and `Env` are only known in the guest, so init
   also checks the merged argv and env, image values included, against the
-  per-string limit and the full 2 MiB before the spawn, and an overflow is
+  per-string limit and the 2 MiB before the spawn, less 16 KiB for what the
+  kernel adds (the executable's path and a `#!` interpreter), and an overflow is
   a boot error that says so rather than a bare `E2BIG`. The store's
   stricter rules (key syntax, no `DASSIE_*` keys, ADR 0014) are the
   daemon's to enforce. `DASSIE_INSTANCE_ID` is set after
   `env`, so it wins regardless.
-- **No numeric hostnames.** A name whose every dot-separated label is a
-  number (decimal, octal or `0x` hex), such as `127.0.0.1` or `10`, is
-  refused as `hostname`, and as `instance_id` too since it is the default.
-  `getaddrinfo` reads such a name as an address and never looks in
-  `/etc/hosts`, so the mapping below would not apply.
+- **No numeric or loopback hostnames.** A name whose every dot-separated
+  label is a number (decimal, octal or `0x` hex), such as `127.0.0.1` or
+  `10`, is refused as `hostname`, and as `instance_id` too since it is the
+  default. `getaddrinfo` reads such a name as an address and never looks in
+  `/etc/hosts`, so the mapping below would not apply. So are `localhost`,
+  `ip6-localhost` and `ip6-loopback` in any case: `/etc/hosts` gives them
+  loopback first, so an app that binds its own name would not be reachable
+  from the host.
 - **Why 1 MiB.** The drive itself has no practical limit. The cap is a
   choice, for three reasons:
   - Nearly all of `guest.json` ends up in the app's `execve`, and Linux

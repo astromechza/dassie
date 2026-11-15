@@ -75,6 +75,8 @@ boot() {
   esac
   printf '%s\n' "$guest_json" >"$run/guest.json"
   "$dassie" guest-drive --out "$run/guest.drive" <"$run/guest.json"
+  # The jailed boot's Firecracker runs as the jail uid. It holds no secret.
+  chmod 0644 "$run/guest.drive"
   "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" \
     "$run/guest.drive" "$run/vm.vsock" >"$run/config.json"
   local vm_run=("$dassie" vm-run --config "$run/config.json" --firecracker "$OUT/firecracker")

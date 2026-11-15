@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use tar::{Builder, EntryType};
@@ -25,7 +25,8 @@ pub struct FileEntry<'a> {
 }
 
 /// Writes an uncompressed erofs holding `files` to `out`, which is replaced
-/// atomically and left `0644`. The root is `0755 root` and every file is
+/// atomically and left `0600`, since it may hold per-VM values: the caller
+/// widens it for whoever must read it. The root is `0755 root` and every file is
 /// owned by root with a zero mtime. The superblock time is fixed and the
 /// UUID comes from the tar's sha256, so the same files always build the
 /// same bytes.
@@ -33,13 +34,21 @@ pub fn build_files(files: &[FileEntry<'_>], out: &Path, opts: &Options) -> Resul
     let tar = tar_of(files).map_err(|e| Error::Io(out.to_path_buf(), e))?;
     let uuid = Digest::of(&tar).uuid();
     atomic::write_with(out, Error::Io, |tmp| {
+        // Created `0600` up front, so the file is never readable by others
+        // while mkfs writes it.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp)
+            .map_err(|e| Error::Io(tmp.to_path_buf(), e))?;
         run_mkfs(opts, tmp, &uuid, None, |mut stdin| {
             stdin
                 .write_all(&tar)
                 .and_then(|()| stdin.flush())
                 .map_err(|e| Error::Io(opts.mkfs.clone(), e))
         })?;
-        fs::set_permissions(tmp, fs::Permissions::from_mode(0o644))
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o600))
             .map_err(|e| Error::Io(tmp.to_path_buf(), e))
     })
 }

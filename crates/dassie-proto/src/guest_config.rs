@@ -158,6 +158,11 @@ impl GuestConfig {
                     "`{field}` {name:?} reads as an address, not a hostname"
                 ));
             }
+            if let Some(name) = name.filter(|n| is_loopback_alias(n)) {
+                return invalid(format!(
+                    "`{field}` {name:?} is a loopback name in /etc/hosts"
+                ));
+            }
         }
         let too_long = |what: &str, len: usize| {
             if len >= MAX_ARG_STRLEN {
@@ -259,6 +264,16 @@ fn is_hostname(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+}
+
+/// The names init's `/etc/hosts` gives loopback. As the hostname they would
+/// resolve there first, so an app binding its own name would be unreachable.
+const LOOPBACK_ALIASES: [&str; 3] = ["localhost", "ip6-localhost", "ip6-loopback"];
+
+fn is_loopback_alias(name: &str) -> bool {
+    LOOPBACK_ALIASES
+        .iter()
+        .any(|a| name.eq_ignore_ascii_case(a))
 }
 
 /// Whether `getaddrinfo` would read `name` as an IPv4 address: every
@@ -455,6 +470,23 @@ mod tests {
         for name in ["web-1", "10.web", "0xg", "1..2", "1.2.3.4a"] {
             assert!(!is_numeric(name), "{name}");
         }
+    }
+
+    #[test]
+    fn refuses_loopback_names() {
+        for name in ["localhost", "LocalHost", "ip6-localhost", "ip6-loopback"] {
+            let config = GuestConfig {
+                instance_id: "i".into(),
+                hostname: Some(name.into()),
+                ..GuestConfig::default()
+            };
+            assert!(config.validate().is_err(), "{name}");
+        }
+        let config = GuestConfig {
+            instance_id: "localhost".into(),
+            ..GuestConfig::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //!   config. Its hostname and nameservers also become `/etc/hostname`,
 //!   `/etc/hosts` ([`hosts`]) and `/etc/resolv.conf` ([`resolv_conf`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write as _};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -145,11 +145,11 @@ pub fn build(
         Some(dir) => PathBuf::from(dir),
     };
 
-    check_exec_size(&argv, &env.0)?;
+    check_exec_size(&argv, &env.entries)?;
 
     Ok(RunSpec {
         argv,
-        env: env.0,
+        env: env.entries,
         user: account.map(|a| (a.uid, a.gid)),
         workdir,
         ready_port,
@@ -158,10 +158,17 @@ pub fn build(
     })
 }
 
+/// Room left in [`EXEC_LIMIT`] for what the kernel adds to argv and env: the
+/// executable's path (up to `PATH_MAX`, 4 KiB) and, for a `#!` script, the
+/// interpreter, its argument (the 256-byte `#!` line) and the script's path
+/// again.
+const EXEC_HEADROOM: usize = 16 * 1024;
+
 /// Refuses an argv and env that `execve` would reject with `E2BIG`: a string
-/// of [`MAX_ARG_STRLEN`] or more, or a total over [`EXEC_LIMIT`]. The guest
-/// config alone is bounded when the drive is written, but the image's own
-/// `Entrypoint`, `Cmd` and `Env` are only known here (ADR 0015).
+/// of [`MAX_ARG_STRLEN`] or more, or a total over [`EXEC_LIMIT`] less
+/// [`EXEC_HEADROOM`]. The guest config alone is bounded when the drive is
+/// written, but the image's own `Entrypoint`, `Cmd` and `Env` are only known
+/// here (ADR 0015).
 fn check_exec_size(argv: &[String], env: &[(String, String)]) -> Result<(), Error> {
     let lens = argv
         .iter()
@@ -176,9 +183,10 @@ fn check_exec_size(argv: &[String], env: &[(String, String)]) -> Result<(), Erro
         }
         total += exec_cost(len);
     }
-    if total > EXEC_LIMIT {
+    let limit = EXEC_LIMIT - EXEC_HEADROOM;
+    if total > limit {
         return Err(Error::TooBig(format!(
-            "argv and env take {total} bytes for execve, over {EXEC_LIMIT}"
+            "argv and env take {total} bytes for execve, over {limit}"
         )));
     }
     Ok(())
@@ -232,18 +240,24 @@ fn lowest_tcp_port(exposed: &BTreeMap<String, serde_json::Value>) -> Option<u16>
 
 /// Ordered environment; setting an existing key replaces it in place.
 #[derive(Default)]
-struct Env(Vec<(String, String)>);
+struct Env {
+    entries: Vec<(String, String)>,
+    /// Each key's index in `entries`, so merging a large env stays linear.
+    index: HashMap<String, usize>,
+}
 
 impl Env {
     fn set(&mut self, key: &str, value: &str) {
-        match self.0.iter_mut().find(|(k, _)| k == key) {
-            Some(entry) => value.clone_into(&mut entry.1),
-            None => self.0.push((key.to_owned(), value.to_owned())),
+        if let Some(&i) = self.index.get(key) {
+            value.clone_into(&mut self.entries[i].1);
+        } else {
+            self.index.insert(key.to_owned(), self.entries.len());
+            self.entries.push((key.to_owned(), value.to_owned()));
         }
     }
 
     fn set_default(&mut self, key: &str, value: &str) {
-        if !self.0.iter().any(|(k, _)| k == key) {
+        if !self.index.contains_key(key) {
             self.set(key, value);
         }
     }
@@ -435,6 +449,21 @@ mod tests {
         let env = env[..10].join(",");
         let config = format!(r#"{{"Cmd":["/app"],"Env":[{env}]}}"#);
         assert!(spec(&config, &guest()).is_ok());
+    }
+
+    #[test]
+    fn exec_size_limit_leaves_headroom() {
+        // Arguments that fill the limit exactly: whole 100 kB ones, then
+        // one for the rest.
+        let limit = EXEC_LIMIT - EXEC_HEADROOM;
+        let cost = exec_cost(100_000);
+        let rest = limit % cost;
+        assert!(rest > exec_cost(0));
+        let mut argv = vec!["x".repeat(100_000); limit / cost];
+        argv.push("x".repeat(rest - exec_cost(0)));
+        assert!(check_exec_size(&argv, &[]).is_ok());
+        argv.push(String::new());
+        assert!(matches!(check_exec_size(&argv, &[]), Err(Error::TooBig(_))));
     }
 
     #[test]

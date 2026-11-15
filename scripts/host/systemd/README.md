@@ -72,14 +72,22 @@ scripts/host/jail-env.sh 1 | sudo tee /var/lib/dassie/vms/test/jail.env
 # guest NAME [FIELDS] -> writes the VM's guest.json and builds its guest
 # drive (ADR 0015), readable only by root and the VM's jail gid. FIELDS are
 # more JSON members, such as '"env":{"CRASH_AFTER":"20"}'. The drills below
-# use it; restart the VM afterwards.
+# use it; restart the VM afterwards. Both files are built in a private
+# staging dir and moved into place only once they are complete and owned,
+# so a bad FIELDS fails and keeps the old files.
 guest() {
-  local dir=/var/lib/dassie/vms/$1 gid
+  local dir=/var/lib/dassie/vms/$1 gid stage status
   gid=$(sed -n 's/^DASSIE_GID=//p' "$dir/jail.env")
+  stage=$(sudo mktemp -d "$dir/.guest.XXXXXX") || return
   printf '{"version":1,"instance_id":"%s"%s}\n' "$1" "${2:+,$2}" |
-    sudo tee "$dir/guest.json" | sudo dassie guest-drive --out "$dir/guest.drive"
-  sudo chown "root:$gid" "$dir/guest.json" "$dir/guest.drive"
-  sudo chmod 0640 "$dir/guest.json" "$dir/guest.drive"
+    sudo tee "$stage/guest.json" >/dev/null &&
+    sudo sh -c 'dassie guest-drive --out "$1/guest.drive" <"$1/guest.json"' sh "$stage" &&
+    sudo chown "root:$gid" "$stage/guest.json" "$stage/guest.drive" &&
+    sudo chmod 0640 "$stage/guest.json" "$stage/guest.drive" &&
+    sudo mv "$stage/guest.json" "$stage/guest.drive" "$dir/"
+  status=$?
+  sudo rm -rf "$stage"
+  return "$status"
 }
 guest test
 scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
