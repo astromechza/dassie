@@ -1,6 +1,6 @@
 # 0008. Guest networking
 
-Status: Accepted
+Status: Accepted (DNS delivery superseded by 0015)
 Date: 2026-11-13
 
 ## Context

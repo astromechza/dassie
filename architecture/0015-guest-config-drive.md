@@ -68,7 +68,7 @@ apart from `config.json`, which is Firecracker's config.)
 | --- | --- | --- | --- |
 | `version` | integer | yes | Must be `1`. |
 | `instance_id` | string | yes | Sets `DASSIE_INSTANCE_ID` in the app env. Same character rules as `hostname`, which it defaults. |
-| `hostname` | string | no | The guest's hostname, 1–64 ASCII letters, digits, `-` or `.`. Unset: `instance_id`. |
+| `hostname` | string | no | The guest's hostname, 1–64 ASCII letters, digits, `-` or `.`, and not a number or address (below). Unset: `instance_id`. |
 | `env` | object of string to string | no | Merged into the image `Env` by key. |
 | `entrypoint` | list of strings | no | Replaces the image `Entrypoint`. Empty means unset. |
 | `cmd` | list of strings | no | Replaces the image `Cmd`. Empty means unset. |
@@ -88,11 +88,20 @@ replace.
   bumps `version`.
 - **What `execve` can carry.** No string may contain NUL. Env keys must be
   non-empty and contain no `=`. Each env entry (`KEY=value`) and each
-  argument must be under 128 KiB, Linux's `MAX_ARG_STRLEN`, so a value
-  that would fail with `E2BIG` is refused when the drive is written, not
-  at boot. The store's stricter rules (key syntax, no `DASSIE_*` keys,
+  argument must be under 128 KiB, Linux's `MAX_ARG_STRLEN`. Together they
+  must fit in 1 MiB, counting each string's NUL and its 8-byte pointer,
+  which leaves the other half of the 2 MiB `execve` budget (below) to the
+  image's own `Env` and `Cmd`. So 250,000 empty arguments, which fit in a
+  small `guest.json`, are refused too. A config that would fail with
+  `E2BIG` is refused when the drive is written, not at boot, unless the
+  image's own share is what overflows. The store's stricter rules (key syntax, no `DASSIE_*` keys,
   ADR 0014) are the daemon's to enforce. `DASSIE_INSTANCE_ID` is set after
   `env`, so it wins regardless.
+- **No numeric hostnames.** A name whose every dot-separated label is a
+  number (decimal, octal or `0x` hex), such as `127.0.0.1` or `10`, is
+  refused as `hostname`, and as `instance_id` too since it is the default.
+  `getaddrinfo` reads such a name as an address and never looks in
+  `/etc/hosts`, so the mapping below would not apply.
 - **Why 1 MiB.** The drive itself has no practical limit. The cap is a
   choice, for three reasons:
   - Nearly all of `guest.json` ends up in the app's `execve`, and Linux
@@ -151,6 +160,12 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
   redeploy of unchanged config restarts nothing. No compression: the file
   is a few KiB. The daemon calls the same code. The CLI takes JSON rather
   than a flag per field, so it does not change when the schema does.
+- **Who fills it.** Until the daemon does (M2), `deploy-image.sh` writes
+  `guest.json` from its arguments: `instance_id` is the VM name and
+  `nameservers` is `DASSIE_DNS` from the VM's `net.env` (ADR 0008), split
+  on commas. `net-env.sh` already limits that to 3 addresses, and
+  `vm-config.sh` stops emitting `dassie.dns=`. A VM without `net.env` gets
+  no `nameservers`, and keeps the image's `/etc/resolv.conf`.
 - **Modes.** Both files are `0640 root:<jail gid>` on the host, so only
   that VM's jailed Firecracker and root can read them.
 
@@ -166,7 +181,9 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
    for a container. `/etc/hosts` holds the usual `localhost` lines and maps
    the hostname to the guest address from `ip=` (its first field), so an
    app that binds to its own name is reachable from the host. A VM with no
-   NIC maps it to `127.0.1.1`, as Debian does.
+   NIC maps it to `127.0.1.1`, as Debian does. The readiness probe tries
+   that address as well as `127.0.0.1` (amending ADR 0005), so such an app
+   still becomes ready.
 3. A missing drive, a mount failure, a missing, oversized or invalid
    `guest.json`, an unknown field or an unknown `version` is a boot error,
    logged on the console before the reboot, as a bad `dassie.*` value was.

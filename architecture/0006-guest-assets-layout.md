@@ -1,6 +1,6 @@
 # 0006. Guest assets and the initramfs switch-root
 
-Status: Accepted
+Status: Accepted (host unit superseded by 0012 and 0013, per-VM boot args by 0015)
 Date: 2026-11-12
 
 ## Context

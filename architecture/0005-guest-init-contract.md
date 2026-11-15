@@ -77,7 +77,10 @@ Ignored for now: `Volumes`, `StopSignal`, `Labels`, `Healthcheck`, `OnBuild`,
 **Readiness.** The readiness port is `dassie.port`, else the lowest `N/tcp` (or
 bare `N`) in `ExposedPorts`. If there is one, init polls a TCP connect to
 `127.0.0.1:N` every 100 ms and reports `ready` on the first success. With no
-port, `ready` follows `started`.
+port, `ready` follows `started`. _Amended 2026-11-15:_ each poll also tries
+the address `/etc/hosts` maps the guest's hostname to
+([ADR 0015](0015-guest-config-drive.md)), so an app that binds only to its
+own name still becomes ready.
 
 **Supervision.**
 
