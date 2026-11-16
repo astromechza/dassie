@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::{fs, io};
 
 use dassie_proto::GuestConfig;
-use dassie_proto::guest_config::{EXEC_LIMIT, MAX_ARG_STRLEN, exec_cost};
+use dassie_proto::guest_config::{EXEC_LIMIT, Ipv4Cidr, MAX_ARG_STRLEN, exec_cost};
 use serde::Deserialize;
 
 use crate::user::{self, Accounts};
@@ -78,9 +78,8 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Loads the spec for the app rootfs mounted at `root`, given the guest
-/// config and the hostname's address ([`hosts`]). `/etc/passwd` and
-/// `/etc/group` under `root` are optional.
-pub fn load(root: &Path, guest: &GuestConfig, address: Ipv4Addr) -> Result<RunSpec, Error> {
+/// config. `/etc/passwd` and `/etc/group` under `root` are optional.
+pub fn load(root: &Path, guest: &GuestConfig) -> Result<RunSpec, Error> {
     let read = |rel: &str| {
         let path = root.join(rel);
         fs::read_to_string(&path).map_err(|e| Error::Io(path, e))
@@ -91,18 +90,12 @@ pub fn load(root: &Path, guest: &GuestConfig, address: Ipv4Addr) -> Result<RunSp
     };
     let image = read(IMAGE_CONFIG)?;
     let accounts = Accounts::parse(&optional("etc/passwd")?, &optional("etc/group")?);
-    build(&image, guest, address, &accounts)
+    build(&image, guest, &accounts)
 }
 
-/// Builds the spec from the image config JSON, the guest config, the
-/// hostname's address and the rootfs accounts. Guest config values win over
-/// the image config.
-pub fn build(
-    image_json: &str,
-    guest: &GuestConfig,
-    address: Ipv4Addr,
-    accounts: &Accounts,
-) -> Result<RunSpec, Error> {
+/// Builds the spec from the image config JSON, the guest config and the
+/// rootfs accounts. Guest config values win over the image config.
+pub fn build(image_json: &str, guest: &GuestConfig, accounts: &Accounts) -> Result<RunSpec, Error> {
     let image: ImageFile = serde_json::from_str(image_json).map_err(Error::Image)?;
     let image = image.config;
 
@@ -136,10 +129,8 @@ pub fn build(
         .readiness_port
         .filter(|&port| port != 0)
         .or_else(|| lowest_tcp_port(&image.exposed_ports));
-    let mut ready_addrs = vec![Ipv4Addr::LOCALHOST];
-    if address != Ipv4Addr::LOCALHOST {
-        ready_addrs.push(address);
-    }
+    // The guest config refuses loopback addresses, so these differ.
+    let ready_addrs = vec![Ipv4Addr::LOCALHOST, host_address(guest)];
     let workdir = match image.working_dir.as_deref() {
         None | Some("") => PathBuf::from("/"),
         Some(dir) => PathBuf::from(dir),
@@ -205,8 +196,37 @@ fn argv(entrypoint: Vec<String>, cmd: Vec<String>, guest: &GuestConfig) -> Vec<S
 
 const WRITTEN_BY: &str = "# Written by dassie-init from the guest config (ADR 0015).\n";
 
+/// The address `/etc/hosts` maps the hostname to: `eth0`'s, or
+/// [`NO_NIC_ADDRESS`] without a NIC.
+pub fn host_address(guest: &GuestConfig) -> Ipv4Addr {
+    guest
+        .ipv4_address
+        .map_or(NO_NIC_ADDRESS, |cidr| cidr.address)
+}
+
+/// How init sets up `eth0` (ADR 0015): its address and default route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Eth0 {
+    pub address: Ipv4Cidr,
+    pub gateway: Ipv4Addr,
+}
+
+/// What to do with `eth0`, given whether the VM has one. The guest config
+/// and the VM's devices must agree: an address with no NIC, or a NIC with
+/// no address, is a host bug, and the boot fails.
+pub fn eth0(guest: &GuestConfig, has_eth0: bool) -> Result<Option<Eth0>, String> {
+    match (guest.ipv4_address, guest.ipv4_gateway, has_eth0) {
+        (None, _, false) => Ok(None),
+        (Some(address), Some(gateway), true) => Ok(Some(Eth0 { address, gateway })),
+        (Some(address), _, false) => Err(format!(
+            "guest config gives eth0 {address}, but the VM has no eth0"
+        )),
+        (_, _, true) => Err("the VM has eth0, but the guest config has no `ipv4_address`".into()),
+    }
+}
+
 /// `/etc/hosts` contents: the usual `localhost` lines, and `hostname` at
-/// `address`, the guest's own address or [`NO_NIC_ADDRESS`].
+/// `address`, from [`host_address`].
 pub fn hosts(hostname: &str, address: Ipv4Addr) -> String {
     format!(
         "{WRITTEN_BY}127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n{address}\t{hostname}\n"
@@ -318,7 +338,7 @@ mod tests {
     }
 
     fn spec(image_config: &str, guest: &GuestConfig) -> Result<RunSpec, Error> {
-        build(&image(image_config), guest, NO_NIC_ADDRESS, &accounts())
+        build(&image(image_config), guest, &accounts())
     }
 
     #[test]
@@ -468,23 +488,36 @@ mod tests {
 
     #[test]
     fn readiness_also_probes_the_hostname_address() {
-        let address = Ipv4Addr::new(172, 16, 0, 3);
-        let spec = build(
-            &image(r#"{"Cmd":["/app"]}"#),
-            &guest(),
-            address,
-            &accounts(),
-        )
-        .unwrap();
-        assert_eq!(spec.ready_addrs, [Ipv4Addr::LOCALHOST, address]);
-        let spec = build(
-            &image(r#"{"Cmd":["/app"]}"#),
-            &guest(),
-            Ipv4Addr::LOCALHOST,
-            &accounts(),
-        )
-        .unwrap();
-        assert_eq!(spec.ready_addrs, [Ipv4Addr::LOCALHOST]);
+        let addrs = |guest| spec(r#"{"Cmd":["/app"]}"#, &guest).unwrap().ready_addrs;
+        assert_eq!(
+            addrs(networked()),
+            [Ipv4Addr::LOCALHOST, Ipv4Addr::new(10, 88, 0, 3)]
+        );
+        assert_eq!(addrs(guest()), [Ipv4Addr::LOCALHOST, NO_NIC_ADDRESS]);
+    }
+
+    fn networked() -> GuestConfig {
+        GuestConfig {
+            ipv4_address: Some("10.88.0.3/31".parse().unwrap()),
+            ipv4_gateway: Some(Ipv4Addr::new(10, 88, 0, 2)),
+            ..guest()
+        }
+    }
+
+    #[test]
+    fn eth0_needs_an_address_and_the_device() {
+        assert_eq!(eth0(&guest(), false), Ok(None));
+        assert_eq!(
+            eth0(&networked(), true),
+            Ok(Some(Eth0 {
+                address: "10.88.0.3/31".parse().unwrap(),
+                gateway: Ipv4Addr::new(10, 88, 0, 2),
+            }))
+        );
+        assert!(eth0(&networked(), false).is_err());
+        assert!(eth0(&guest(), true).is_err());
+        assert_eq!(host_address(&networked()), Ipv4Addr::new(10, 88, 0, 3));
+        assert_eq!(host_address(&guest()), NO_NIC_ADDRESS);
     }
 
     #[test]
@@ -515,13 +548,10 @@ mod tests {
         )
         .unwrap();
         // No /etc/passwd: numeric users still resolve.
-        let spec = load(root.path(), &guest(), NO_NIC_ADDRESS).unwrap();
+        let spec = load(root.path(), &guest()).unwrap();
         assert_eq!(spec.user, Some((1000, 0)));
 
         let missing = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            load(missing.path(), &guest(), NO_NIC_ADDRESS),
-            Err(Error::Io(..))
-        ));
+        assert!(matches!(load(missing.path(), &guest()), Err(Error::Io(..))));
     }
 }

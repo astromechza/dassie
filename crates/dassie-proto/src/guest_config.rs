@@ -10,10 +10,11 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
+use std::str::FromStr;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 /// The `version` this code reads and writes.
@@ -60,6 +61,10 @@ pub const MAX_HOSTNAME: usize = 64;
 /// Most resolvers glibc and musl use (`MAXNS`).
 pub const MAX_NAMESERVERS: usize = 3;
 
+/// The only prefix length `ipv4_address` takes: each VM's TAP is a
+/// point-to-point link holding the guest and the host (ADR 0008).
+pub const IPV4_PREFIX: u8 = 31;
+
 /// Per-VM values for `dassie-init`. Empty lists and maps mean unset.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +97,68 @@ pub struct GuestConfig {
     /// Resolvers for `/etc/resolv.conf`, at most [`MAX_NAMESERVERS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nameservers: Vec<IpAddr>,
+    /// The address init gives `eth0`, a /[`IPV4_PREFIX`]. Set with a NIC,
+    /// together with `ipv4_gateway`; unset without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv4_address: Option<Ipv4Cidr>,
+    /// The default route: the other address of `ipv4_address`'s /31, the
+    /// host end of the TAP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv4_gateway: Option<Ipv4Addr>,
+}
+
+/// An IPv4 address and prefix length, written `a.b.c.d/n`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ipv4Cidr {
+    pub address: Ipv4Addr,
+    pub prefix: u8,
+}
+
+impl Ipv4Cidr {
+    /// The prefix as a netmask: `/31` is `255.255.255.254`.
+    pub fn netmask(&self) -> Ipv4Addr {
+        Ipv4Addr::from(
+            u32::MAX
+                .checked_shl(32 - u32::from(self.prefix))
+                .unwrap_or(0),
+        )
+    }
+}
+
+impl fmt::Display for Ipv4Cidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.address, self.prefix)
+    }
+}
+
+impl FromStr for Ipv4Cidr {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bad = || format!("{s:?} is not an IPv4 address/prefix");
+        let (address, prefix) = s.split_once('/').ok_or_else(bad)?;
+        // `u8::from_str` takes a leading `+`; a prefix is digits only.
+        if prefix.is_empty() || !prefix.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        let prefix = prefix.parse().ok().filter(|&p| p <= 32).ok_or_else(bad)?;
+        let address = address.parse().map_err(|_| bad())?;
+        Ok(Self { address, prefix })
+    }
+}
+
+impl Serialize for Ipv4Cidr {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ipv4Cidr {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug)]
@@ -210,6 +277,36 @@ impl GuestConfig {
                 self.nameservers.len()
             ));
         }
+        self.validate_network()
+    }
+
+    /// `ipv4_address` and `ipv4_gateway`: both or neither, a /31 of host
+    /// addresses, and the gateway its other half.
+    fn validate_network(&self) -> Result<(), ConfigError> {
+        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
+        let (cidr, gateway) = match (self.ipv4_address, self.ipv4_gateway) {
+            (None, None) => return Ok(()),
+            (Some(cidr), Some(gateway)) => (cidr, gateway),
+            _ => return invalid("`ipv4_address` and `ipv4_gateway` go together".into()),
+        };
+        if cidr.prefix != IPV4_PREFIX {
+            return invalid(format!("`ipv4_address` {cidr}: want a /{IPV4_PREFIX}"));
+        }
+        for (field, addr) in [("ipv4_address", cidr.address), ("ipv4_gateway", gateway)] {
+            if addr.is_unspecified()
+                || addr.is_loopback()
+                || addr.is_multicast()
+                || addr.is_broadcast()
+            {
+                return invalid(format!("`{field}` {addr} is not a host address"));
+            }
+        }
+        let peer = Ipv4Addr::from(u32::from(cidr.address) ^ 1);
+        if gateway != peer {
+            return invalid(format!(
+                "`ipv4_gateway` {gateway}: want {peer}, the other address of {cidr}"
+            ));
+        }
         Ok(())
     }
 
@@ -309,6 +406,8 @@ mod tests {
                 "1.1.1.1".parse().unwrap(),
                 "2606:4700::1111".parse().unwrap(),
             ],
+            ipv4_address: Some("10.88.0.3/31".parse().unwrap()),
+            ipv4_gateway: Some(Ipv4Addr::new(10, 88, 0, 2)),
         }
     }
 
@@ -377,6 +476,8 @@ mod tests {
             r#"{"version":1,"instance_id":"i","sigterm_timeout_seconds":11}"#,
             r#"{"version":1,"instance_id":"i","nameservers":["example.com"]}"#,
             r#"{"version":1,"instance_id":"i","nameservers":["1.1.1.1","1.0.0.1","9.9.9.9","8.8.8.8"]}"#,
+            r#"{"version":1,"instance_id":"i","ipv4_address":"10.88.0.3","ipv4_gateway":"10.88.0.2"}"#,
+            r#"{"version":1,"instance_id":"i","ipv4_address":"10.88.0.3/31"}"#,
             "[1]",
             "",
         ] {
@@ -487,6 +588,63 @@ mod tests {
             ..GuestConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn parses_and_prints_cidrs() {
+        let cidr: Ipv4Cidr = "10.88.0.3/31".parse().unwrap();
+        assert_eq!(cidr.address, Ipv4Addr::new(10, 88, 0, 3));
+        assert_eq!(cidr.to_string(), "10.88.0.3/31");
+        assert_eq!(cidr.netmask(), Ipv4Addr::new(255, 255, 255, 254));
+        for (text, mask) in [("0.0.0.0/0", "0.0.0.0"), ("1.2.3.4/32", "255.255.255.255")] {
+            let cidr: Ipv4Cidr = text.parse().unwrap();
+            assert_eq!(cidr.netmask(), mask.parse::<Ipv4Addr>().unwrap(), "{text}");
+        }
+        for text in [
+            "10.88.0.3",
+            "10.88.0.3/",
+            "10.88.0.3/33",
+            "10.88.0.3/+31",
+            "10.88.0/31",
+            "::1/31",
+            "10.88.0.3/31/1",
+        ] {
+            assert!(text.parse::<Ipv4Cidr>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn network_is_a_slash_31_and_its_peer() {
+        let net = |address: &str, gateway: &str| GuestConfig {
+            instance_id: "i".into(),
+            ipv4_address: Some(address.parse().unwrap()),
+            ipv4_gateway: Some(gateway.parse().unwrap()),
+            ..GuestConfig::default()
+        };
+        assert!(net("10.88.0.3/31", "10.88.0.2").validate().is_ok());
+        assert!(net("10.88.0.2/31", "10.88.0.3").validate().is_ok());
+        for (address, gateway) in [
+            ("10.88.0.3/30", "10.88.0.2"),
+            ("10.88.0.3/32", "10.88.0.2"),
+            ("10.88.0.3/24", "10.88.0.1"),
+            ("10.88.0.3/31", "10.88.0.4"),
+            ("10.88.0.3/31", "10.88.0.3"),
+            ("127.0.0.1/31", "127.0.0.0"),
+            ("0.0.0.1/31", "0.0.0.0"),
+            ("224.0.0.1/31", "224.0.0.0"),
+            ("255.255.255.254/31", "255.255.255.255"),
+        ] {
+            assert!(
+                net(address, gateway).validate().is_err(),
+                "{address} {gateway}"
+            );
+        }
+        let mut half = net("10.88.0.3/31", "10.88.0.2");
+        half.ipv4_gateway = None;
+        assert!(half.validate().is_err());
+        half.ipv4_gateway = Some(Ipv4Addr::new(10, 88, 0, 2));
+        half.ipv4_address = None;
+        assert!(half.validate().is_err());
     }
 
     #[test]

@@ -4,7 +4,8 @@
 #   scripts/guest/kernel/build.sh [x86_64|aarch64]
 #
 # Starts from Firecracker's recommended guest config, merges dassie.config
-# over it, and fails unless every option in it survived `olddefconfig`.
+# over it, and fails unless every option in it, on or off, survived
+# `olddefconfig`.
 # Outputs $OUT/vmlinux (x86_64) or $OUT/Image (aarch64).
 #
 # Needs: make, gcc, flex, bison, bc, libelf-dev, curl, sha256sum. Builds for
@@ -54,7 +55,7 @@ kmake olddefconfig >/dev/null
 # Fail if a dependency silently dropped a required option.
 missing=0
 while IFS= read -r line; do
-  [[ "$line" =~ ^CONFIG_ ]] || continue
+  [[ "$line" =~ ^CONFIG_|^#\ CONFIG_[A-Z0-9_]+\ is\ not\ set$ ]] || continue
   if ! grep -qxF "$line" "$src/.config"; then
     echo "kernel config: $line did not survive olddefconfig" >&2
     missing=1

@@ -71,15 +71,20 @@ scripts/host/jail-env.sh 1 | sudo tee /var/lib/dassie/vms/test/jail.env
 
 # guest NAME [FIELDS] -> writes the VM's guest.json and builds its guest
 # drive (ADR 0015), readable only by root and the VM's jail gid. FIELDS are
-# more JSON members, such as '"env":{"CRASH_AFTER":"20"}'. The drills below
-# use it; restart the VM afterwards. Both files are built in a private
+# more JSON members, such as '"env":{"CRASH_AFTER":"20"}'. With a net.env,
+# eth0's /31 and gateway come from it, as deploy-image.sh does. The drills
+# below use it; restart the VM afterwards. Both files are built in a private
 # staging dir and moved into place only once they are complete and owned,
 # so a bad FIELDS fails and keeps the old files.
 guest() {
-  local dir=/var/lib/dassie/vms/$1 gid stage status
+  local dir=/var/lib/dassie/vms/$1 gid net="" stage status
   gid=$(sed -n 's/^DASSIE_GID=//p' "$dir/jail.env")
+  if [ -e "$dir/net.env" ]; then
+    net=$(sed -n -e 's|^DASSIE_GUEST_IP=\(.*\)|"ipv4_address":"\1/31",|p' \
+      -e 's|^DASSIE_HOST_IP=\(.*\)|"ipv4_gateway":"\1",|p' "$dir/net.env" | tr -d '\n')
+  fi
   stage=$(sudo mktemp -d "$dir/.guest.XXXXXX") || return
-  printf '{"version":1,"instance_id":"%s"%s}\n' "$1" "${2:+,$2}" |
+  printf '{"version":1,"instance_id":"%s",%s%s}\n' "$1" "$net" "${2:-}" | sed 's/,}$/}/' |
     sudo tee "$stage/guest.json" >/dev/null &&
     sudo sh -c 'dassie guest-drive --out "$1/guest.drive" <"$1/guest.json"' sh "$stage" &&
     sudo chown "root:$gid" "$stage/guest.json" "$stage/guest.drive" &&
@@ -98,7 +103,7 @@ sudo systemctl daemon-reload
 ```
 
 The guest's per-instance config is its `guest.json`: the instance id (also
-its hostname), env, argv overrides and resolvers. Firecracker attaches the
+its hostname), env, argv overrides, eth0's address and resolvers. Firecracker attaches the
 drive built from it as `/dev/vdb`, and `deploy-image.sh` writes both for
 you.
 
@@ -219,6 +224,9 @@ curl http://10.88.0.3:8080/   # ok
   uses that range, pick another /16. Set `DASSIE_POOL` (e.g. `172.31`) for
   every `net-env.sh` run, and change the `vm_pool` element in
   `/etc/dassie/dassie.nft` to match (`172.31.0.0/16`), then reload.
+- `guest` reads `net.env` for eth0's address (`10.88.0.3/31`) and gateway
+  (`10.88.0.2`), so run it again whenever `net.env` changes. A VM whose NIC
+  and `guest.json` disagree fails at boot.
 - `net.env` also carries `DASSIE_DNS` (default `1.1.1.1,9.9.9.9`; set
   `DASSIE_DNS` when running `net-env.sh` to change it). `deploy-image.sh`
   copies it into `guest.json`'s `nameservers`, which init writes to the

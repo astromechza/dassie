@@ -54,17 +54,18 @@ fn run() -> Result<ExitStatus> {
     sys::dev_extras()?;
 
     sys::interface_up("lo")?;
-    // A NIC is optional; the kernel `ip=` arg has already set its address.
-    if Path::new("/sys/class/net/eth0").exists() {
-        sys::interface_up("eth0")?;
+    // A NIC is optional, but the guest config must agree on whether there is one.
+    let has_eth0 = Path::new("/sys/class/net/eth0").exists();
+    if let Some(eth0) = config::eth0(&guest, has_eth0)? {
+        sys::configure_eth0(&eth0)?;
     }
     // Ctrl-Alt-Del becomes SIGINT to PID 1 instead of an immediate reboot.
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;
 
     // The hostname maps to the guest's own address, or to 127.0.1.1 with
     // no NIC, and the readiness probe tries that address too.
-    let address = boot.address.unwrap_or(config::NO_NIC_ADDRESS);
-    let spec = config::load(Path::new("/"), &guest, address)?;
+    let address = config::host_address(&guest);
+    let spec = config::load(Path::new("/"), &guest)?;
     // After the switch-root, so these land in the writable root.
     let hostname = guest.hostname();
     sys::set_hostname(hostname)?;

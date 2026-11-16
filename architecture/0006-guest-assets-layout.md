@@ -67,9 +67,10 @@ channel's `stop` on both architectures (ADR 0004).
 the per-VM `dassie.*` args and `ip=` when the VM has a NIC.
 `is_root_device` is false, so Firecracker adds nothing of its own.
 
-_Amended 2026-11-15:_ the `dassie.*` args are gone. Per-VM config is on a
-second read-only drive, `/dev/vdb`, which init mounts on `/guest` in the
-initramfs before the switch-root ([ADR 0015](0015-guest-config-drive.md)).
+_Amended 2026-11-15:_ the `dassie.*` args and `ip=` are gone. Per-VM
+config, the guest's address included, is on a second read-only drive,
+`/dev/vdb`, which init mounts on `/guest` in the initramfs before the
+switch-root ([ADR 0015](0015-guest-config-drive.md)).
 
 _Amended 2026-11-13, for M1 slice C:_ the root drive is attached with
 `is_read_only: true` and the boot args say `ro` (they said `rw` before).
@@ -105,7 +106,8 @@ directly on `/newroot`, read-write unless the cmdline said `ro`. `/lower` and
 After that, init:
 
 - brings `lo` up, and `eth0` if it exists, with the kernel `ip=` arg supplying
-  its address;
+  its address (_amended 2026-11-15:_ init sets `eth0`'s address and route
+  from the guest drive, ADR 0015);
 - disables the Ctrl-Alt-Del reboot, so any Ctrl-Alt-Del arrives as SIGINT;
 - runs the supervisor (ADR 0005).
 

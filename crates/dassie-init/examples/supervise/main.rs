@@ -22,7 +22,6 @@
 
 use std::error::Error;
 use std::io::{self, Read, Write};
-use std::net::Ipv4Addr;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -54,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ..GuestConfig::default()
         },
     };
-    let spec = config::load(&root, &guest, Ipv4Addr::LOCALHOST)?;
+    let spec = config::load(&root, &guest)?;
     eprintln!("supervise: {spec:#?}");
 
     // Block the stop signals before any thread starts so every thread

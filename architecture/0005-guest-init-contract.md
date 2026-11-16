@@ -55,7 +55,8 @@ in the guest.
   before the entrypoint starts. Without the arg the image's own file is left
   alone. Bad addresses, or more than 3, are a boot error like any other bad
   `dassie.*` value. The guest's address itself comes from the kernel's `ip=`
-  arg ([ADR 0008](0008-guest-networking.md)).
+  arg ([ADR 0008](0008-guest-networking.md)); since
+  [ADR 0015](0015-guest-config-drive.md), from the guest drive.
 
 **Image config fields honoured in M0:**
 

@@ -14,8 +14,8 @@
 # from its guest.json (ADR 0015). It is attached second, so it is /dev/vdb.
 #
 # Set FC_NET_ENV to a VM's net.env (from scripts/host/net-env.sh, ADR 0008) to
-# give the guest an eth0: its TAP and MAC go into the NIC, and its address
-# into the `ip=` boot arg. Its DNS goes in guest.json, not here.
+# give the guest an eth0: its TAP and MAC go into the NIC. Its address and DNS
+# go in guest.json, not here, so the boot args are the same for every VM.
 
 set -euo pipefail
 
@@ -32,11 +32,8 @@ boot_args="console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
 # net.env is read, not sourced: only these keys, each checked for shape.
 declare -A net=()
 if [[ -n "${FC_NET_ENV:-}" ]]; then
-  ip4='([0-9]{1,3}\.){3}[0-9]{1,3}'
   declare -A want=(
     [DASSIE_TAP]='^dt[0-9]{5}$'
-    [DASSIE_HOST_IP]="^$ip4\$"
-    [DASSIE_GUEST_IP]="^$ip4\$"
     [DASSIE_MAC]='^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
   )
   # `|| [[ -n $key ]]`: also take a last line with no trailing newline.
@@ -50,8 +47,6 @@ if [[ -n "${FC_NET_ENV:-}" ]]; then
       exit 2
     fi
   done
-  # /31: the gateway is the host end of the TAP. `off`: no DHCP.
-  boot_args+=" ip=${net[DASSIE_GUEST_IP]}::${net[DASSIE_HOST_IP]}:255.255.255.254::eth0:off"
 fi
 
 # Control characters have no place in a path or the cmdline, so they are

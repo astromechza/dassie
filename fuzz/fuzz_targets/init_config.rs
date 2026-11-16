@@ -9,14 +9,16 @@
 //!   env key exactly once, `PATH` and `HOME` set, and `DASSIE_INSTANCE_ID`
 //!   from the guest config;
 //! - `/etc/hosts` ends with the hostname's line, and `/etc/resolv.conf` has
-//!   exactly one `nameserver` line per resolver, in order.
+//!   exactly one `nameserver` line per resolver, in order;
+//! - an `eth0` setup is a /31 whose gateway is the other address, and
+//!   there is one exactly when the config has an address.
 
 #![no_main]
 
 use std::collections::HashSet;
 
 use dassie_init::boot::Cmdline;
-use dassie_init::config::{self, NO_NIC_ADDRESS, hosts, resolv_conf};
+use dassie_init::config::{self, hosts, resolv_conf};
 use dassie_init::user::Accounts;
 use dassie_proto::GuestConfig;
 use libfuzzer_sys::fuzz_target;
@@ -34,13 +36,9 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    let address = match Cmdline::parse(cmdline) {
-        Ok(cmdline) => cmdline.address.unwrap_or(NO_NIC_ADDRESS),
-        Err(e) => {
-            let _ = e.to_string();
-            NO_NIC_ADDRESS
-        }
-    };
+    if let Err(e) = Cmdline::parse(cmdline) {
+        let _ = e.to_string();
+    }
     let guest = match GuestConfig::decode(guest) {
         Ok(guest) => guest,
         Err(e) => {
@@ -55,6 +53,25 @@ fuzz_target!(|data: &[u8]| {
         "round trip changed the config"
     );
 
+    match config::eth0(&guest, true) {
+        Ok(Some(eth0)) => {
+            assert_eq!(eth0.address.netmask().octets(), [255, 255, 255, 254]);
+            assert_eq!(
+                u32::from(eth0.address.address) ^ 1,
+                u32::from(eth0.gateway),
+                "gateway is not the other half of the /31"
+            );
+        }
+        Ok(None) => panic!("eth0 present but not configured"),
+        Err(e) => assert!(guest.ipv4_address.is_none(), "{e}"),
+    }
+    assert_eq!(
+        config::eth0(&guest, false).is_ok(),
+        guest.ipv4_address.is_none(),
+        "no eth0 must mean no address"
+    );
+
+    let address = config::host_address(&guest);
     let hostname = guest.hostname();
     let etc_hosts = hosts(hostname, address);
     assert_eq!(
@@ -69,7 +86,7 @@ fuzz_target!(|data: &[u8]| {
     let want: Vec<String> = guest.nameservers.iter().map(ToString::to_string).collect();
     assert_eq!(written, want, "resolv.conf does not match nameservers");
 
-    let spec = match config::build(image, &guest, address, &Accounts::parse(passwd, group)) {
+    let spec = match config::build(image, &guest, &Accounts::parse(passwd, group)) {
         Ok(spec) => spec,
         Err(e) => {
             let _ = e.to_string();

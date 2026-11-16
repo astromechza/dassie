@@ -1,10 +1,11 @@
 //! The PID-1 layer's system calls: early mounts, the guest drive (ADR 0015)
-//! and the switch-root (ADR 0006), the hostname, interface bring-up, and the
-//! vsock transports (ADR 0004).
+//! and the switch-root (ADR 0006), the hostname, interface and route setup,
+//! and the vsock transports (ADR 0004).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem;
+use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -12,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dassie_init::boot::{GUEST_DEVICE, GUEST_MOUNT, RootSpec};
+use dassie_init::config::Eth0;
 use dassie_init::control::ControlListener;
 use dassie_proto::GuestConfig;
 use dassie_proto::guest_config::{GUEST_FILE, MAX_CONFIG_BYTES};
@@ -274,23 +276,38 @@ fn wait_for(device: &str) -> Result<()> {
     Ok(())
 }
 
-// Network interfaces. Addresses come from the kernel: loopback gets
-// 127.0.0.1 when it goes up, and `eth0` gets its address from the `ip=`
-// cmdline arg during boot.
+// Network interfaces. Loopback gets 127.0.0.1 from the kernel when it goes
+// up; init gives `eth0` the address and default route from the guest config
+// (ADR 0015). These use the classic `ifreq` and `rtentry` ioctls, which need
+// no netlink code.
 
 /// Sets `IFF_UP` on the interface, keeping its other flags.
 pub(super) fn interface_up(name: &str) -> Result<()> {
     set_up(name).map_err(|e| format!("bring up {name}: {e}").into())
 }
 
-#[allow(unsafe_code)]
-fn set_up(name: &str) -> io::Result<()> {
-    let sock = socket(
+/// Gives `eth0` its address and netmask, brings it up, then adds the
+/// default route, which the kernel accepts once the gateway is on-link.
+pub(super) fn configure_eth0(eth0: &Eth0) -> Result<()> {
+    set_address("eth0", eth0.address.address, eth0.address.netmask())
+        .map_err(|e| format!("set eth0 address {}: {e}", eth0.address))?;
+    interface_up("eth0")?;
+    add_default_route(eth0.gateway)
+        .map_err(|e| format!("add default route via {}: {e}", eth0.gateway).into())
+}
+
+fn inet_socket() -> io::Result<OwnedFd> {
+    Ok(socket(
         AddressFamily::Inet,
         SockType::Datagram,
         SockFlag::SOCK_CLOEXEC,
         None,
-    )?;
+    )?)
+}
+
+/// An `ifreq` naming the interface, the rest zeroed.
+#[allow(unsafe_code)]
+fn ifreq(name: &str) -> io::Result<libc::ifreq> {
     // SAFETY: `ifreq` is plain old data (a name array and a union of
     // integers and sockaddrs), for which all-zero bytes are valid.
     let mut req: libc::ifreq = unsafe { mem::zeroed() };
@@ -304,7 +321,13 @@ fn set_up(name: &str) -> io::Result<()> {
     for (dst, &src) in req.ifr_name.iter_mut().zip(bytes) {
         *dst = libc::c_char::from_ne_bytes([src]);
     }
+    Ok(req)
+}
 
+#[allow(unsafe_code)]
+fn set_up(name: &str) -> io::Result<()> {
+    let sock = inet_socket()?;
+    let mut req = ifreq(name)?;
     ioctl(&sock, libc::SIOCGIFFLAGS, &mut req)?;
     // SAFETY: SIOCGIFFLAGS filled in the `ifru_flags` member.
     let flags = unsafe { req.ifr_ifru.ifru_flags };
@@ -313,12 +336,53 @@ fn set_up(name: &str) -> io::Result<()> {
     ioctl(&sock, libc::SIOCSIFFLAGS, &mut req)
 }
 
+/// The address first: SIOCSIFADDR also sets the classful netmask, which
+/// SIOCSIFNETMASK then replaces.
+fn set_address(name: &str, address: Ipv4Addr, netmask: Ipv4Addr) -> io::Result<()> {
+    let sock = inet_socket()?;
+    let mut req = ifreq(name)?;
+    req.ifr_ifru.ifru_addr = sockaddr(address);
+    ioctl(&sock, libc::SIOCSIFADDR, &mut req)?;
+    let mut req = ifreq(name)?;
+    req.ifr_ifru.ifru_netmask = sockaddr(netmask);
+    ioctl(&sock, libc::SIOCSIFNETMASK, &mut req)
+}
+
 #[allow(unsafe_code)]
-fn ioctl(sock: &impl AsRawFd, request: libc::c_ulong, req: &mut libc::ifreq) -> io::Result<()> {
+fn add_default_route(gateway: Ipv4Addr) -> io::Result<()> {
+    let sock = inet_socket()?;
+    // SAFETY: `rtentry` is plain old data (integers, sockaddrs and null
+    // pointers), for which all-zero bytes are valid. A null `rt_dev` lets
+    // the kernel pick the interface the gateway is on.
+    let mut route: libc::rtentry = unsafe { mem::zeroed() };
+    route.rt_dst = sockaddr(Ipv4Addr::UNSPECIFIED);
+    route.rt_genmask = sockaddr(Ipv4Addr::UNSPECIFIED);
+    route.rt_gateway = sockaddr(gateway);
+    route.rt_flags = libc::RTF_UP | libc::RTF_GATEWAY;
+    ioctl(&sock, libc::SIOCADDRT, &mut route)
+}
+
+/// `address` as an `AF_INET` `sockaddr`, the type the ioctls take.
+#[allow(unsafe_code)]
+fn sockaddr(address: Ipv4Addr) -> libc::sockaddr {
+    const _: () = assert!(size_of::<libc::sockaddr_in>() == size_of::<libc::sockaddr>());
+    // SAFETY: both are plain old data, for which all-zero bytes are valid.
+    let mut sin: libc::sockaddr_in = unsafe { mem::zeroed() };
+    sin.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or_default();
+    sin.sin_addr.s_addr = u32::from(address).to_be();
+    // SAFETY: `sockaddr_in` and `sockaddr` have the same size (checked
+    // above), and the kernel reads a `sockaddr` with family `AF_INET` as a
+    // `sockaddr_in`.
+    unsafe { mem::transmute::<libc::sockaddr_in, libc::sockaddr>(sin) }
+}
+
+#[allow(unsafe_code)]
+fn ioctl<T>(sock: &impl AsRawFd, request: libc::c_ulong, arg: &mut T) -> io::Result<()> {
     let request = libc::Ioctl::try_from(request).map_err(io::Error::other)?;
-    // SAFETY: both requests take a pointer to an `ifreq`, which `req` is for
-    // the duration of the call, and the fd is an open socket.
-    let res = unsafe { libc::ioctl(sock.as_raw_fd(), request, std::ptr::from_mut(req)) };
+    // SAFETY: every request used here takes a pointer to the `T` it is
+    // called with (`ifreq` or `rtentry`), which `arg` is for the duration
+    // of the call, and the fd is an open socket.
+    let res = unsafe { libc::ioctl(sock.as_raw_fd(), request, std::ptr::from_mut(arg)) };
     if res < 0 {
         return Err(io::Error::last_os_error());
     }

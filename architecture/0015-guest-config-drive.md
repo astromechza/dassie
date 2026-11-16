@@ -7,8 +7,9 @@ Date: 2026-11-15
 
 ADR 0005 delivers per-VM guest config as `dassie.*` kernel cmdline args:
 the instance id, the colour, env overrides, the readiness port, the stop
-timeout and, since ADR 0008, the DNS resolvers. That channel is too small
-and too weak for M2:
+timeout and, since ADR 0008, the DNS resolvers. ADR 0008 adds the guest's
+address as the kernel's `ip=` arg. That channel is too small and too weak
+for M2:
 
 - the kernel cmdline is capped at 2048 bytes for everything, kernel args
   included, so a handful of env vars fills it;
@@ -39,14 +40,22 @@ apart from `config.json`, which is Firecracker's config.)
 **What moves and what stays.**
 
 - On the drive: the instance id, env, `entrypoint`, `cmd`, readiness
-  port, SIGTERM timeout and nameservers, plus the new `hostname`.
+  port, SIGTERM timeout and nameservers, plus the new `hostname` and the
+  guest's IPv4 address and gateway, which replace `ip=` (below).
 - Dropped: `dassie.colour`. Nothing used it, and M4 keeps blue/green state
   in the daemon and Caddy, not the guest. It can come back as a new field
   if an app ever needs it.
-- On the cmdline: the kernel's own args, `root=/dev/vda ro`
-  (`rootfstype=` optional, ADR 0006), and `ip=` for the guest address
-  (ADR 0008). The kernel applies `ip=` before init runs, and init has no
-  netlink code to do it instead.
+- On the cmdline: only the kernel's own args and `root=/dev/vda ro`
+  (`rootfstype=` optional, ADR 0006). Every VM boots with the same
+  cmdline.
+- **The address moves too.** The kernel could keep applying `ip=` before
+  init runs, but then per-VM config would have two channels, and `ip=` is
+  IPv4-only, one interface, with no way to grow. On the drive, the address
+  is checked with the rest of the config when the drive is written, and an
+  IPv6 address or a second interface is a new field rather than a new
+  mechanism. VMs stay IPv4-only for now (ADR 0008); this only keeps the
+  way open. The cost is a few ioctls in init (below), and the guest
+  kernel's `ip=` autoconfig (`CONFIG_IP_PNP`) is turned off.
 
 **`guest.json`, version 1.** One UTF-8 JSON object, at most 1 MiB:
 
@@ -60,7 +69,9 @@ apart from `config.json`, which is Firecracker's config.)
   "cmd": ["--listen", ":8080"],
   "readiness_port": 8080,
   "sigterm_timeout_seconds": 10,
-  "nameservers": ["1.1.1.1", "9.9.9.9"]
+  "nameservers": ["1.1.1.1", "9.9.9.9"],
+  "ipv4_address": "10.88.0.3/31",
+  "ipv4_gateway": "10.88.0.2"
 }
 ```
 
@@ -75,6 +86,8 @@ apart from `config.json`, which is Firecracker's config.)
 | `readiness_port` | integer 1..65535 | no | TCP port whose connect means ready. Unset: the lowest `ExposedPorts` tcp port, else ready on spawn (ADR 0005). |
 | `sigterm_timeout_seconds` | integer 0..10 | no | Grace period between SIGTERM and SIGKILL. Unset: 10 s. |
 | `nameservers` | list of up to 3 IP strings | no | Resolvers for `/etc/resolv.conf`. Unset: the image's file stays. |
+| `ipv4_address` | string `a.b.c.d/31` | with a NIC | `eth0`'s address. Unset: the VM has no NIC. |
+| `ipv4_gateway` | IPv4 string | with `ipv4_address` | `eth0`'s default route: the other address of the /31. |
 
 `entrypoint` and `cmd` are named after the OCI image config fields they
 replace.
@@ -110,6 +123,13 @@ replace.
   `ip6-localhost` and `ip6-loopback` in any case: `/etc/hosts` gives them
   loopback first, so an app that binds its own name would not be reachable
   from the host.
+- **`eth0` is a /31.** Each VM's TAP is a point-to-point link holding
+  the guest and the host (ADR 0008), so `ipv4_address` must be written
+  in CIDR form with prefix `/31`, and `ipv4_gateway` must be the other
+  address of that /31, the host end. The two are set together or not at
+  all, and neither may be unspecified, loopback, multicast or broadcast.
+  The prefix is in the field so that another network shape later relaxes
+  a check rather than changing the format.
 - **Why 1 MiB.** The drive itself has no practical limit. The cap is a
   choice, for three reasons:
   - Nearly all of `guest.json` ends up in the app's `execve`, and Linux
@@ -169,11 +189,14 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
   is a few KiB. The daemon calls the same code. The CLI takes JSON rather
   than a flag per field, so it does not change when the schema does.
 - **Who fills it.** Until the daemon does (M2), `deploy-image.sh` writes
-  `guest.json` from its arguments: `instance_id` is the VM name and
-  `nameservers` is `DASSIE_DNS` from the VM's `net.env` (ADR 0008), split
-  on commas. `net-env.sh` already limits that to 3 addresses, and
-  `vm-config.sh` stops emitting `dassie.dns=`. A VM without `net.env` gets
-  no `nameservers`, and keeps the image's `/etc/resolv.conf`.
+  `guest.json` from its arguments and the VM's `net.env` (ADR 0008):
+  `instance_id` is the VM name, `ipv4_address` is `DASSIE_GUEST_IP/31`,
+  `ipv4_gateway` is `DASSIE_HOST_IP`, and `nameservers` is `DASSIE_DNS`,
+  split on commas. `net-env.sh` already limits that to 3 addresses.
+  `vm-config.sh` still reads `net.env` for the TAP and MAC, and stops
+  emitting `ip=` and `dassie.dns=`. A VM without `net.env` gets no NIC, no
+  address and no `nameservers`, and keeps the image's
+  `/etc/resolv.conf`.
 - **Modes.** Both files are `0640 root:<jail gid>` on the host, so only
   that VM's jailed Firecracker and root can read them.
 
@@ -183,21 +206,27 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
    mounts it read-only (`nosuid,nodev,noexec`) as erofs on `/guest` in the
    initramfs and reads `/guest/guest.json`. After the switch-root that
    mount is out of the app's reach, like `/lower`.
-2. After the switch-root, init sets the hostname (`hostname`, else
-   `instance_id`) with `sethostname`, and replaces `/etc/hostname` and
-   `/etc/hosts` in the app root on every boot, as Docker and the kubelet do
-   for a container. `/etc/hosts` holds the usual `localhost` lines and maps
-   the hostname to the guest address from `ip=` (its first field), so an
-   app that binds to its own name is reachable from the host. A VM with no
-   NIC maps it to `127.0.1.1`, as Debian does. The readiness probe tries
-   that address as well as `127.0.0.1` (amending ADR 0005), so such an app
-   still becomes ready.
-3. A missing drive, a mount failure, a missing, oversized or invalid
+2. After the switch-root, init brings `lo` up. With `ipv4_address` set,
+   it gives `eth0` that address and netmask (`SIOCSIFADDR`,
+   `SIOCSIFNETMASK`), brings it up, and adds the default route via
+   `ipv4_gateway` (`SIOCADDRT`). These are the classic `ifreq` and
+   `rtentry` ioctls, so init needs no netlink code. An address with no
+   `eth0`, or an `eth0` with no address, is a boot error: the host's NIC
+   and its config disagree.
+3. Init sets the hostname (`hostname`, else `instance_id`) with
+   `sethostname`, and replaces `/etc/hostname` and `/etc/hosts` in the app
+   root on every boot, as Docker and the kubelet do for a container.
+   `/etc/hosts` holds the usual `localhost` lines and maps the hostname to
+   `ipv4_address`, so an app that binds to its own name is reachable from
+   the host. A VM with no NIC maps it to `127.0.1.1`, as Debian does. The
+   readiness probe tries that address as well as `127.0.0.1` (amending
+   ADR 0005), so such an app still becomes ready.
+4. A missing drive, a mount failure, a missing, oversized or invalid
    `guest.json`, an unknown field or an unknown `version` is a boot error,
    logged on the console before the reboot, as a bad `dassie.*` value was.
-4. Any `dassie.*` arg left on the cmdline is a boot error too ("moved to the
-   guest drive"), so an old host with a new init fails loudly instead of
-   having its env dropped.
+5. Any `dassie.*` or `ip=` arg left on the cmdline is a boot error too
+   ("moved to the guest drive"), so an old host with a new init fails
+   loudly instead of having its config dropped.
 
 **Reserved, not built.** Files beyond `guest.json` go in the same erofs
 under `files/`, with their modes and owners set in the tar, for init to
@@ -237,11 +266,28 @@ to be copied into guest RAM rather than paged from a drive. A later push of
 changed values while the VM runs (secret rotation, say) can still use vsock
 next to the drive.
 
+**Why not a metadata service.** Cloud VMs usually fetch this kind of
+config over HTTP from `169.254.169.254` (EC2 IMDS and its kin), and
+Firecracker has one built in, MMDS. A drive suits dassie better:
+
+- It needs no network. The config now sets up `eth0` itself, and a VM
+  may have no NIC at all.
+- It is not an SSRF target. A metadata endpoint is reachable by any
+  request the app can be tricked into making, which is how cloud
+  credentials usually leak and why ADR 0008 blocks `169.254.0.0/16`. The
+  drive is read once by PID 1 before the app starts, and only root in
+  the guest can open `/dev/vdb` afterwards.
+- There is nothing to serve: no endpoint on the host, no MMDS setup per
+  VM, just a file that can be inspected like any other.
+
+What it gives up is values that change while the VM runs, which a
+metadata service can serve. Those would come over vsock (above).
+
 **Cut over in one change.** Nothing outside dev hosts runs dassie yet, so
 there is no transition period with both channels.
 
 This supersedes the cmdline half of ADR 0005's config delivery and its
-`dassie.dns` amendment. ADR 0005's
+`dassie.dns` amendment, and ADR 0008's `ip=` autoconfig. ADR 0005's
 image config, merge, readiness, supervision and exit rules stand.
 
 ## Consequences
@@ -277,5 +323,10 @@ image config, merge, readiness, supervision and exit rules stand.
 - Every guest has a real hostname that resolves inside it, with or without
   a NIC, which `ip=`'s hostname slot could not give. An image's own
   `/etc/hostname` and `/etc/hosts` are always replaced, not merged.
-- The guest still gets its address from `ip=`. Moving networking onto the
-  drive would need netlink code in init.
+- The guest's address is set by init, not the kernel, so a networking bug
+  is now init's to have, and is covered by the smoke test's networked
+  boot. The guest kernel no longer needs `CONFIG_IP_PNP`, and turns it
+  off.
+- IPv6 or a second interface, if ever needed, is new `guest.json` fields
+  and more of the same ioctls in init (or netlink, if they outgrow them),
+  not a new channel.

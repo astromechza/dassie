@@ -15,9 +15,10 @@
 //!   resolving `HOST` through `/etc/resolv.conf`, and answers `200 ok ADDR`
 //!   or `502 error: …`. The network drills use it for isolation and egress.
 //!
-//! At startup it logs its argv, `GREETING`, `DASSIE_INSTANCE_ID` and its
-//! hostname with the address it resolves to, so the boot test can check the
-//! guest drive's config reached it (ADR 0015).
+//! At startup it logs its argv, `GREETING`, `DASSIE_INSTANCE_ID`, its
+//! hostname with the address it resolves to, and the source address of its
+//! default route, so the boot test can check the guest drive's config
+//! reached it (ADR 0015).
 //!
 //! It then reopens its stderr through `/dev/stderr` and writes to
 //! `/dev/shm`, and exits if either fails. It runs as a non-root user, so the
@@ -32,7 +33,7 @@
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 use std::{env, process, thread};
@@ -94,6 +95,16 @@ fn report_config() {
             None => eprintln!("testapp: hostname {hostname} has no address"),
         },
         Err(e) => eprintln!("testapp: hostname {hostname}: {e}"),
+    }
+    // A UDP connect picks the route and source address without sending
+    // anything; with no default route it fails.
+    let route = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).and_then(|sock| {
+        sock.connect((Ipv4Addr::new(1, 1, 1, 1), 53))?;
+        sock.local_addr()
+    });
+    match route {
+        Ok(addr) => eprintln!("testapp: default route from {}", addr.ip()),
+        Err(e) => eprintln!("testapp: no default route: {e}"),
     }
 }
 

@@ -3,7 +3,6 @@
 //! (ADR 0015).
 
 use std::fmt;
-use std::net::Ipv4Addr;
 
 /// The guest drive: attached second, after the rootfs (ADR 0015).
 pub const GUEST_DEVICE: &str = "/dev/vdb";
@@ -12,17 +11,15 @@ pub const GUEST_DEVICE: &str = "/dev/vdb";
 /// reach after the switch-root.
 pub const GUEST_MOUNT: &str = "/guest";
 
-/// What init takes from the kernel cmdline. Per-VM config is on the guest
-/// drive; only the kernel's own args are here.
+/// What init takes from the kernel cmdline. Per-VM config, the guest's
+/// address included, is on the guest drive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cmdline {
     pub root: RootSpec,
-    /// The guest's address, the first field of `ip=`, which the kernel has
-    /// already applied to `eth0` (ADR 0008). `None` with no NIC.
-    pub address: Option<Ipv4Addr>,
 }
 
-/// A `dassie.*` arg on the cmdline, from a host older than ADR 0015.
+/// A `dassie.*` or `ip=` arg on the cmdline, from a host older than
+/// ADR 0015.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyArg(pub String);
 
@@ -40,25 +37,21 @@ impl std::error::Error for LegacyArg {}
 
 impl Cmdline {
     /// Parses the cmdline the way the kernel does: the last occurrence of
-    /// an arg wins. Any `dassie.*` arg is an error, so an old host with a
-    /// new init fails loudly instead of having its env dropped.
+    /// an arg wins. Any `dassie.*` or `ip=` arg is an error, so an old host
+    /// with a new init fails loudly instead of having its config dropped.
     pub fn parse(text: &str) -> Result<Self, LegacyArg> {
         let mut root = RootSpec::default();
-        let mut address = None;
         for token in split_cmdline(text) {
-            if token.starts_with("dassie.") {
+            if token.starts_with("dassie.") || token.starts_with("ip=") {
                 return Err(LegacyArg(token));
             }
             match token.split_once('=') {
                 Some(("root", dev)) if !dev.is_empty() => dev.clone_into(&mut root.device),
                 Some(("rootfstype", fs)) if !fs.is_empty() => fs.clone_into(&mut root.fstype),
-                // `ip=<client>:<server>:<gw>:<mask>:...`, or a mode such as
-                // `dhcp` or `off`, which has no address.
-                Some(("ip", ip)) => address = ip.split(':').next().and_then(|a| a.parse().ok()),
                 _ => {}
             }
         }
-        Ok(Self { root, address })
+        Ok(Self { root })
     }
 }
 
@@ -126,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_the_first_virtio_drive_and_no_address() {
+    fn defaults_to_the_first_virtio_drive() {
         assert_eq!(
             parse("console=ttyS0 reboot=k panic=1 ro"),
             Cmdline {
@@ -134,17 +127,13 @@ mod tests {
                     device: "/dev/vda".into(),
                     fstype: "erofs".into(),
                 },
-                address: None,
             }
         );
     }
 
     #[test]
     fn last_occurrence_wins() {
-        let cmdline = parse(
-            "root=/dev/vda rootfstype=xfs ip=10.0.0.1::10.0.0.0 root=/dev/vdb rootfstype=ext4 \
-             ip=172.16.0.3::172.16.0.2:255.255.255.254::eth0:off",
-        );
+        let cmdline = parse("root=/dev/vda rootfstype=xfs root=/dev/vdb rootfstype=ext4");
         assert_eq!(
             cmdline.root,
             RootSpec {
@@ -152,25 +141,29 @@ mod tests {
                 fstype: "ext4".into(),
             }
         );
-        assert_eq!(cmdline.address, Some(Ipv4Addr::new(172, 16, 0, 3)));
     }
 
     #[test]
     fn ignores_lookalikes_and_empty_values() {
         assert_eq!(
-            parse("root= rootfstype= xroot=/dev/x rootwait rw ip=dhcp"),
+            parse("root= rootfstype= xroot=/dev/x rootwait rw xip=dhcp"),
             parse("")
         );
-        assert_eq!(parse("ip=10.0.0.1::: ip=off").address, None);
     }
 
     #[test]
-    fn refuses_legacy_dassie_args() {
+    fn refuses_legacy_args() {
         assert_eq!(
             Cmdline::parse(r#"ro dassie.env="A=b c" root=/dev/vda"#),
             Err(LegacyArg("dassie.env=A=b c".into()))
         );
         assert!(Cmdline::parse("dassie.instance=web").is_err());
+        assert_eq!(
+            Cmdline::parse("ro ip=10.88.0.3::10.88.0.2:255.255.255.254::eth0:off"),
+            Err(LegacyArg(
+                "ip=10.88.0.3::10.88.0.2:255.255.255.254::eth0:off".into()
+            ))
+        );
     }
 
     #[test]

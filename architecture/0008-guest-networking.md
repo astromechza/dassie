@@ -1,6 +1,6 @@
 # 0008. Guest networking
 
-Status: Accepted (DNS delivery superseded by 0015)
+Status: Accepted (DNS and address delivery superseded by 0015)
 Date: 2026-11-13
 
 ## Context
@@ -41,6 +41,9 @@ forces shape it:
 - The guest gets its address from the kernel's `ip=` autoconfig
   (`CONFIG_IP_PNP`, pinned in `scripts/guest/kernel/dassie.config`), as
   `ip=GUEST::HOST:255.255.255.254::eth0:off`. No DHCP runs anywhere.
+  _Amended 2026-11-15:_ init now sets the same address and route from the
+  guest drive's `ipv4_address` (`GUEST/31`) and `ipv4_gateway` (`HOST`),
+  and `CONFIG_IP_PNP` is off ([ADR 0015](0015-guest-config-drive.md)).
 - The TAP is IPv4 only, with IPv6 and multicast off on the host end. That
   way the host's own link-local services (mDNS, LLMNR, router solicitations)
   never announce it to a guest.
