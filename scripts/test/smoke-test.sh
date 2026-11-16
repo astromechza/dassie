@@ -19,7 +19,7 @@
 # and there is no default route.
 #
 # Boot 3, with passwordless sudo, gives the VM a NIC on a TAP the script
-# creates, and `ipv4_address` and `ipv4_gateway` in its guest drive. Init
+# creates, and `ipv4_address` in its guest drive. Init
 # must give eth0 that address and a default route via the host end (its
 # source address is the guest's), map the hostname to it, and the host must
 # reach the guest with ping while it runs.
@@ -84,7 +84,7 @@ boot() {
       want_host=smoke-two.test
       ;;
     3)
-      guest_json="{\"version\":1,\"instance_id\":\"smoke-3\",$env_json,\"ipv4_address\":\"$tap_guest/31\",\"ipv4_gateway\":\"$tap_host\"}"
+      guest_json="{\"version\":1,\"instance_id\":\"smoke-3\",$env_json,\"ipv4_address\":\"$tap_guest/31\"}"
       want_argv="[\"$testapp\", \"image-cmd\"]"
       want_host=smoke-3 want_ip=$tap_guest
       want_route="testapp: default route from $tap_guest"
@@ -213,12 +213,6 @@ boot 2 "$second"
 
 networked=""
 if sudo -n true 2>/dev/null; then
-  # Every run on this host uses the same TAP, so a host-wide lock is held
-  # from before it is replaced until after it is deleted: a concurrent run
-  # waits rather than deleting this run's TAP. The EXIT trap runs before the
-  # shell exits and closes the lock, so a failed boot cleans up under it too.
-  exec {tap_lock}>>/tmp/dassie-smoke-tap.lock
-  flock "$tap_lock"
   # The TAP belongs to this user, so the unjailed Firecracker can open it.
   sudo -n ip link del "$tap" 2>/dev/null || true
   trap 'sudo -n ip link del "$tap" 2>/dev/null || true' EXIT
@@ -226,9 +220,6 @@ if sudo -n true 2>/dev/null; then
   sudo -n ip addr add "$tap_host/31" dev "$tap"
   sudo -n ip link set "$tap" up
   boot 3 net
-  sudo -n ip link del "$tap"
-  trap - EXIT
-  exec {tap_lock}>&-
   networked="; networked boot: eth0 address, default route and ping"
 else
   log "no passwordless sudo: skipping the networked boot"

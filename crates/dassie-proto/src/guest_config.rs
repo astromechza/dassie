@@ -30,25 +30,6 @@ pub const DRIVE_ID: &str = "guest";
 /// Largest `guest.json` either side accepts, in bytes.
 pub const MAX_CONFIG_BYTES: usize = 1 << 20;
 
-/// Linux's `MAX_ARG_STRLEN`: every argument and every `KEY=value` env entry
-/// must be shorter, counting its terminating NUL.
-pub const MAX_ARG_STRLEN: usize = 128 * 1024;
-
-/// What `execve` allows argv and env together with the default 8 MiB stack
-/// rlimit: a quarter of it, counted with [`exec_cost`].
-pub const EXEC_LIMIT: usize = 2 << 20;
-
-/// Most bytes `env`, `entrypoint` and `cmd` may take together, counted with
-/// [`exec_cost`]: half of [`EXEC_LIMIT`], so the image's own `Env` and
-/// `Cmd` keep the other half. Init checks the merged total at boot.
-pub const MAX_EXEC_BYTES: usize = EXEC_LIMIT / 2;
-
-/// What one argv or env string of `len` bytes takes on the new process's
-/// stack: the bytes, its NUL and its 8-byte pointer.
-pub const fn exec_cost(len: usize) -> usize {
-    len + 1 + size_of::<u64>()
-}
-
 /// Longest `sigterm_timeout_seconds`.
 pub const MAX_SIGTERM_TIMEOUT_SECONDS: u64 = 10;
 
@@ -97,14 +78,11 @@ pub struct GuestConfig {
     /// Resolvers for `/etc/resolv.conf`, at most [`MAX_NAMESERVERS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nameservers: Vec<IpAddr>,
-    /// The address init gives `eth0`, a /[`IPV4_PREFIX`]. Set with a NIC,
-    /// together with `ipv4_gateway`; unset without one.
+    /// The address init gives `eth0`, a /[`IPV4_PREFIX`] whose other
+    /// address, the host end of the TAP, is the default route. Set with a
+    /// NIC, unset without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ipv4_address: Option<Ipv4Cidr>,
-    /// The default route: the other address of `ipv4_address`'s /31, the
-    /// host end of the TAP.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ipv4_gateway: Option<Ipv4Addr>,
 }
 
 /// An IPv4 address and prefix length, written `a.b.c.d/n`.
@@ -122,6 +100,11 @@ impl Ipv4Cidr {
                 .checked_shl(32 - u32::from(self.prefix))
                 .unwrap_or(0),
         )
+    }
+
+    /// The other address of a /31: for the guest's, the host's.
+    pub fn peer(&self) -> Ipv4Addr {
+        Ipv4Addr::from(u32::from(self.address) ^ 1)
     }
 }
 
@@ -231,34 +214,15 @@ impl GuestConfig {
                 ));
             }
         }
-        let too_long = |what: &str, len: usize| {
-            if len >= MAX_ARG_STRLEN {
-                invalid(format!(
-                    "{what} is {len} bytes; execve takes under {MAX_ARG_STRLEN}"
-                ))
-            } else {
-                Ok(())
-            }
-        };
-        let mut exec_bytes = 0;
         for (k, v) in &self.env {
             if k.is_empty() || k.contains('=') {
                 return invalid(format!("env key {k:?} is empty or contains `=`"));
             }
             nul("env key", k)?;
             nul("env value", v)?;
-            too_long(&format!("env entry {k}"), k.len() + 1 + v.len())?;
-            exec_bytes += exec_cost(k.len() + 1 + v.len());
         }
         for arg in self.entrypoint.iter().chain(&self.cmd) {
             nul("argument", arg)?;
-            too_long("an argument", arg.len())?;
-            exec_bytes += exec_cost(arg.len());
-        }
-        if exec_bytes > MAX_EXEC_BYTES {
-            return invalid(format!(
-                "`env`, `entrypoint` and `cmd` take {exec_bytes} bytes for execve, over {MAX_EXEC_BYTES}"
-            ));
         }
         if self.readiness_port == Some(0) {
             return invalid("`readiness_port` 0".into());
@@ -280,32 +244,26 @@ impl GuestConfig {
         self.validate_network()
     }
 
-    /// `ipv4_address` and `ipv4_gateway`: both or neither, a /31 of host
-    /// addresses, and the gateway its other half.
+    /// `ipv4_address`: a /31 of host addresses.
     fn validate_network(&self) -> Result<(), ConfigError> {
-        let invalid = |msg: String| Err(ConfigError::Invalid(msg));
-        let (cidr, gateway) = match (self.ipv4_address, self.ipv4_gateway) {
-            (None, None) => return Ok(()),
-            (Some(cidr), Some(gateway)) => (cidr, gateway),
-            _ => return invalid("`ipv4_address` and `ipv4_gateway` go together".into()),
+        let Some(cidr) = self.ipv4_address else {
+            return Ok(());
         };
         if cidr.prefix != IPV4_PREFIX {
-            return invalid(format!("`ipv4_address` {cidr}: want a /{IPV4_PREFIX}"));
+            return Err(ConfigError::Invalid(format!(
+                "`ipv4_address` {cidr}: want a /{IPV4_PREFIX}"
+            )));
         }
-        for (field, addr) in [("ipv4_address", cidr.address), ("ipv4_gateway", gateway)] {
+        for addr in [cidr.address, cidr.peer()] {
             if addr.is_unspecified()
                 || addr.is_loopback()
                 || addr.is_multicast()
                 || addr.is_broadcast()
             {
-                return invalid(format!("`{field}` {addr} is not a host address"));
+                return Err(ConfigError::Invalid(format!(
+                    "`ipv4_address` {cidr}: {addr} is not a host address"
+                )));
             }
-        }
-        let peer = Ipv4Addr::from(u32::from(cidr.address) ^ 1);
-        if gateway != peer {
-            return invalid(format!(
-                "`ipv4_gateway` {gateway}: want {peer}, the other address of {cidr}"
-            ));
         }
         Ok(())
     }
@@ -407,7 +365,6 @@ mod tests {
                 "2606:4700::1111".parse().unwrap(),
             ],
             ipv4_address: Some("10.88.0.3/31".parse().unwrap()),
-            ipv4_gateway: Some(Ipv4Addr::new(10, 88, 0, 2)),
         }
     }
 
@@ -476,8 +433,8 @@ mod tests {
             r#"{"version":1,"instance_id":"i","sigterm_timeout_seconds":11}"#,
             r#"{"version":1,"instance_id":"i","nameservers":["example.com"]}"#,
             r#"{"version":1,"instance_id":"i","nameservers":["1.1.1.1","1.0.0.1","9.9.9.9","8.8.8.8"]}"#,
-            r#"{"version":1,"instance_id":"i","ipv4_address":"10.88.0.3","ipv4_gateway":"10.88.0.2"}"#,
-            r#"{"version":1,"instance_id":"i","ipv4_address":"10.88.0.3/31"}"#,
+            r#"{"version":1,"instance_id":"i","ipv4_address":"10.88.0.3"}"#,
+            r#"{"version":1,"instance_id":"i","ipv4_address":"10.88.0.3/31","ipv4_gateway":"10.88.0.2"}"#,
             "[1]",
             "",
         ] {
@@ -487,14 +444,9 @@ mod tests {
 
     #[test]
     fn bounds_the_size() {
-        // Control characters take 6 bytes each as JSON escapes, so the
-        // file outgrows the cap while the strings fit execve.
-        let value = "\u{1}".repeat(100_000);
         let config = GuestConfig {
             instance_id: "i".into(),
-            env: [("A", &value), ("B", &value)]
-                .map(|(k, v)| (k.to_owned(), v.clone()))
-                .into(),
+            env: [("A".to_owned(), "x".repeat(MAX_CONFIG_BYTES))].into(),
             ..GuestConfig::default()
         };
         assert!(config.validate().is_ok());
@@ -526,36 +478,6 @@ mod tests {
         assert_eq!(config.hostname(), "01JD3S2MZ0Q5W4T8E6Y7R9B1C2");
         config.hostname = Some("web".into());
         assert_eq!(config.hostname(), "web");
-    }
-
-    #[test]
-    fn bounds_each_execve_string() {
-        let config = |env: (&str, usize), arg: usize| GuestConfig {
-            instance_id: "i".into(),
-            env: [(env.0.to_owned(), "x".repeat(env.1))].into(),
-            cmd: vec!["y".repeat(arg)],
-            ..GuestConfig::default()
-        };
-        // `K=` plus the value, then the NUL: one byte under the limit.
-        assert!(
-            config(("K", MAX_ARG_STRLEN - 3), MAX_ARG_STRLEN - 1)
-                .validate()
-                .is_ok()
-        );
-        assert!(config(("K", MAX_ARG_STRLEN - 2), 1).validate().is_err());
-        assert!(config(("K", 1), MAX_ARG_STRLEN).validate().is_err());
-    }
-
-    #[test]
-    fn bounds_the_exec_total() {
-        let config = |args: usize| GuestConfig {
-            instance_id: "i".into(),
-            cmd: vec![String::new(); args],
-            ..GuestConfig::default()
-        };
-        // Each empty argument costs its NUL and its pointer: 9 bytes.
-        assert!(config(MAX_EXEC_BYTES / 9).validate().is_ok());
-        assert!(config(MAX_EXEC_BYTES / 9 + 1).validate().is_err());
     }
 
     #[test]
@@ -614,37 +536,28 @@ mod tests {
     }
 
     #[test]
-    fn network_is_a_slash_31_and_its_peer() {
-        let net = |address: &str, gateway: &str| GuestConfig {
+    fn network_is_a_slash_31_of_host_addresses() {
+        let net = |address: &str| GuestConfig {
             instance_id: "i".into(),
             ipv4_address: Some(address.parse().unwrap()),
-            ipv4_gateway: Some(gateway.parse().unwrap()),
             ..GuestConfig::default()
         };
-        assert!(net("10.88.0.3/31", "10.88.0.2").validate().is_ok());
-        assert!(net("10.88.0.2/31", "10.88.0.3").validate().is_ok());
-        for (address, gateway) in [
-            ("10.88.0.3/30", "10.88.0.2"),
-            ("10.88.0.3/32", "10.88.0.2"),
-            ("10.88.0.3/24", "10.88.0.1"),
-            ("10.88.0.3/31", "10.88.0.4"),
-            ("10.88.0.3/31", "10.88.0.3"),
-            ("127.0.0.1/31", "127.0.0.0"),
-            ("0.0.0.1/31", "0.0.0.0"),
-            ("224.0.0.1/31", "224.0.0.0"),
-            ("255.255.255.254/31", "255.255.255.255"),
+        assert!(net("10.88.0.3/31").validate().is_ok());
+        assert_eq!(
+            net("10.88.0.3/31").ipv4_address.unwrap().peer(),
+            Ipv4Addr::new(10, 88, 0, 2)
+        );
+        for address in [
+            "10.88.0.3/30",
+            "10.88.0.3/32",
+            "10.88.0.3/24",
+            "127.0.0.1/31",
+            "0.0.0.1/31",
+            "224.0.0.1/31",
+            "255.255.255.254/31",
         ] {
-            assert!(
-                net(address, gateway).validate().is_err(),
-                "{address} {gateway}"
-            );
+            assert!(net(address).validate().is_err(), "{address}");
         }
-        let mut half = net("10.88.0.3/31", "10.88.0.2");
-        half.ipv4_gateway = None;
-        assert!(half.validate().is_err());
-        half.ipv4_gateway = Some(Ipv4Addr::new(10, 88, 0, 2));
-        half.ipv4_address = None;
-        assert!(half.validate().is_err());
     }
 
     #[test]

@@ -54,8 +54,9 @@ apart from `config.json`, which is Firecracker's config.)
   is checked with the rest of the config when the drive is written, and an
   IPv6 address or a second interface is a new field rather than a new
   mechanism. VMs stay IPv4-only for now (ADR 0008); this only keeps the
-  way open. The cost is a few ioctls in init (below), and the guest
-  kernel's `ip=` autoconfig (`CONFIG_IP_PNP`) is turned off.
+  way open. The cost is a few ioctls in init (below). The guest kernel no
+  longer needs `ip=` autoconfig (`CONFIG_IP_PNP`), so ADR 0006 stops
+  pinning it.
 
 **`guest.json`, version 1.** One UTF-8 JSON object, at most 1 MiB:
 
@@ -70,8 +71,7 @@ apart from `config.json`, which is Firecracker's config.)
   "readiness_port": 8080,
   "sigterm_timeout_seconds": 10,
   "nameservers": ["1.1.1.1", "9.9.9.9"],
-  "ipv4_address": "10.88.0.3/31",
-  "ipv4_gateway": "10.88.0.2"
+  "ipv4_address": "10.88.0.3/31"
 }
 ```
 
@@ -86,8 +86,7 @@ apart from `config.json`, which is Firecracker's config.)
 | `readiness_port` | integer 1..65535 | no | TCP port whose connect means ready. Unset: the lowest `ExposedPorts` tcp port, else ready on spawn (ADR 0005). |
 | `sigterm_timeout_seconds` | integer 0..10 | no | Grace period between SIGTERM and SIGKILL. Unset: 10 s. |
 | `nameservers` | list of up to 3 IP strings | no | Resolvers for `/etc/resolv.conf`. Unset: the image's file stays. |
-| `ipv4_address` | string `a.b.c.d/31` | with a NIC | `eth0`'s address. Unset: the VM has no NIC. |
-| `ipv4_gateway` | IPv4 string | with `ipv4_address` | `eth0`'s default route: the other address of the /31. |
+| `ipv4_address` | string `a.b.c.d/31` | with a NIC | `eth0`'s address; the /31's other address is the default route. Unset: the VM has no NIC. |
 
 `entrypoint` and `cmd` are named after the OCI image config fields they
 replace.
@@ -100,21 +99,12 @@ replace.
   knows it; the two ship together from this repository. A breaking change
   bumps `version`.
 - **What `execve` can carry.** No string may contain NUL. Env keys must be
-  non-empty and contain no `=`. Each env entry (`KEY=value`) and each
-  argument must be under 128 KiB, Linux's `MAX_ARG_STRLEN`. Together they
-  must fit in 1 MiB, counting each string's NUL and its 8-byte pointer,
-  which leaves the other half of the 2 MiB `execve` budget (below) to the
-  image's own `Env` and `Cmd`. So 250,000 empty arguments, which fit in a
-  small `guest.json`, are refused too. A config that would fail with
-  `E2BIG` is refused when the drive is written, not at boot. The image's
-  own `Entrypoint`, `Cmd` and `Env` are only known in the guest, so init
-  also checks the merged argv and env, image values included, against the
-  per-string limit and the 2 MiB before the spawn, less 16 KiB for what the
-  kernel adds (the executable's path and a `#!` interpreter), and an overflow is
-  a boot error that says so rather than a bare `E2BIG`. The store's
-  stricter rules (key syntax, no `DASSIE_*` keys, ADR 0014) are the
-  daemon's to enforce. `DASSIE_INSTANCE_ID` is set after
-  `env`, so it wins regardless.
+  non-empty and contain no `=`. Sizes are not checked beyond the 1 MiB
+  cap: an argv and env too big for `execve` fail the spawn with `E2BIG`
+  ("Argument list too long"), which is a boot error like any other. The
+  store's stricter rules (key syntax, no `DASSIE_*` keys, ADR 0014) are
+  the daemon's to enforce. `DASSIE_INSTANCE_ID` is set after `env`, so it
+  wins regardless.
 - **No numeric or loopback hostnames.** A name whose every dot-separated
   label is a number (decimal, octal or `0x` hex), such as `127.0.0.1` or
   `10`, is refused as `hostname`, and as `instance_id` too since it is the
@@ -125,23 +115,15 @@ replace.
   from the host.
 - **`eth0` is a /31.** Each VM's TAP is a point-to-point link holding
   the guest and the host (ADR 0008), so `ipv4_address` must be written
-  in CIDR form with prefix `/31`, and `ipv4_gateway` must be the other
-  address of that /31, the host end. The two are set together or not at
-  all, and neither may be unspecified, loopback, multicast or broadcast.
-  The prefix is in the field so that another network shape later relaxes
-  a check rather than changing the format.
-- **Why 1 MiB.** The drive itself has no practical limit. The cap is a
-  choice, for three reasons:
-  - Nearly all of `guest.json` ends up in the app's `execve`, and Linux
-    caps argv plus env together at a quarter of the stack rlimit: 2 MiB
-    with the default 8 MiB. Values much past 1 MiB could never reach the
-    app, and the rest of that budget is the image's own `Env` and `Cmd`.
-  - PID 1 reads the whole file into memory, so a bound keeps a bad file
-    from costing a small guest its RAM.
-  - It matches Kubernetes' 1 MiB for a ConfigMap or Secret, which M2's
-    users will already know.
-  The cap covers `guest.json` only. Files under `files/` (below) are not
-  passed through `execve` and will get bounds of their own.
+  in CIDR form with prefix `/31`. Its other address, the host end, is the
+  gateway, so there is no gateway field to get wrong. Neither address may
+  be unspecified, loopback, multicast or broadcast. The prefix is in the
+  field so that another network shape later relaxes a check, plus a
+  gateway field if it needs one, rather than changing the format.
+- **Why 1 MiB.** PID 1 reads the whole file into memory, `execve` caps
+  argv plus env at 2 MiB anyway, and it matches Kubernetes' 1 MiB for a
+  ConfigMap or Secret. The cap covers `guest.json` only; files under
+  `files/` (below) will get bounds of their own.
 - **Why at most 10 s.** vm-run SIGKILLs Firecracker 15 s after its stop
   request (ADR 0012), whatever the guest's grace period. A longer period
   would be cut short without a word, as `dassie.stop_timeout` already was,
@@ -191,8 +173,7 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
 - **Who fills it.** Until the daemon does (M2), `deploy-image.sh` writes
   `guest.json` from its arguments and the VM's `net.env` (ADR 0008):
   `instance_id` is the VM name, `ipv4_address` is `DASSIE_GUEST_IP/31`,
-  `ipv4_gateway` is `DASSIE_HOST_IP`, and `nameservers` is `DASSIE_DNS`,
-  split on commas. `net-env.sh` already limits that to 3 addresses.
+  and `nameservers` is `DASSIE_DNS`, split on commas. `net-env.sh` already limits that to 3 addresses.
   `vm-config.sh` still reads `net.env` for the TAP and MAC, and stops
   emitting `ip=` and `dassie.dns=`. A VM without `net.env` gets no NIC, no
   address and no `nameservers`, and keeps the image's
@@ -208,8 +189,8 @@ An empty argv is a boot error. There is no `$(VAR)` expansion.
    mount is out of the app's reach, like `/lower`.
 2. After the switch-root, init brings `lo` up. With `ipv4_address` set,
    it gives `eth0` that address and netmask (`SIOCSIFADDR`,
-   `SIOCSIFNETMASK`), brings it up, and adds the default route via
-   `ipv4_gateway` (`SIOCADDRT`). These are the classic `ifreq` and
+   `SIOCSIFNETMASK`), brings it up, and adds the default route via the
+   /31's other address (`SIOCADDRT`). These are the classic `ifreq` and
    `rtentry` ioctls, so init needs no netlink code. An address with no
    `eth0`, or an `eth0` with no address, is a boot error: the host's NIC
    and its config disagree.
@@ -325,8 +306,8 @@ image config, merge, readiness, supervision and exit rules stand.
   `/etc/hostname` and `/etc/hosts` are always replaced, not merged.
 - The guest's address is set by init, not the kernel, so a networking bug
   is now init's to have, and is covered by the smoke test's networked
-  boot. The guest kernel no longer needs `CONFIG_IP_PNP`, and turns it
-  off.
+  boot. Init refuses `ip=`, so the kernel's autoconfig never runs even if
+  `CONFIG_IP_PNP` is built in.
 - IPv6 or a second interface, if ever needed, is new `guest.json` fields
   and more of the same ioctls in init (or netlink, if they outgrow them),
   not a new channel.

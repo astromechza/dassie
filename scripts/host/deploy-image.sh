@@ -16,8 +16,7 @@
 #   net.env      scripts/host/net-env.sh INDEX (TAP, /31, MAC, DNS; ADR 0008)
 #   jail.env     scripts/host/jail-env.sh INDEX (the jail uid and gid; ADR 0013)
 #   guest.json   the guest config: NAME as instance_id, and net.env's /31
-#                and DNS as ipv4_address, ipv4_gateway and nameservers
-#                (ADR 0015)
+#                and DNS as ipv4_address and nameservers (ADR 0015)
 #   guest.drive  `dassie guest-drive` from guest.json; both 0640 root:<jail gid>
 #   config.json  scripts/host/vm-config.sh, with the rootfs, guest drive and
 #                net.env
@@ -126,12 +125,11 @@ rootfs=$("${sudo[@]}" "$image_tool" build "$digest")
 jail_gid=$(get "$stage/jail.env" DASSIE_GID '^[0-9]+$')
 
 # --- Guest config (ADR 0015). NAME is the instance id, and so the guest's
-# hostname. eth0 gets the guest end of the TAP's /31, routing via the host
-# end. net-env.sh limits DASSIE_DNS to 3 addresses. The drive builds to the
+# hostname. eth0 gets the guest end of the TAP's /31, and init routes via
+# the other end. net-env.sh limits DASSIE_DNS to 3 addresses. The drive builds to the
 # same bytes from the same JSON, so an unchanged config restarts nothing.
 eth0_ip=$(get "$stage/net.env" DASSIE_GUEST_IP "^$ip4\$")
-gateway_ip=$(get "$stage/net.env" DASSIE_HOST_IP "^$ip4\$")
-network=",\"ipv4_address\":\"$eth0_ip/31\",\"ipv4_gateway\":\"$gateway_ip\""
+network=",\"ipv4_address\":\"$eth0_ip/31\""
 dns=$(get "$stage/net.env" DASSIE_DNS '^[0-9a-fA-F.:,]*$')
 nameservers=""
 if [[ -n "$dns" ]]; then

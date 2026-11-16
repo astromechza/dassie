@@ -42,8 +42,8 @@ forces shape it:
   (`CONFIG_IP_PNP`, pinned in `scripts/guest/kernel/dassie.config`), as
   `ip=GUEST::HOST:255.255.255.254::eth0:off`. No DHCP runs anywhere.
   _Amended 2026-11-15:_ init now sets the same address and route from the
-  guest drive's `ipv4_address` (`GUEST/31`) and `ipv4_gateway` (`HOST`),
-  and `CONFIG_IP_PNP` is off ([ADR 0015](0015-guest-config-drive.md)).
+  guest drive's `ipv4_address` (`GUEST/31`, routing via `HOST`), and
+  `CONFIG_IP_PNP` is no longer pinned ([ADR 0015](0015-guest-config-drive.md)).
 - The TAP is IPv4 only, with IPv6 and multicast off on the host end. That
   way the host's own link-local services (mDNS, LLMNR, router solicitations)
   never announce it to a guest.

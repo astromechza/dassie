@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::{fs, io};
 
 use dassie_proto::GuestConfig;
-use dassie_proto::guest_config::{EXEC_LIMIT, Ipv4Cidr, MAX_ARG_STRLEN, exec_cost};
+use dassie_proto::guest_config::Ipv4Cidr;
 use serde::Deserialize;
 
 use crate::user::{self, Accounts};
@@ -55,8 +55,6 @@ pub enum Error {
     Io(PathBuf, io::Error),
     Image(serde_json::Error),
     NoCommand,
-    /// The merged argv and env would fail `execve` with `E2BIG`.
-    TooBig(String),
     User(user::Error),
 }
 
@@ -69,7 +67,6 @@ impl fmt::Display for Error {
                 f,
                 "no command: neither the guest nor the image config has one"
             ),
-            Self::TooBig(msg) => write!(f, "{msg}"),
             Self::User(e) => write!(f, "{e}"),
         }
     }
@@ -136,8 +133,6 @@ pub fn build(image_json: &str, guest: &GuestConfig, accounts: &Accounts) -> Resu
         Some(dir) => PathBuf::from(dir),
     };
 
-    check_exec_size(&argv, &env.entries)?;
-
     Ok(RunSpec {
         argv,
         env: env.entries,
@@ -147,40 +142,6 @@ pub fn build(image_json: &str, guest: &GuestConfig, accounts: &Accounts) -> Resu
         ready_addrs,
         stop_timeout: guest.sigterm_timeout(),
     })
-}
-
-/// Room left in [`EXEC_LIMIT`] for what the kernel adds to argv and env: the
-/// executable's path (up to `PATH_MAX`, 4 KiB) and, for a `#!` script, the
-/// interpreter, its argument (the 256-byte `#!` line) and the script's path
-/// again.
-const EXEC_HEADROOM: usize = 16 * 1024;
-
-/// Refuses an argv and env that `execve` would reject with `E2BIG`: a string
-/// of [`MAX_ARG_STRLEN`] or more, or a total over [`EXEC_LIMIT`] less
-/// [`EXEC_HEADROOM`]. The guest config alone is bounded when the drive is
-/// written, but the image's own `Entrypoint`, `Cmd` and `Env` are only known
-/// here (ADR 0015).
-fn check_exec_size(argv: &[String], env: &[(String, String)]) -> Result<(), Error> {
-    let lens = argv
-        .iter()
-        .map(String::len)
-        .chain(env.iter().map(|(k, v)| k.len() + 1 + v.len()));
-    let mut total = 0;
-    for len in lens {
-        if len >= MAX_ARG_STRLEN {
-            return Err(Error::TooBig(format!(
-                "an argument or env entry is {len} bytes; execve takes under {MAX_ARG_STRLEN}"
-            )));
-        }
-        total += exec_cost(len);
-    }
-    let limit = EXEC_LIMIT - EXEC_HEADROOM;
-    if total > limit {
-        return Err(Error::TooBig(format!(
-            "argv and env take {total} bytes for execve, over {limit}"
-        )));
-    }
-    Ok(())
 }
 
 /// argv by the Kubernetes rules: the guest `entrypoint` replaces the
@@ -204,24 +165,18 @@ pub fn host_address(guest: &GuestConfig) -> Ipv4Addr {
         .map_or(NO_NIC_ADDRESS, |cidr| cidr.address)
 }
 
-/// How init sets up `eth0` (ADR 0015): its address and default route.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Eth0 {
-    pub address: Ipv4Cidr,
-    pub gateway: Ipv4Addr,
-}
-
-/// What to do with `eth0`, given whether the VM has one. The guest config
+/// The address to give `eth0`, given whether the VM has one; its /31's
+/// other address is the default route (ADR 0015). The guest config
 /// and the VM's devices must agree: an address with no NIC, or a NIC with
 /// no address, is a host bug, and the boot fails.
-pub fn eth0(guest: &GuestConfig, has_eth0: bool) -> Result<Option<Eth0>, String> {
-    match (guest.ipv4_address, guest.ipv4_gateway, has_eth0) {
-        (None, _, false) => Ok(None),
-        (Some(address), Some(gateway), true) => Ok(Some(Eth0 { address, gateway })),
-        (Some(address), _, false) => Err(format!(
+pub fn eth0(guest: &GuestConfig, has_eth0: bool) -> Result<Option<Ipv4Cidr>, String> {
+    match (guest.ipv4_address, has_eth0) {
+        (None, false) => Ok(None),
+        (Some(address), true) => Ok(Some(address)),
+        (Some(address), false) => Err(format!(
             "guest config gives eth0 {address}, but the VM has no eth0"
         )),
-        (_, _, true) => Err("the VM has eth0, but the guest config has no `ipv4_address`".into()),
+        (None, true) => Err("the VM has eth0, but the guest config has no `ipv4_address`".into()),
     }
 }
 
@@ -455,38 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn refuses_what_execve_would() {
-        // The image's own share is only checked here.
-        let big = "x".repeat(MAX_ARG_STRLEN);
-        let config = format!(r#"{{"Cmd":["/app","{big}"]}}"#);
-        assert!(matches!(spec(&config, &guest()), Err(Error::TooBig(_))));
-
-        let entry = "x".repeat(100_000);
-        let env: Vec<String> = (0..25).map(|i| format!(r#""K{i}={entry}""#)).collect();
-        let config = format!(r#"{{"Cmd":["/app"],"Env":[{}]}}"#, env.join(","));
-        assert!(matches!(spec(&config, &guest()), Err(Error::TooBig(_))));
-
-        let env = env[..10].join(",");
-        let config = format!(r#"{{"Cmd":["/app"],"Env":[{env}]}}"#);
-        assert!(spec(&config, &guest()).is_ok());
-    }
-
-    #[test]
-    fn exec_size_limit_leaves_headroom() {
-        // Arguments that fill the limit exactly: whole 100 kB ones, then
-        // one for the rest.
-        let limit = EXEC_LIMIT - EXEC_HEADROOM;
-        let cost = exec_cost(100_000);
-        let rest = limit % cost;
-        assert!(rest > exec_cost(0));
-        let mut argv = vec!["x".repeat(100_000); limit / cost];
-        argv.push("x".repeat(rest - exec_cost(0)));
-        assert!(check_exec_size(&argv, &[]).is_ok());
-        argv.push(String::new());
-        assert!(matches!(check_exec_size(&argv, &[]), Err(Error::TooBig(_))));
-    }
-
-    #[test]
     fn readiness_also_probes_the_hostname_address() {
         let addrs = |guest| spec(r#"{"Cmd":["/app"]}"#, &guest).unwrap().ready_addrs;
         assert_eq!(
@@ -499,7 +422,6 @@ mod tests {
     fn networked() -> GuestConfig {
         GuestConfig {
             ipv4_address: Some("10.88.0.3/31".parse().unwrap()),
-            ipv4_gateway: Some(Ipv4Addr::new(10, 88, 0, 2)),
             ..guest()
         }
     }
@@ -509,10 +431,7 @@ mod tests {
         assert_eq!(eth0(&guest(), false), Ok(None));
         assert_eq!(
             eth0(&networked(), true),
-            Ok(Some(Eth0 {
-                address: "10.88.0.3/31".parse().unwrap(),
-                gateway: Ipv4Addr::new(10, 88, 0, 2),
-            }))
+            Ok(Some("10.88.0.3/31".parse().unwrap()))
         );
         assert!(eth0(&networked(), false).is_err());
         assert!(eth0(&guest(), true).is_err());

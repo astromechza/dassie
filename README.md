@@ -170,9 +170,8 @@ cargo +nightly fuzz run init_config fuzz/corpus/init_config fuzz/seeds/init_conf
   config, and an accepted spec must have a non-empty argv, no readiness port
   0, each env key once with `PATH`, `HOME` and `DASSIE_INSTANCE_ID` set. The
   hostname must end up on the last line of `/etc/hosts`, and each resolver on
-  one `nameserver` line of `resolv.conf`. An `eth0` setup must be a /31 with
-  the other address as its gateway, and exist exactly when `guest.json` has
-  an address.
+  one `nameserver` line of `resolv.conf`. An `eth0` address must be a /31, set
+  exactly when `guest.json` has one.
 
 `-max_len` is above `MAX_LINE`, so oversized frames are reachable. Seeds from
 ADR 0004, small layer tars and sample boot inputs live in `fuzz/seeds/` and are committed. New inputs go to

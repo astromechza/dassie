@@ -57,8 +57,8 @@ fn run() -> Result<ExitStatus> {
     sys::interface_up("lo")?;
     // A NIC is optional, but the guest config must agree on whether there is one.
     let has_eth0 = Path::new("/sys/class/net/eth0").exists();
-    if let Some(eth0) = config::eth0(&guest, has_eth0)? {
-        sys::configure_eth0(&eth0)?;
+    if let Some(address) = config::eth0(&guest, has_eth0)? {
+        sys::configure_eth0(address)?;
     }
     // Ctrl-Alt-Del becomes SIGINT to PID 1 instead of an immediate reboot.
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;

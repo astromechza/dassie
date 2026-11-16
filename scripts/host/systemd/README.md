@@ -70,29 +70,17 @@ sudo install -m 0444 $G/rootfs.erofs /var/lib/dassie/rootfs/test.erofs
 scripts/host/jail-env.sh 1 | sudo tee /var/lib/dassie/vms/test/jail.env
 
 # guest NAME [FIELDS] -> writes the VM's guest.json and builds its guest
-# drive (ADR 0015), readable only by root and the VM's jail gid. FIELDS are
-# more JSON members, such as '"env":{"CRASH_AFTER":"20"}'. With a net.env,
-# eth0's /31 and gateway come from it, as deploy-image.sh does. The drills
-# below use it; restart the VM afterwards. Both files are built in a private
-# staging dir and moved into place only once they are complete and owned,
-# so a bad FIELDS fails and keeps the old files.
+# drive (ADR 0015), both 0640 root:<jail gid>. FIELDS are more JSON members,
+# such as '"env":{"CRASH_AFTER":"20"}'. With a net.env, eth0's /31 comes
+# from it, as deploy-image.sh does. Restart the VM afterwards.
 guest() {
-  local dir=/var/lib/dassie/vms/$1 gid net="" stage status
-  gid=$(sed -n 's/^DASSIE_GID=//p' "$dir/jail.env")
-  if [ -e "$dir/net.env" ]; then
-    net=$(sed -n -e 's|^DASSIE_GUEST_IP=\(.*\)|"ipv4_address":"\1/31",|p' \
-      -e 's|^DASSIE_HOST_IP=\(.*\)|"ipv4_gateway":"\1",|p' "$dir/net.env" | tr -d '\n')
-  fi
-  stage=$(sudo mktemp -d "$dir/.guest.XXXXXX") || return
-  printf '{"version":1,"instance_id":"%s",%s%s}\n' "$1" "$net" "${2:-}" | sed 's/,}$/}/' |
-    sudo tee "$stage/guest.json" >/dev/null &&
-    sudo sh -c 'dassie guest-drive --out "$1/guest.drive" <"$1/guest.json"' sh "$stage" &&
-    sudo chown "root:$gid" "$stage/guest.json" "$stage/guest.drive" &&
-    sudo chmod 0640 "$stage/guest.json" "$stage/guest.drive" &&
-    sudo mv "$stage/guest.json" "$stage/guest.drive" "$dir/"
-  status=$?
-  sudo rm -rf "$stage"
-  return "$status"
+  local dir=/var/lib/dassie/vms/$1 ip
+  ip=$(sed -n 's/^DASSIE_GUEST_IP=//p' "$dir/net.env" 2>/dev/null)
+  printf '{"version":1,"instance_id":"%s"%s%s}\n' "$1" \
+    "${ip:+,\"ipv4_address\":\"$ip/31\"}" "${2:+,$2}" |
+    sudo tee "$dir/guest.json" | sudo dassie guest-drive --out "$dir/guest.drive" || return
+  sudo chown "root:$(sed -n 's/^DASSIE_GID=//p' "$dir/jail.env")" "$dir/guest.json" "$dir/guest.drive"
+  sudo chmod 0640 "$dir/guest.json" "$dir/guest.drive"
 }
 guest test
 scripts/host/vm-config.sh /var/lib/dassie/guest/vmlinux /var/lib/dassie/guest/initramfs.cpio.gz \
@@ -103,9 +91,9 @@ sudo systemctl daemon-reload
 ```
 
 The guest's per-instance config is its `guest.json`: the instance id (also
-its hostname), env, argv overrides, eth0's address and resolvers. Firecracker attaches the
-drive built from it as `/dev/vdb`, and `deploy-image.sh` writes both for
-you.
+its hostname), env, argv overrides, eth0's address and resolvers.
+Firecracker attaches the drive built from it as `/dev/vdb`, and
+`deploy-image.sh` writes both for you.
 
 Start the VM, and watch its journal in another terminal. The guest's events
 are journal entries of their own. Show them with their fields:
@@ -224,8 +212,8 @@ curl http://10.88.0.3:8080/   # ok
   uses that range, pick another /16. Set `DASSIE_POOL` (e.g. `172.31`) for
   every `net-env.sh` run, and change the `vm_pool` element in
   `/etc/dassie/dassie.nft` to match (`172.31.0.0/16`), then reload.
-- `guest` reads `net.env` for eth0's address (`10.88.0.3/31`) and gateway
-  (`10.88.0.2`), so run it again whenever `net.env` changes. A VM whose NIC
+- `guest` reads `net.env` for eth0's address (`10.88.0.3/31`; init routes
+  via `10.88.0.2`), so run it again whenever `net.env` changes. A VM whose NIC
   and `guest.json` disagree fails at boot.
 - `net.env` also carries `DASSIE_DNS` (default `1.1.1.1,9.9.9.9`; set
   `DASSIE_DNS` when running `net-env.sh` to change it). `deploy-image.sh`

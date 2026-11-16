@@ -54,7 +54,8 @@ decision did not.)
 - initrd (gzip), devtmpfs, proc, sysfs;
 - the virtio-mmio transport, virtio-blk, virtio-net and vsock;
 - the 8250 serial console;
-- `IP_PNP`;
+- `IP_PNP` (_amended 2026-11-15:_ no longer pinned; init sets eth0's
+  address from the guest drive, ADR 0015);
 - _amended 2026-11-13, for M1 slice C:_ erofs (ADR 0009) with xattrs, ACLs
   and lz4, overlayfs, and tmpfs with xattrs, so that copy-up keeps them.
   These replace ext4, which the guest no longer needs.

@@ -10,8 +10,7 @@
 //!   from the guest config;
 //! - `/etc/hosts` ends with the hostname's line, and `/etc/resolv.conf` has
 //!   exactly one `nameserver` line per resolver, in order;
-//! - an `eth0` setup is a /31 whose gateway is the other address, and
-//!   there is one exactly when the config has an address.
+//! - an `eth0` address is a /31, set exactly when the config has one.
 
 #![no_main]
 
@@ -54,14 +53,7 @@ fuzz_target!(|data: &[u8]| {
     );
 
     match config::eth0(&guest, true) {
-        Ok(Some(eth0)) => {
-            assert_eq!(eth0.address.netmask().octets(), [255, 255, 255, 254]);
-            assert_eq!(
-                u32::from(eth0.address.address) ^ 1,
-                u32::from(eth0.gateway),
-                "gateway is not the other half of the /31"
-            );
-        }
+        Ok(Some(address)) => assert_eq!(address.netmask().octets(), [255, 255, 255, 254]),
         Ok(None) => panic!("eth0 present but not configured"),
         Err(e) => assert!(guest.ipv4_address.is_none(), "{e}"),
     }

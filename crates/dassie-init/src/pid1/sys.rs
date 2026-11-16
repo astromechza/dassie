@@ -13,9 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dassie_init::boot::{GUEST_DEVICE, GUEST_MOUNT, RootSpec};
-use dassie_init::config::Eth0;
 use dassie_init::control::ControlListener;
 use dassie_proto::GuestConfig;
+use dassie_proto::guest_config::Ipv4Cidr;
 use dassie_proto::guest_config::{GUEST_FILE, MAX_CONFIG_BYTES};
 use nix::errno::Errno;
 use nix::libc;
@@ -287,13 +287,14 @@ pub(super) fn interface_up(name: &str) -> Result<()> {
 }
 
 /// Gives `eth0` its address and netmask, brings it up, then adds the
-/// default route, which the kernel accepts once the gateway is on-link.
-pub(super) fn configure_eth0(eth0: &Eth0) -> Result<()> {
-    set_address("eth0", eth0.address.address, eth0.address.netmask())
-        .map_err(|e| format!("set eth0 address {}: {e}", eth0.address))?;
+/// default route via the /31's other address, which the kernel accepts
+/// once that is on-link.
+pub(super) fn configure_eth0(address: Ipv4Cidr) -> Result<()> {
+    set_address("eth0", address.address, address.netmask())
+        .map_err(|e| format!("set eth0 address {address}: {e}"))?;
     interface_up("eth0")?;
-    add_default_route(eth0.gateway)
-        .map_err(|e| format!("add default route via {}: {e}", eth0.gateway).into())
+    let gateway = address.peer();
+    add_default_route(gateway).map_err(|e| format!("add default route via {gateway}: {e}").into())
 }
 
 fn inet_socket() -> io::Result<OwnedFd> {
