@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,7 +94,11 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
 
     let probe_done = Arc::new(AtomicBool::new(false));
     if let Some(port) = spec.ready_port {
-        probe(port, control_tx.clone(), Arc::clone(&probe_done));
+        let addrs = spec
+            .ready_addrs
+            .iter()
+            .map(|&ip| SocketAddr::from((ip, port)));
+        probe(addrs.collect(), control_tx.clone(), Arc::clone(&probe_done));
     }
 
     let set_state = |state| {
@@ -226,13 +230,13 @@ fn signal(pid: u32, sig: Signal) {
     }
 }
 
-/// Polls a TCP connect to the port inside the guest until it succeeds or the
-/// supervisor is done.
-fn probe(port: u16, control: mpsc::Sender<Control>, done: Arc<AtomicBool>) {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+/// Polls a TCP connect to each address inside the guest until one succeeds
+/// or the supervisor is done.
+fn probe(addrs: Vec<SocketAddr>, control: mpsc::Sender<Control>, done: Arc<AtomicBool>) {
     thread::spawn(move || {
         while !done.load(Ordering::Relaxed) {
-            if TcpStream::connect_timeout(&addr, PROBE_INTERVAL).is_ok() {
+            let connects = |addr| TcpStream::connect_timeout(addr, PROBE_INTERVAL).is_ok();
+            if addrs.iter().any(connects) {
                 // The supervisor may already be done; nothing to do then.
                 drop(control.send(Control::Ready));
                 return;

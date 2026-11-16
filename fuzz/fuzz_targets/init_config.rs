@@ -1,33 +1,84 @@
-//! Feeds `dassie-init`'s config loading (ADR 0005) the four inputs it reads
-//! at boot: the image config JSON, the kernel cmdline, `/etc/passwd` and
-//! `/etc/group`, split on NUL bytes. The image config comes from whatever
-//! image was pulled, and this runs in PID 1, where a panic is a kernel panic
-//! and a crash loop. So nothing may panic, and an accepted spec must hold:
+//! Feeds `dassie-init`'s config loading (ADR 0005, ADR 0015) the five inputs
+//! it reads at boot: the image config JSON, `guest.json`, the kernel cmdline,
+//! `/etc/passwd` and `/etc/group`, split on NUL bytes. The image config comes
+//! from whatever image was pulled, and this runs in PID 1, where a panic is a
+//! kernel panic and a crash loop. So nothing may panic, and:
 //!
-//! - a non-empty argv and no readiness port 0;
-//! - every env key exactly once, with `PATH` and `HOME` set;
-//! - at most 3 `dassie.dns` resolvers, each written as exactly one
-//!   `nameserver` line of `/etc/resolv.conf`, in order.
+//! - an accepted `guest.json` re-encodes to a config that decodes the same;
+//! - an accepted spec has a non-empty argv and no readiness port 0, every
+//!   env key exactly once, `PATH` and `HOME` set, and `DASSIE_INSTANCE_ID`
+//!   from the guest config;
+//! - `/etc/hosts` ends with the hostname's line, and `/etc/resolv.conf` has
+//!   exactly one `nameserver` line per resolver, in order;
+//! - an `eth0` address is a /31, set exactly when the config has one.
 
 #![no_main]
 
 use std::collections::HashSet;
 
-use dassie_init::boot::RootSpec;
-use dassie_init::config::{self, resolv_conf};
+use dassie_init::boot::Cmdline;
+use dassie_init::config::{self, hosts, resolv_conf};
 use dassie_init::user::Accounts;
+use dassie_proto::GuestConfig;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let mut parts = data.splitn(4, |&b| b == 0).map(std::str::from_utf8);
-    let mut next = || parts.next().unwrap_or(Ok("")).ok();
-    let (Some(image), Some(cmdline), Some(passwd), Some(group)) = (next(), next(), next(), next())
-    else {
+    let mut parts = data.splitn(5, |&b| b == 0);
+    let mut next = || parts.next().unwrap_or_default();
+    let (image, guest, cmdline, passwd, group) = (next(), next(), next(), next(), next());
+    let (Ok(image), Ok(cmdline), Ok(passwd), Ok(group)) = (
+        std::str::from_utf8(image),
+        std::str::from_utf8(cmdline),
+        std::str::from_utf8(passwd),
+        std::str::from_utf8(group),
+    ) else {
         return;
     };
 
-    let _ = RootSpec::from_cmdline(cmdline);
-    let spec = match config::build(image, cmdline, &Accounts::parse(passwd, group)) {
+    if let Err(e) = Cmdline::parse(cmdline) {
+        let _ = e.to_string();
+    }
+    let guest = match GuestConfig::decode(guest) {
+        Ok(guest) => guest,
+        Err(e) => {
+            let _ = e.to_string();
+            return;
+        }
+    };
+    let encoded = guest.encode().expect("a decoded config re-encodes");
+    assert_eq!(
+        GuestConfig::decode(&encoded).expect("a re-encoded config decodes"),
+        guest,
+        "round trip changed the config"
+    );
+
+    match config::eth0(&guest, true) {
+        Ok(Some(address)) => assert_eq!(address.netmask().octets(), [255, 255, 255, 254]),
+        Ok(None) => panic!("eth0 present but not configured"),
+        Err(e) => assert!(guest.ipv4_address.is_none(), "{e}"),
+    }
+    assert_eq!(
+        config::eth0(&guest, false).is_ok(),
+        guest.ipv4_address.is_none(),
+        "no eth0 must mean no address"
+    );
+
+    let address = config::host_address(&guest);
+    let hostname = guest.hostname();
+    let etc_hosts = hosts(hostname, address);
+    assert_eq!(
+        etc_hosts.lines().last(),
+        Some(format!("{address}\t{hostname}").as_str()),
+        "hostname not mapped on the last line"
+    );
+    let written: Vec<String> = resolv_conf(&guest.nameservers)
+        .lines()
+        .filter_map(|l| l.strip_prefix("nameserver ").map(str::to_owned))
+        .collect();
+    let want: Vec<String> = guest.nameservers.iter().map(ToString::to_string).collect();
+    assert_eq!(written, want, "resolv.conf does not match nameservers");
+
+    let spec = match config::build(image, &guest, &Accounts::parse(passwd, group)) {
         Ok(spec) => spec,
         Err(e) => {
             let _ = e.to_string();
@@ -43,12 +94,10 @@ fuzz_target!(|data: &[u8]| {
         assert!(keys.insert(k.as_str()), "env key {k:?} twice");
     }
     assert!(keys.contains("PATH") && keys.contains("HOME"), "no PATH or HOME");
-
-    assert!(spec.dns.len() <= 3, "{} resolvers", spec.dns.len());
-    let written: Vec<String> = resolv_conf(&spec.dns)
-        .lines()
-        .filter_map(|l| l.strip_prefix("nameserver ").map(str::to_owned))
-        .collect();
-    let want: Vec<String> = spec.dns.iter().map(ToString::to_string).collect();
-    assert_eq!(written, want, "resolv.conf does not match dassie.dns");
+    assert!(
+        spec.env
+            .iter()
+            .any(|(k, v)| k == "DASSIE_INSTANCE_ID" && *v == guest.instance_id),
+        "DASSIE_INSTANCE_ID is not the instance id"
+    );
 });

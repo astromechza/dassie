@@ -51,7 +51,7 @@
   <text x="44" y="168" class="m">gw 10.88.0.2</text>
   <text x="44" y="188" class="m">mac 06:00:0a:58:00:03</text>
   <text x="44" y="214" class="s">from the kernel ip= arg</text>
-  <text x="44" y="232" class="s">resolv.conf from dassie.dns</text>
+  <text x="44" y="232" class="s">resolv.conf from guest drive</text>
 
   <!-- VM b -->
   <rect x="30" y="350" width="220" height="150" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
@@ -60,7 +60,7 @@
   <text x="44" y="418" class="m">gw 10.88.0.4</text>
   <text x="44" y="438" class="m">mac 06:00:0a:58:00:05</text>
   <text x="44" y="464" class="s">from the kernel ip= arg</text>
-  <text x="44" y="482" class="s">resolv.conf from dassie.dns</text>
+  <text x="44" y="482" class="s">resolv.conf from guest drive</text>
 
   <!-- host -->
   <rect x="330" y="84" width="420" height="440" rx="14" fill="#f8fafc" class="built"/>

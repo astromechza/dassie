@@ -1,6 +1,6 @@
 # 0005. Guest init contract
 
-Status: Accepted
+Status: Accepted (cmdline config delivery superseded by 0015)
 Date: 2026-11-11
 
 ## Context
@@ -32,6 +32,9 @@ in the guest.
 
 - The image builder writes the image's full OCI config blob, byte for byte, to
   `/.dassie/image.json` in the app rootfs.
+- _Superseded 2026-11-15 by [ADR 0015](0015-guest-config-drive.md):_
+  per-VM values now arrive on a guest drive, and init refuses `dassie.*`
+  cmdline args. The rest of this section is kept as the record.
 - Per-VM values arrive as `dassie.*` kernel cmdline args. Init splits the
   cmdline as the kernel does (whitespace outside double quotes) and ignores
   unknown `dassie.*` keys, so a newer host can pass args an older init does not
@@ -52,7 +55,8 @@ in the guest.
   before the entrypoint starts. Without the arg the image's own file is left
   alone. Bad addresses, or more than 3, are a boot error like any other bad
   `dassie.*` value. The guest's address itself comes from the kernel's `ip=`
-  arg ([ADR 0008](0008-guest-networking.md)).
+  arg ([ADR 0008](0008-guest-networking.md)); since
+  [ADR 0015](0015-guest-config-drive.md), from the guest drive.
 
 **Image config fields honoured in M0:**
 
@@ -74,7 +78,10 @@ Ignored for now: `Volumes`, `StopSignal`, `Labels`, `Healthcheck`, `OnBuild`,
 **Readiness.** The readiness port is `dassie.port`, else the lowest `N/tcp` (or
 bare `N`) in `ExposedPorts`. If there is one, init polls a TCP connect to
 `127.0.0.1:N` every 100 ms and reports `ready` on the first success. With no
-port, `ready` follows `started`.
+port, `ready` follows `started`. _Amended 2026-11-15:_ each poll also tries
+the address `/etc/hosts` maps the guest's hostname to
+([ADR 0015](0015-guest-config-drive.md)), so an app that binds only to its
+own name still becomes ready.
 
 **Supervision.**
 
@@ -124,13 +131,16 @@ in [ADR 0006](0006-guest-assets-layout.md).
 - The builder only has to copy the image config. Fields init ignores today
   stay in the rootfs for later milestones.
 - A VM reaches steady state with no host involvement: everything it needs is
-  in its rootfs and cmdline.
+  in its rootfs and cmdline (since ADR 0015, its rootfs and guest drive).
 - Apps get no in-guest sandboxing. A compromised app owns its VM, which is
   acceptable because the VM holds nothing else.
 - Images expecting `StopSignal`, volumes or a Docker `HEALTHCHECK` do not get
   them yet. Readiness is a TCP connect, not an app-level check.
 - The kernel cmdline is readable by the app via `/proc/cmdline`, and env
   overrides travel there, so they must not carry secrets (see ADR 0004).
+  _Amended 2026-11-15:_ they travel on the guest drive instead
+  ([ADR 0015](0015-guest-config-drive.md)), and still must not carry
+  secrets.
 - Images whose `User` relies on supplementary groups lose those groups.
 - _Added 2026-11-13, for M1 slice C:_ an app that keeps state in its root
   filesystem loses it at every restart, as a container without volumes does.

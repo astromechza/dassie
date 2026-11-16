@@ -14,7 +14,12 @@
 # VM's files under /var/lib/dassie/vms/NAME:
 #
 #   net.env      scripts/host/net-env.sh INDEX (TAP, /31, MAC, DNS; ADR 0008)
-#   config.json  scripts/host/vm-config.sh, with the rootfs and net.env
+#   jail.env     scripts/host/jail-env.sh INDEX (the jail uid and gid; ADR 0013)
+#   guest.json   the guest config: NAME as instance_id, and net.env's /31
+#                and DNS as ipv4_address and nameservers (ADR 0015)
+#   guest.drive  `dassie guest-drive` from guest.json; both 0640 root:<jail gid>
+#   config.json  scripts/host/vm-config.sh, with the rootfs, guest drive and
+#                net.env
 #   route.env    DASSIE_HOSTNAME and DASSIE_PORT, only with a HOSTNAME
 #
 # and renders /etc/dassie/caddy.json from every VM's route.env. A file is
@@ -30,7 +35,7 @@
 #
 # Needs the host set up as in scripts/host/systemd/README.md: guest assets,
 # firecracker, jailer, dassie, caddy and the units. Plus a Rust toolchain
-# and erofs-utils for dassie-image.
+# and erofs-utils for dassie-image and `dassie guest-drive`.
 
 set -euo pipefail
 shopt -s inherit_errexit
@@ -117,20 +122,40 @@ rootfs=$("${sudo[@]}" "$image_tool" build "$digest")
 # --- The VM's files, staged, then compared with the live ones.
 "$here/net-env.sh" "$index" >"$stage/net.env"
 "$here/jail-env.sh" "$index" >"$stage/jail.env"
+jail_gid=$(get "$stage/jail.env" DASSIE_GID '^[0-9]+$')
+
+# --- Guest config (ADR 0015). NAME is the instance id, and so the guest's
+# hostname. eth0 gets the guest end of the TAP's /31, and init routes via
+# the other end. net-env.sh limits DASSIE_DNS to 3 addresses. The drive builds to the
+# same bytes from the same JSON, so an unchanged config restarts nothing.
+eth0_ip=$(get "$stage/net.env" DASSIE_GUEST_IP "^$ip4\$")
+network=",\"ipv4_address\":\"$eth0_ip/31\""
+dns=$(get "$stage/net.env" DASSIE_DNS '^[0-9a-fA-F.:,]*$')
+nameservers=""
+if [[ -n "$dns" ]]; then
+  IFS=, read -ra ips <<<"$dns"
+  nameservers=$(printf ',"%s"' "${ips[@]}")
+  nameservers=",\"nameservers\":[${nameservers#,}]"
+fi
+printf '{"version":1,"instance_id":"%s"%s%s}\n' "$name" "$network" "$nameservers" >"$stage/guest.json"
+/usr/local/bin/dassie guest-drive --out "$stage/guest.drive" <"$stage/guest.json" ||
+  die "dassie guest-drive failed; is /usr/local/bin/dassie current?"
+
 FC_NET_ENV=$stage/net.env "$here/vm-config.sh" "$kernel" "$guest/initramfs.cpio.gz" \
-  "$rootfs" "/run/dassie/$name.vsock" "dassie.instance=$name" >"$stage/config.json"
+  "$rootfs" "$vms/$name/guest.drive" "/run/dassie/$name.vsock" >"$stage/config.json"
 if [[ -n "$hostname" ]]; then
   printf 'DASSIE_HOSTNAME=%s\nDASSIE_PORT=%s\n' "$hostname" "$port" >"$stage/route.env"
 fi
 
 # same SRC DEST -> succeeds if DEST exists with SRC's content.
 same() { "${sudo[@]}" cmp -s "$1" "$2"; }
-# put SRC DEST -> replaces DEST with SRC by a rename, so a crash never
-# leaves half a file. The syncs make it survive a power cut too: without
-# them, a file renamed into place less than ~30 s before the cut comes back
-# empty on ext4, and the VM or Caddy fails to start at boot.
+# put SRC DEST [MODE GROUP] -> replaces DEST with SRC by a rename, so a
+# crash never leaves half a file, owned by root:GROUP with MODE (default
+# 0644 root). The syncs make it survive a power cut too: without them, a
+# file renamed into place less than ~30 s before the cut comes back empty on
+# ext4, and the VM or Caddy fails to start at boot.
 put() {
-  "${sudo[@]}" install -m 0644 "$1" "$2.tmp"
+  "${sudo[@]}" install -m "${3:-0644}" -o root -g "${4:-root}" "$1" "$2.tmp"
   "${sudo[@]}" sync "$2.tmp"
   "${sudo[@]}" mv -f "$2.tmp" "$2"
   "${sudo[@]}" sync "$(dirname "$2")"
@@ -213,7 +238,8 @@ render_caddy >"$stage/caddy.json"
 
 dir=$vms/$name
 vm_changed=0
-for f in net.env jail.env config.json; do
+vm_files=(net.env jail.env guest.json guest.drive config.json)
+for f in "${vm_files[@]}"; do
   same "$stage/$f" "$dir/$f" || vm_changed=1
 done
 
@@ -228,7 +254,10 @@ if ((vm_changed)); then
   # Not one atomic switch: a power cut between these renames can leave a
   # new net.env beside an old config.json. Running the same deploy again
   # sees the mismatch and rewrites both. M2 keeps this state in SQLite.
+  # The guest files are readable only by root and this VM's jailed
+  # Firecracker, which opens the drive through its hard link (ADR 0013).
   for f in net.env jail.env config.json; do put "$stage/$f" "$dir/$f"; done
+  for f in guest.json guest.drive; do put "$stage/$f" "$dir/$f" 0640 "$jail_gid"; done
 fi
 if [[ -n "$hostname" ]]; then
   same "$stage/route.env" "$dir/route.env" || put "$stage/route.env" "$dir/route.env"

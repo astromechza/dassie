@@ -232,6 +232,7 @@ name = "dassie"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dassie-image",
  "dassie-proto",
  "dassie-vm",
  "signal-hook",

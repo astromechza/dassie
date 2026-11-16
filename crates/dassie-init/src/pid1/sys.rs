@@ -1,24 +1,29 @@
-//! The PID-1 layer's system calls: early mounts and the switch-root
-//! (ADR 0006), interface bring-up, and the vsock transports (ADR 0004).
+//! The PID-1 layer's system calls: early mounts, the guest drive (ADR 0015)
+//! and the switch-root (ADR 0006), the hostname, interface and route setup,
+//! and the vsock transports (ADR 0004).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem;
+use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dassie_init::boot::RootSpec;
+use dassie_init::boot::{GUEST_DEVICE, GUEST_MOUNT, RootSpec};
 use dassie_init::control::ControlListener;
+use dassie_proto::GuestConfig;
+use dassie_proto::guest_config::Ipv4Cidr;
+use dassie_proto::guest_config::{GUEST_FILE, MAX_CONFIG_BYTES};
 use nix::errno::Errno;
 use nix::libc;
 use nix::mount::{MsFlags, mount};
 use nix::sys::socket::{
     AddressFamily, Backlog, SockFlag, SockType, VsockAddr, accept4, bind, connect, listen, socket,
 };
-use nix::unistd::{chdir, chroot, dup2_stderr, dup2_stdin, dup2_stdout};
+use nix::unistd::{chdir, chroot, dup2_stderr, dup2_stdin, dup2_stdout, sethostname};
 
 use super::Result;
 
@@ -34,8 +39,8 @@ const WORK: &str = "/rw/work";
 const NEW_ROOT: &str = "/newroot";
 /// Mounts carried over from the initramfs into the app rootfs.
 const MOVED: [&str; 3] = ["/dev", "/proc", "/sys"];
-/// How long to wait for the root drive's device node to appear.
-const ROOT_WAIT: Duration = Duration::from_secs(5);
+/// How long to wait for a drive's device node to appear.
+const DRIVE_WAIT: Duration = Duration::from_secs(5);
 
 /// Mounts devtmpfs, proc and sysfs in the initramfs.
 pub(super) fn early() -> Result<()> {
@@ -74,6 +79,31 @@ pub(super) fn reopen_console() -> Result<()> {
         .and_then(|()| dup2_stderr(&console))
         .map_err(|e| format!("dup /dev/console: {e}"))?;
     Ok(())
+}
+
+/// Mounts the guest drive read-only at `/guest` in the initramfs and reads
+/// `guest.json` from it. After the switch-root the mount is out of the app's
+/// reach, like `/lower`.
+pub(super) fn read_guest_config() -> Result<GuestConfig> {
+    wait_for(GUEST_DEVICE)?;
+    mkdir(GUEST_MOUNT)?;
+    let flags = MsFlags::MS_RDONLY | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC;
+    mount(
+        Some(GUEST_DEVICE),
+        GUEST_MOUNT,
+        Some("erofs"),
+        flags,
+        None::<&str>,
+    )
+    .map_err(|e| format!("mount guest drive {GUEST_DEVICE} on {GUEST_MOUNT}: {e}"))?;
+    let path = format!("{GUEST_MOUNT}/{GUEST_FILE}");
+    // One byte over the cap, so decode reports an oversized file.
+    let limit = u64::try_from(MAX_CONFIG_BYTES)? + 1;
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .and_then(|f| f.take(limit).read_to_end(&mut bytes))
+        .map_err(|e| format!("read {path}: {e}"))?;
+    Ok(GuestConfig::decode(&bytes).map_err(|e| format!("{path}: {e}"))?)
 }
 
 /// Mounts the root drive read-only at `/lower` and a tmpfs at `/rw`, and
@@ -194,15 +224,21 @@ pub(super) fn give_console(uid: u32, gid: u32) -> Result<()> {
         .map_err(|e| format!("chown /dev/console to {uid}:{gid}: {e}").into())
 }
 
-/// Replaces `/etc/resolv.conf` with `contents`. Images often ship it as a
-/// symlink into a resolver's runtime dir (systemd-resolved's stub), which does
-/// not exist here, so the link is removed rather than written through.
-pub(super) fn write_resolv_conf(contents: &str) -> Result<()> {
-    const PATH: &str = "/etc/resolv.conf";
+/// Sets the kernel hostname, which `uname` and `hostname` report.
+pub(super) fn set_hostname(name: &str) -> Result<()> {
+    sethostname(name).map_err(|e| format!("set hostname {name:?}: {e}").into())
+}
+
+/// Replaces `/etc/<name>` with `contents`, mode `0644`. Images often ship
+/// these as symlinks into a runtime dir that does not exist here, such as
+/// systemd-resolved's stub `resolv.conf`, so a link is removed rather than
+/// written through.
+pub(super) fn replace_etc(name: &str, contents: &str) -> Result<()> {
+    let path = format!("/etc/{name}");
     mkdir("/etc")?;
-    match fs::remove_file(PATH) {
+    match fs::remove_file(&path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
-            return Err(format!("remove {PATH}: {e}").into());
+            return Err(format!("remove {path}: {e}").into());
         }
         _ => {}
     }
@@ -210,9 +246,9 @@ pub(super) fn write_resolv_conf(contents: &str) -> Result<()> {
         .write(true)
         .create_new(true)
         .mode(0o644)
-        .open(PATH)
+        .open(&path)
         .and_then(|mut f| f.write_all(contents.as_bytes()))
-        .map_err(|e| format!("write {PATH}: {e}").into())
+        .map_err(|e| format!("write {path}: {e}").into())
 }
 
 /// Creates a directory if it is missing. In the app rootfs it lands in the
@@ -230,33 +266,49 @@ fn mkdir(path: &str) -> Result<()> {
 /// Waits for devtmpfs to show the device node, in case the drive is probed
 /// after init starts.
 fn wait_for(device: &str) -> Result<()> {
-    let deadline = Instant::now() + ROOT_WAIT;
+    let deadline = Instant::now() + DRIVE_WAIT;
     while !Path::new(device).exists() {
         if Instant::now() >= deadline {
-            return Err(format!("root device {device} did not appear").into());
+            return Err(format!("device {device} did not appear").into());
         }
         thread::sleep(Duration::from_millis(50));
     }
     Ok(())
 }
 
-// Network interfaces. Addresses come from the kernel: loopback gets
-// 127.0.0.1 when it goes up, and `eth0` gets its address from the `ip=`
-// cmdline arg during boot.
+// Network interfaces. Loopback gets 127.0.0.1 from the kernel when it goes
+// up; init gives `eth0` the address and default route from the guest config
+// (ADR 0015). These use the classic `ifreq` and `rtentry` ioctls, which need
+// no netlink code.
 
 /// Sets `IFF_UP` on the interface, keeping its other flags.
 pub(super) fn interface_up(name: &str) -> Result<()> {
     set_up(name).map_err(|e| format!("bring up {name}: {e}").into())
 }
 
-#[allow(unsafe_code)]
-fn set_up(name: &str) -> io::Result<()> {
-    let sock = socket(
+/// Gives `eth0` its address and netmask, brings it up, then adds the
+/// default route via the /31's other address, which the kernel accepts
+/// once that is on-link.
+pub(super) fn configure_eth0(address: Ipv4Cidr) -> Result<()> {
+    set_address("eth0", address.address, address.netmask())
+        .map_err(|e| format!("set eth0 address {address}: {e}"))?;
+    interface_up("eth0")?;
+    let gateway = address.peer();
+    add_default_route(gateway).map_err(|e| format!("add default route via {gateway}: {e}").into())
+}
+
+fn inet_socket() -> io::Result<OwnedFd> {
+    Ok(socket(
         AddressFamily::Inet,
         SockType::Datagram,
         SockFlag::SOCK_CLOEXEC,
         None,
-    )?;
+    )?)
+}
+
+/// An `ifreq` naming the interface, the rest zeroed.
+#[allow(unsafe_code)]
+fn ifreq(name: &str) -> io::Result<libc::ifreq> {
     // SAFETY: `ifreq` is plain old data (a name array and a union of
     // integers and sockaddrs), for which all-zero bytes are valid.
     let mut req: libc::ifreq = unsafe { mem::zeroed() };
@@ -270,7 +322,13 @@ fn set_up(name: &str) -> io::Result<()> {
     for (dst, &src) in req.ifr_name.iter_mut().zip(bytes) {
         *dst = libc::c_char::from_ne_bytes([src]);
     }
+    Ok(req)
+}
 
+#[allow(unsafe_code)]
+fn set_up(name: &str) -> io::Result<()> {
+    let sock = inet_socket()?;
+    let mut req = ifreq(name)?;
     ioctl(&sock, libc::SIOCGIFFLAGS, &mut req)?;
     // SAFETY: SIOCGIFFLAGS filled in the `ifru_flags` member.
     let flags = unsafe { req.ifr_ifru.ifru_flags };
@@ -279,12 +337,53 @@ fn set_up(name: &str) -> io::Result<()> {
     ioctl(&sock, libc::SIOCSIFFLAGS, &mut req)
 }
 
+/// The address first: SIOCSIFADDR also sets the classful netmask, which
+/// SIOCSIFNETMASK then replaces.
+fn set_address(name: &str, address: Ipv4Addr, netmask: Ipv4Addr) -> io::Result<()> {
+    let sock = inet_socket()?;
+    let mut req = ifreq(name)?;
+    req.ifr_ifru.ifru_addr = sockaddr(address);
+    ioctl(&sock, libc::SIOCSIFADDR, &mut req)?;
+    let mut req = ifreq(name)?;
+    req.ifr_ifru.ifru_netmask = sockaddr(netmask);
+    ioctl(&sock, libc::SIOCSIFNETMASK, &mut req)
+}
+
 #[allow(unsafe_code)]
-fn ioctl(sock: &impl AsRawFd, request: libc::c_ulong, req: &mut libc::ifreq) -> io::Result<()> {
+fn add_default_route(gateway: Ipv4Addr) -> io::Result<()> {
+    let sock = inet_socket()?;
+    // SAFETY: `rtentry` is plain old data (integers, sockaddrs and null
+    // pointers), for which all-zero bytes are valid. A null `rt_dev` lets
+    // the kernel pick the interface the gateway is on.
+    let mut route: libc::rtentry = unsafe { mem::zeroed() };
+    route.rt_dst = sockaddr(Ipv4Addr::UNSPECIFIED);
+    route.rt_genmask = sockaddr(Ipv4Addr::UNSPECIFIED);
+    route.rt_gateway = sockaddr(gateway);
+    route.rt_flags = libc::RTF_UP | libc::RTF_GATEWAY;
+    ioctl(&sock, libc::SIOCADDRT, &mut route)
+}
+
+/// `address` as an `AF_INET` `sockaddr`, the type the ioctls take.
+#[allow(unsafe_code)]
+fn sockaddr(address: Ipv4Addr) -> libc::sockaddr {
+    const _: () = assert!(size_of::<libc::sockaddr_in>() == size_of::<libc::sockaddr>());
+    // SAFETY: both are plain old data, for which all-zero bytes are valid.
+    let mut sin: libc::sockaddr_in = unsafe { mem::zeroed() };
+    sin.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or_default();
+    sin.sin_addr.s_addr = u32::from(address).to_be();
+    // SAFETY: `sockaddr_in` and `sockaddr` have the same size (checked
+    // above), and the kernel reads a `sockaddr` with family `AF_INET` as a
+    // `sockaddr_in`.
+    unsafe { mem::transmute::<libc::sockaddr_in, libc::sockaddr>(sin) }
+}
+
+#[allow(unsafe_code)]
+fn ioctl<T>(sock: &impl AsRawFd, request: libc::c_ulong, arg: &mut T) -> io::Result<()> {
     let request = libc::Ioctl::try_from(request).map_err(io::Error::other)?;
-    // SAFETY: both requests take a pointer to an `ifreq`, which `req` is for
-    // the duration of the call, and the fd is an open socket.
-    let res = unsafe { libc::ioctl(sock.as_raw_fd(), request, std::ptr::from_mut(req)) };
+    // SAFETY: every request used here takes a pointer to the `T` it is
+    // called with (`ifreq` or `rtentry`), which `arg` is for the duration
+    // of the call, and the fd is an open socket.
+    let res = unsafe { libc::ioctl(sock.as_raw_fd(), request, std::ptr::from_mut(arg)) };
     if res < 0 {
         return Err(io::Error::last_os_error());
     }

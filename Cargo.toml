@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 arbitrary = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
+dassie-image = { path = "crates/dassie-image" }
 dassie-proto = { path = "crates/dassie-proto" }
 dassie-vm = { path = "crates/dassie-vm" }
 flate2 = "1"

@@ -1,6 +1,6 @@
 # 0006. Guest assets and the initramfs switch-root
 
-Status: Accepted
+Status: Accepted (host unit superseded by 0012 and 0013, per-VM boot args by 0015)
 Date: 2026-11-12
 
 ## Context
@@ -54,7 +54,8 @@ decision did not.)
 - initrd (gzip), devtmpfs, proc, sysfs;
 - the virtio-mmio transport, virtio-blk, virtio-net and vsock;
 - the 8250 serial console;
-- `IP_PNP`;
+- `IP_PNP` (_amended 2026-11-15:_ no longer pinned; init sets eth0's
+  address from the guest drive, ADR 0015);
 - _amended 2026-11-13, for M1 slice C:_ erofs (ADR 0009) with xattrs, ACLs
   and lz4, overlayfs, and tmpfs with xattrs, so that copy-up keeps them.
   These replace ext4, which the guest no longer needs.
@@ -66,6 +67,11 @@ channel's `stop` on both architectures (ADR 0004).
 **Boot args.** `console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro`, plus
 the per-VM `dassie.*` args and `ip=` when the VM has a NIC.
 `is_root_device` is false, so Firecracker adds nothing of its own.
+
+_Amended 2026-11-15:_ the `dassie.*` args and `ip=` are gone. Per-VM
+config, the guest's address included, is on a second read-only drive,
+`/dev/vdb`, which init mounts on `/guest` in the initramfs before the
+switch-root ([ADR 0015](0015-guest-config-drive.md)).
 
 _Amended 2026-11-13, for M1 slice C:_ the root drive is attached with
 `is_read_only: true` and the boot args say `ro` (they said `rw` before).
@@ -101,7 +107,8 @@ directly on `/newroot`, read-write unless the cmdline said `ro`. `/lower` and
 After that, init:
 
 - brings `lo` up, and `eth0` if it exists, with the kernel `ip=` arg supplying
-  its address;
+  its address (_amended 2026-11-15:_ init sets `eth0`'s address and route
+  from the guest drive, ADR 0015);
 - disables the Ctrl-Alt-Del reboot, so any Ctrl-Alt-Del arrives as SIGINT;
 - runs the supervisor (ADR 0005).
 

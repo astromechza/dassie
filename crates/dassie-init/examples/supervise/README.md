@@ -9,7 +9,7 @@ example as the host:
 | In a VM | Here |
 | --- | --- |
 | Rootfs with `/.dassie/image.json` | `--root` directory: [`rootfs/`](rootfs/.dassie/image.json), [`rootfs-stubborn/`](rootfs-stubborn/.dassie/image.json) |
-| Kernel cmdline `dassie.*` args | `--cmdline` |
+| `guest.json` on the guest drive (ADR 0015) | `--guest FILE` |
 | Guest -> host vsock, forwarded to `<uds_path>_1024` | Unix socket `<uds_path>_1024` |
 | Host -> guest vsock via `<uds_path>` + `CONNECT 1025` | `supervise` answers the same handshake on `<uds_path>` |
 | SIGTERM/SIGINT to PID 1 | SIGTERM/SIGINT to `supervise` |
@@ -36,16 +36,18 @@ S=target/debug/examples/supervise
 $L events target/demo/vm.sock
 ```
 
-**Terminal 2, the guest.** The image serves HTTP on port 8000, and the cmdline
-overrides one image env var:
+**Terminal 2, the guest.** The image serves HTTP on port 8000, and the guest
+config overrides one image env var:
 
 ```sh
+echo '{"version":1,"instance_id":"web-a","env":{"GREETING":"from guest.json"}}' \
+  > target/demo/guest.json
 $S target/demo/vm.sock --root crates/dassie-init/examples/supervise/rootfs \
-  --cmdline 'console=ttyS0 dassie.instance=web-a dassie.env="GREETING=from the cmdline"'
+  --guest target/demo/guest.json
 ```
 
-`supervise` prints the merged `RunSpec`: `GREETING` comes from the cmdline,
-`DASSIE_INSTANCE` is injected, and `ready_port` is 8000 from `ExposedPorts`.
+`supervise` prints the merged `RunSpec`: `GREETING` comes from `guest.json`,
+`DASSIE_INSTANCE_ID` is injected, and `ready_port` is 8000 from `ExposedPorts`.
 Terminal 1 shows `Started`, then `Ready` once the server accepts connections.
 
 **Terminal 3, poking it:**

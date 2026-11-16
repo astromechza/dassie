@@ -10,12 +10,13 @@
 mod sys;
 
 use std::error::Error;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use std::{fs, panic, thread};
 
-use dassie_init::boot::RootSpec;
+use dassie_init::boot::Cmdline;
 use dassie_init::config;
 use dassie_init::supervisor::{self, Control, Deps};
 use dassie_proto::{CONTROL_PORT, EVENTS_PORT, ExitStatus};
@@ -47,22 +48,32 @@ fn run() -> Result<ExitStatus> {
     sys::reopen_console()?;
     let cmdline =
         fs::read_to_string("/proc/cmdline").map_err(|e| format!("read /proc/cmdline: {e}"))?;
-    let root = RootSpec::from_cmdline(&cmdline);
-    sys::switch_root(&root)?;
+    let boot = Cmdline::parse(&cmdline)?;
+    // Before the switch-root, so the mount stays in the initramfs.
+    let guest = sys::read_guest_config()?;
+    sys::switch_root(&boot.root)?;
     sys::dev_extras()?;
 
     sys::interface_up("lo")?;
-    // A NIC is optional; the kernel `ip=` arg has already set its address.
-    if Path::new("/sys/class/net/eth0").exists() {
-        sys::interface_up("eth0")?;
+    // A NIC is optional, but the guest config must agree on whether there is one.
+    let has_eth0 = Path::new("/sys/class/net/eth0").exists();
+    if let Some(address) = config::eth0(&guest, has_eth0)? {
+        sys::configure_eth0(address)?;
     }
     // Ctrl-Alt-Del becomes SIGINT to PID 1 instead of an immediate reboot.
     reboot::set_cad_enabled(false).map_err(|e| format!("disable Ctrl-Alt-Del: {e}"))?;
 
-    let spec = config::load(Path::new("/"), &cmdline)?;
-    // After the switch-root, so this lands in the writable root.
-    if !spec.dns.is_empty() {
-        sys::write_resolv_conf(&config::resolv_conf(&spec.dns))?;
+    // The hostname maps to the guest's own address, or to 127.0.1.1 with
+    // no NIC, and the readiness probe tries that address too.
+    let address = config::host_address(&guest);
+    let spec = config::load(Path::new("/"), &guest)?;
+    // After the switch-root, so these land in the writable root.
+    let hostname = guest.hostname();
+    sys::set_hostname(hostname)?;
+    sys::replace_etc("hostname", &format!("{hostname}\n"))?;
+    sys::replace_etc("hosts", &config::hosts(hostname, address))?;
+    if !guest.nameservers.is_empty() {
+        sys::replace_etc("resolv.conf", &config::resolv_conf(&guest.nameservers))?;
     }
     if let Some((uid, gid)) = spec.user {
         sys::give_console(uid, gid)?;
@@ -75,7 +86,11 @@ fn run() -> Result<ExitStatus> {
         connect: Box::new(|| sys::vsock_connect(sys::HOST_CID, EVENTS_PORT)),
         control_listener: Box::new(sys::VsockListener::bind(CONTROL_PORT)?),
         control: (control_tx, control_rx),
-        on_spawn: Box::new(|pid| eprintln!("dassie-init: entrypoint pid {pid}")),
+        // One `write`, as the entrypoint logs to the same console at the
+        // same moment and `eprintln!` writes a line in pieces.
+        on_spawn: Box::new(|pid| {
+            drop(io::stderr().write_all(format!("dassie-init: entrypoint pid {pid}\n").as_bytes()));
+        }),
     };
     Ok(supervisor::run(&spec, deps)?)
 }

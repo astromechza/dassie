@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+dassie-image.workspace = true
 dassie-proto.workspace = true
 dassie-vm.workspace = true
 signal-hook.workspace = true

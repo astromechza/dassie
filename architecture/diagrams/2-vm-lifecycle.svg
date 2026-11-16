@@ -67,7 +67,7 @@
     <text x="836" y="117" class="t">configure</text>
     <text x="813" y="142" class="s">lo + eth0 up (ip=)</text>
     <text x="813" y="160" class="m">/.dassie/image.json</text>
-    <text x="813" y="176" class="s">+ dassie.* cmdline</text>
+    <text x="813" y="176" class="s">+ guest.json (vdb)</text>
   </g>
 
   <!-- bottom row: right to left -->

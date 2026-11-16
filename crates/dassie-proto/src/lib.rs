@@ -15,6 +15,9 @@
 //! - **control** ([`CONTROL_PORT`]): host -> guest [`Request`]s, each answered
 //!   by one [`Response`]. The host connects to `<uds_path>`, sends
 //!   `CONNECT 1025\n` and reads `OK <port>\n` before speaking frames.
+//!
+//! [`GuestConfig`] is the per-VM config the host hands the guest on its
+//! guest drive (ADR 0015).
 
 // Parses bytes from the guest, which the host must treat as untrusted: no
 // panicking paths and no silent truncating casts.
@@ -27,9 +30,11 @@
 )]
 
 pub mod frame;
+pub mod guest_config;
 pub mod message;
 
 pub use frame::{Error, FrameReader, FrameWriter};
+pub use guest_config::{ConfigError, GuestConfig};
 pub use message::{
     ErrorCode, Event, ExitStatus, GuestState, HealthStatus, Message, Request, Response,
 };

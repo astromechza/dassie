@@ -8,6 +8,8 @@
 //!   whiteouts and keeping numeric ownership, modes, device nodes and xattrs.
 //! - [`build`] pipes that stream into `mkfs.erofs --tar=f` to produce one
 //!   immutable, read-only, digest-named erofs per image.
+//! - [`build_files`] makes a small erofs from files in memory, such as the
+//!   guest drive (ADR 0015).
 //!
 //! Layers are never unpacked to a host directory, which would lose ownership
 //! without root (and everything else on macOS).
@@ -23,6 +25,7 @@
 mod atomic;
 mod build;
 mod digest;
+mod files;
 mod flatten;
 mod oci;
 mod reference;
@@ -31,6 +34,7 @@ mod store;
 
 pub use build::{BuildOutput, EXTENSION, FORMAT_VERSION, Options, artefact_path, build};
 pub use digest::{Digest, ParseError, VerifyingReader};
+pub use files::{FileEntry, build_files};
 pub use flatten::Tree;
 pub use oci::{Compression, Descriptor, Index, Manifest, Platform};
 pub use reference::{Reference, ReferenceError};

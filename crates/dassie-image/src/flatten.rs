@@ -32,7 +32,7 @@ const OPAQUE: &str = ".wh..wh..opq";
 
 /// The root's mode. Images' own root entries are ignored: every rootfs gets
 /// `0755 root`, so no image can make `/` writable by its app user.
-const ROOT_MODE: u32 = 0o755;
+pub(crate) const ROOT_MODE: u32 = 0o755;
 
 #[derive(Debug)]
 pub enum Error {
@@ -491,7 +491,7 @@ fn clear_gnu_times(header: &mut Header) {
 }
 
 /// A root-owned header with a fixed mtime, so builds are reproducible.
-fn owned_header(entry_type: EntryType, mode: u32, size: u64) -> Header {
+pub(crate) fn owned_header(entry_type: EntryType, mode: u32, size: u64) -> Header {
     let mut h = Header::new_gnu();
     h.set_entry_type(entry_type);
     h.set_mode(mode);

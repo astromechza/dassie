@@ -8,7 +8,7 @@
       "PORT=8080"
     ],
     "Entrypoint": ["/usr/local/bin/testapp"],
-    "Cmd": null,
+    "Cmd": ["image-cmd"],
     "WorkingDir": "/home/app",
     "ExposedPorts": { "8080/tcp": {} },
     "Labels": null

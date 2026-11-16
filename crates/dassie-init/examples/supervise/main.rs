@@ -4,11 +4,13 @@
 //! to this file for a walkthrough.
 //!
 //! ```text
-//! supervise <uds_path> --root DIR [--cmdline "dassie.k=v ..."]
+//! supervise <uds_path> --root DIR [--guest guest.json]
 //! ```
 //!
 //! - The spec is loaded from `DIR/.dassie/image.json` (and `DIR/etc/passwd`,
-//!   `DIR/etc/group` if present) plus the cmdline text, exactly as PID 1 will.
+//!   `DIR/etc/group` if present) plus the guest config (ADR 0015), exactly
+//!   as PID 1 will. With no `--guest`, the instance id is `supervise` and
+//!   nothing else is set.
 //! - Events go to `<uds_path>_1024`, where `listener events <uds_path>`
 //!   listens, as Firecracker forwards guest-initiated vsock connections.
 //! - Control connections are accepted on `<uds_path>` behind Firecracker's
@@ -30,7 +32,7 @@ use std::{env, fs, thread};
 use dassie_init::config;
 use dassie_init::control::ControlListener;
 use dassie_init::supervisor::{self, Control, Deps};
-use dassie_proto::{CONTROL_PORT, EVENTS_PORT};
+use dassie_proto::{CONTROL_PORT, EVENTS_PORT, GuestConfig};
 use nix::sys::signal::{SigSet, Signal};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
@@ -38,13 +40,20 @@ use nix::unistd::Pid;
 /// How long to wait when probing whether an existing socket is live.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
-const USAGE: &str = "usage: supervise <uds_path> --root DIR [--cmdline \"dassie.k=v ...\"]";
+const USAGE: &str = "usage: supervise <uds_path> --root DIR [--guest guest.json]";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (uds, root, cmdline) = parse_args(&args).ok_or(USAGE)?;
+    let (uds, root, guest) = parse_args(&args).ok_or(USAGE)?;
 
-    let spec = config::load(&root, &cmdline)?;
+    let guest = match guest {
+        Some(path) => GuestConfig::decode(&fs::read(&path)?)?,
+        None => GuestConfig {
+            instance_id: "supervise".into(),
+            ..GuestConfig::default()
+        },
+    };
+    let spec = config::load(&root, &guest)?;
     eprintln!("supervise: {spec:#?}");
 
     // Block the stop signals before any thread starts so every thread
@@ -95,19 +104,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_args(args: &[String]) -> Option<(PathBuf, PathBuf, String)> {
+fn parse_args(args: &[String]) -> Option<(PathBuf, PathBuf, Option<PathBuf>)> {
     let (uds, flags) = args.split_first()?;
     let mut root = None;
-    let mut cmdline = String::new();
+    let mut guest = None;
     let mut it = flags.iter();
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--root" => root = Some(PathBuf::from(it.next()?)),
-            "--cmdline" => it.next()?.clone_into(&mut cmdline),
+            "--guest" => guest = Some(PathBuf::from(it.next()?)),
             _ => return None,
         }
     }
-    Some((PathBuf::from(uds), root?, cmdline))
+    Some((PathBuf::from(uds), root?, guest))
 }
 
 /// Removes a socket left behind by a previous run. Refuses a path that is not

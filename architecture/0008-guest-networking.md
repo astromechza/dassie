@@ -1,6 +1,6 @@
 # 0008. Guest networking
 
-Status: Accepted
+Status: Accepted (DNS and address delivery superseded by 0015)
 Date: 2026-11-13
 
 ## Context
@@ -41,6 +41,9 @@ forces shape it:
 - The guest gets its address from the kernel's `ip=` autoconfig
   (`CONFIG_IP_PNP`, pinned in `scripts/guest/kernel/dassie.config`), as
   `ip=GUEST::HOST:255.255.255.254::eth0:off`. No DHCP runs anywhere.
+  _Amended 2026-11-15:_ init now sets the same address and route from the
+  guest drive's `ipv4_address` (`GUEST/31`, routing via `HOST`), and
+  `CONFIG_IP_PNP` is no longer pinned ([ADR 0015](0015-guest-config-drive.md)).
 - The TAP is IPv4 only, with IPv6 and multicast off on the host end. That
   way the host's own link-local services (mDNS, LLMNR, router solicitations)
   never announce it to a guest.
@@ -101,6 +104,9 @@ rules. The runbook gives the rules.
 writes `/etc/resolv.conf` from it. `net-env.sh` defaults to public resolvers
 (`1.1.1.1,9.9.9.9`), because the host's own resolver is often a loopback stub
 (systemd-resolved on `127.0.0.53`) that a guest cannot reach.
+_Amended 2026-11-15:_ the resolvers now travel in the guest drive's
+`nameservers` field, not `dassie.dns` ([ADR 0015](0015-guest-config-drive.md)). `net-env.sh`
+still picks them.
 
 **Why not a bridge.** A Linux bridge puts every VM in one L2 domain, which is
 open VM↔VM unless ebtables or per-port isolation is added, and it is capped at

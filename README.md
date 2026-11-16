@@ -163,12 +163,15 @@ cargo +nightly fuzz run init_config fuzz/corpus/init_config fuzz/seeds/init_conf
 - `flatten_bytes` feeds arbitrary bytes to the flattener as one layer. It may
   reject them, but must not panic, and anything it accepts must meet the
   same output invariants.
-- `init_config` feeds `dassie-init` the image config JSON, kernel cmdline,
-  `/etc/passwd` and `/etc/group`, split on NUL bytes (ADR 0005). The image
-  config is untrusted and this runs in PID 1, so nothing may panic. An
-  accepted spec must have a non-empty argv, no readiness port 0, each env key
-  once with `PATH` and `HOME` set, and at most 3 `dassie.dns` resolvers, each
-  written as one `nameserver` line of `resolv.conf`.
+- `init_config` feeds `dassie-init` the image config JSON, `guest.json`,
+  kernel cmdline, `/etc/passwd` and `/etc/group`, split on NUL bytes
+  (ADR 0005, ADR 0015). The image config is untrusted and this runs in PID 1,
+  so nothing may panic. An accepted `guest.json` must re-encode to the same
+  config, and an accepted spec must have a non-empty argv, no readiness port
+  0, each env key once with `PATH`, `HOME` and `DASSIE_INSTANCE_ID` set. The
+  hostname must end up on the last line of `/etc/hosts`, and each resolver on
+  one `nameserver` line of `resolv.conf`. An `eth0` address must be a /31, set
+  exactly when `guest.json` has one.
 
 `-max_len` is above `MAX_LINE`, so oversized frames are reachable. Seeds from
 ADR 0004, small layer tars and sample boot inputs live in `fuzz/seeds/` and are committed. New inputs go to

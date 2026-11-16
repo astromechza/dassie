@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Boots the test VM twice through `dassie vm-run` (ADR 0012) and checks the
-# lifecycle: the entrypoint is told to exit with code 3 after a few seconds,
-# so vm-run must report `started`, `ready` and `exited` in that order and
-# exit with 3 itself. The non-root testapp must also have been able to use
+# Boots the test VM up to three times through `dassie vm-run` (ADR 0012)
+# and checks the lifecycle: the entrypoint is told to exit with code 3 after
+# a few seconds, so vm-run must report `started`, `ready` and `exited` in
+# that order and exit with 3 itself. The non-root testapp must also have been able to use
 # /dev/stderr and /dev/shm.
 #
 # Boot 1 runs vm-run directly, unjailed. Boot 2 runs it under `systemd-run`
@@ -10,6 +10,19 @@
 # systemd-run and passwordless sudo are there (as on CI): the unit must then
 # reach `ready` through READY=1 and end with result `exit-code` and status
 # 3, and the jail must belong to the jail uid (ADR 0013).
+#
+# Each boot gets its own guest drive (ADR 0015): its env tells testapp when
+# and how to exit, and testapp logs its argv, env, hostname and default
+# route. Boot 1 sets only `cmd`, so argv is the image Entrypoint plus that
+# cmd; boot 2 sets `entrypoint`, `cmd` and `hostname`. Neither has a NIC, so
+# the hostname must resolve to 127.0.1.1 through the /etc/hosts init writes,
+# and there is no default route.
+#
+# Boot 3, with passwordless sudo, gives the VM a NIC on a TAP the script
+# creates, and `ipv4_address` in its guest drive. Init
+# must give eth0 that address and a default route via the host end (its
+# source address is the guest's), map the hostname to it, and the host must
+# reach the guest with ping while it runs.
 #
 # Both boots use the built, read-only rootfs itself, as every VM of an image
 # shares its artefact. testapp writes a file to the overlay root at startup
@@ -43,6 +56,13 @@ jail_base="$OUT/smoke/jail"
 rootfs="$OUT/rootfs.erofs"
 before=$(sha256sum "$rootfs")
 
+testapp=/usr/local/bin/testapp
+# Boot 3's TAP: the highest index net-env.sh allows, on a /31 outside its
+# default pool.
+tap=dt99999 tap_host=10.254.0.2 tap_guest=10.254.0.3
+greeting='hello "quoted" world'
+env_json="\"env\":{\"EXIT_AFTER\":\"3\",\"EXIT_CODE\":\"$want_code\",\"GREETING\":\"hello \\\"quoted\\\" world\"}"
+
 # boot N direct|systemd: boots the VM once, with its files in $OUT/smoke/N.
 boot() {
   local n=$1 mode=$2
@@ -50,9 +70,34 @@ boot() {
   # A systemd boot leaves root-owned files; the directory is ours to empty.
   rm -rf "$run"
   mkdir -p "$run"
-  "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" "$run/vm.vsock" \
-    "dassie.instance=smoke-$n dassie.env=EXIT_AFTER=3 dassie.env=EXIT_CODE=$want_code" \
-    >"$run/config.json"
+  local guest_json want_argv want_host want_ip=127.0.1.1
+  local want_route="testapp: no default route" net_env=""
+  case "$n" in
+    1)
+      guest_json="{\"version\":1,\"instance_id\":\"smoke-1\",$env_json,\"cmd\":[\"from-guest\",\"a b\"]}"
+      want_argv="[\"$testapp\", \"from-guest\", \"a b\"]"
+      want_host=smoke-1
+      ;;
+    2)
+      guest_json="{\"version\":1,\"instance_id\":\"smoke-2\",\"hostname\":\"smoke-two.test\",$env_json,\"entrypoint\":[\"$testapp\"],\"cmd\":[\"second\"]}"
+      want_argv="[\"$testapp\", \"second\"]"
+      want_host=smoke-two.test
+      ;;
+    3)
+      guest_json="{\"version\":1,\"instance_id\":\"smoke-3\",$env_json,\"ipv4_address\":\"$tap_guest/31\"}"
+      want_argv="[\"$testapp\", \"image-cmd\"]"
+      want_host=smoke-3 want_ip=$tap_guest
+      want_route="testapp: default route from $tap_guest"
+      net_env="$run/net.env"
+      printf 'DASSIE_TAP=%s\nDASSIE_MAC=06:00:0a:fe:00:03\n' "$tap" >"$net_env"
+      ;;
+  esac
+  printf '%s\n' "$guest_json" >"$run/guest.json"
+  "$dassie" guest-drive --out "$run/guest.drive" <"$run/guest.json"
+  # The jailed boot's Firecracker runs as the jail uid. It holds no secret.
+  chmod 0644 "$run/guest.drive"
+  FC_NET_ENV=$net_env "$REPO/scripts/host/vm-config.sh" "$kernel" "$OUT/initramfs.cpio.gz" "$rootfs" \
+    "$run/guest.drive" "$run/vm.vsock" >"$run/config.json"
   local vm_run=("$dassie" vm-run --config "$run/config.json" --firecracker "$OUT/firecracker")
 
   log "booting $ARCH VM ($n, $mode)"
@@ -61,6 +106,20 @@ boot() {
     direct)
       timeout --kill-after=10 "$timeout_secs" "${vm_run[@]}" \
         >"$run/console.log" 2>"$run/vm-run.log" || status=$?
+      ;;
+    net)
+      # In the background, so the host can ping the guest between `ready`
+      # and the app's exit 3 s later.
+      timeout --kill-after=10 "$timeout_secs" "${vm_run[@]}" \
+        >"$run/console.log" 2>"$run/vm-run.log" &
+      local pid=$! i
+      for ((i = 0; i < timeout_secs * 10; i++)); do
+        grep -qF "event=ready" "$run/vm-run.log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      ping -c 1 -W 2 "$tap_guest" >"$run/ping.log" 2>&1 && pinged=1
+      wait "$pid" || status=$?
       ;;
     systemd)
       # The jail belongs to the jail uid, and only root can remove it.
@@ -96,6 +155,12 @@ boot() {
     fi
   }
 
+  if [[ "$mode" == net && -z "${pinged:-}" ]]; then
+    dump
+    echo "--- ping ---" && cat "$run/ping.log"
+    echo "FAIL: boot $n ($mode): the host could not ping the guest at $tap_guest" >&2
+    exit 1
+  fi
   if [[ "$status" != "$want_code" ]]; then
     dump
     echo "FAIL: boot $n ($mode): vm-run exited with ${status:-?}, want $want_code" \
@@ -113,7 +178,10 @@ boot() {
   # overlay root is 0755 root and holds no file from an earlier boot.
   local want
   for want in "testapp: /dev/stderr ok" "testapp: /dev/shm ok" \
-    "testapp: / is 0755 root" "testapp: clean root, write ok"; do
+    "testapp: / is 0755 root" "testapp: clean root, write ok" \
+    "testapp: argv $want_argv" "testapp: GREETING=\"${greeting//\"/\\\"}\"" \
+    "testapp: DASSIE_INSTANCE_ID=\"smoke-$n\"" "testapp: hostname $want_host -> $want_ip" \
+    "$want_route"; do
     if ! grep -qF "$want" "$run/console.log"; then
       dump
       echo "FAIL: boot $n ($mode): console has no \"$want\"" >&2
@@ -143,10 +211,25 @@ fi
 boot 1 direct
 boot 2 "$second"
 
+networked=""
+if sudo -n true 2>/dev/null; then
+  # The TAP belongs to this user, so the unjailed Firecracker can open it.
+  sudo -n ip link del "$tap" 2>/dev/null || true
+  trap 'sudo -n ip link del "$tap" 2>/dev/null || true' EXIT
+  sudo -n ip tuntap add dev "$tap" mode tap user "$(id -u)"
+  sudo -n ip addr add "$tap_host/31" dev "$tap"
+  sudo -n ip link set "$tap" up
+  boot 3 net
+  networked="; networked boot: eth0 address, default route and ping"
+else
+  log "no passwordless sudo: skipping the networked boot"
+fi
+
 if [[ "$(sha256sum "$rootfs")" != "$before" ]]; then
   echo "FAIL: the read-only rootfs changed: $before" >&2
   exit 1
 fi
 [[ "$second" == systemd ]] && second="systemd + jailer"
-log "PASS: two boots of one read-only rootfs (direct, $second): started, ready, exited;" \
-  "vm-run exited $want_code; non-root /dev ok; clean overlay root each time; rootfs unchanged"
+log "PASS: boots of one read-only rootfs (direct, $second): started, ready, exited;" \
+  "vm-run exited $want_code; guest drive argv, env and hostname; non-root /dev ok;" \
+  "clean overlay root each time; rootfs unchanged$networked"
