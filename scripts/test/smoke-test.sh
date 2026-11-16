@@ -213,6 +213,12 @@ boot 2 "$second"
 
 networked=""
 if sudo -n true 2>/dev/null; then
+  # Every run on this host uses the same TAP, so a host-wide lock is held
+  # from before it is replaced until after it is deleted: a concurrent run
+  # waits rather than deleting this run's TAP. The EXIT trap runs before the
+  # shell exits and closes the lock, so a failed boot cleans up under it too.
+  exec {tap_lock}>>/tmp/dassie-smoke-tap.lock
+  flock "$tap_lock"
   # The TAP belongs to this user, so the unjailed Firecracker can open it.
   sudo -n ip link del "$tap" 2>/dev/null || true
   trap 'sudo -n ip link del "$tap" 2>/dev/null || true' EXIT
@@ -220,6 +226,9 @@ if sudo -n true 2>/dev/null; then
   sudo -n ip addr add "$tap_host/31" dev "$tap"
   sudo -n ip link set "$tap" up
   boot 3 net
+  sudo -n ip link del "$tap"
+  trap - EXIT
+  exec {tap_lock}>&-
   networked="; networked boot: eth0 address, default route and ping"
 else
   log "no passwordless sudo: skipping the networked boot"

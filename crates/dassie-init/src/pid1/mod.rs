@@ -10,6 +10,7 @@
 mod sys;
 
 use std::error::Error;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -85,7 +86,11 @@ fn run() -> Result<ExitStatus> {
         connect: Box::new(|| sys::vsock_connect(sys::HOST_CID, EVENTS_PORT)),
         control_listener: Box::new(sys::VsockListener::bind(CONTROL_PORT)?),
         control: (control_tx, control_rx),
-        on_spawn: Box::new(|pid| eprintln!("dassie-init: entrypoint pid {pid}")),
+        // One `write`, as the entrypoint logs to the same console at the
+        // same moment and `eprintln!` writes a line in pieces.
+        on_spawn: Box::new(|pid| {
+            drop(io::stderr().write_all(format!("dassie-init: entrypoint pid {pid}\n").as_bytes()));
+        }),
     };
     Ok(supervisor::run(&spec, deps)?)
 }

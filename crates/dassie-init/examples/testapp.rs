@@ -36,7 +36,16 @@ use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
-use std::{env, process, thread};
+use std::{env, io, process, thread};
+
+/// Logs one `testapp: ` line with a single `write`. `eprintln!` writes a
+/// line in pieces, so a line PID 1 prints at the same moment could land in
+/// the middle of it on the shared console, and the boot test's grep miss.
+macro_rules! say {
+    ($($arg:tt)*) => {
+        drop(io::stderr().write_all(format!("testapp: {}\n", format_args!($($arg)*)).as_bytes()))
+    };
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let port: u16 = env_or("PORT", 8080)?;
@@ -47,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         })?;
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(secs));
-            eprintln!("testapp: EXIT_AFTER={secs} elapsed, exiting {code}");
+            say!("EXIT_AFTER={secs} elapsed, exiting {code}");
             process::exit(code);
         });
     }
@@ -55,7 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let secs: u64 = secs.parse().map_err(|e| format!("bad CRASH_AFTER: {e}"))?;
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(secs));
-            eprintln!("testapp: CRASH_AFTER={secs} elapsed, aborting");
+            say!("CRASH_AFTER={secs} elapsed, aborting");
             process::abort();
         });
     }
@@ -64,17 +73,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     check_dev()?;
     check_root()?;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
-    eprintln!("testapp: listening on port {port}");
+    say!("listening on port {port}");
     for conn in listener.incoming() {
         match conn {
             Ok(conn) => {
                 thread::spawn(move || {
                     if let Err(e) = respond(&conn) {
-                        eprintln!("testapp: {e}");
+                        say!("{e}");
                     }
                 });
             }
-            Err(e) => eprintln!("testapp: accept: {e}"),
+            Err(e) => say!("accept: {e}"),
         }
     }
     Ok(())
@@ -83,18 +92,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// Logs what the guest config sets, for the boot test to match.
 fn report_config() {
     let args: Vec<String> = env::args().collect();
-    eprintln!("testapp: argv {args:?}");
+    say!("argv {args:?}");
     for key in ["GREETING", "DASSIE_INSTANCE_ID"] {
-        eprintln!("testapp: {key}={:?}", env::var(key).unwrap_or_default());
+        say!("{key}={:?}", env::var(key).unwrap_or_default());
     }
     let hostname = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
     let hostname = hostname.trim_end();
     match (hostname, 0).to_socket_addrs() {
         Ok(mut addrs) => match addrs.next() {
-            Some(sa) => eprintln!("testapp: hostname {hostname} -> {}", sa.ip()),
-            None => eprintln!("testapp: hostname {hostname} has no address"),
+            Some(sa) => say!("hostname {hostname} -> {}", sa.ip()),
+            None => say!("hostname {hostname} has no address"),
         },
-        Err(e) => eprintln!("testapp: hostname {hostname}: {e}"),
+        Err(e) => say!("hostname {hostname}: {e}"),
     }
     // A UDP connect picks the route and source address without sending
     // anything; with no default route it fails.
@@ -103,8 +112,8 @@ fn report_config() {
         sock.local_addr()
     });
     match route {
-        Ok(addr) => eprintln!("testapp: default route from {}", addr.ip()),
-        Err(e) => eprintln!("testapp: no default route: {e}"),
+        Ok(addr) => say!("default route from {}", addr.ip()),
+        Err(e) => say!("no default route: {e}"),
     }
 }
 
@@ -119,7 +128,7 @@ fn check_dev() -> Result<(), String> {
     let shm = format!("/dev/shm/testapp.{}", process::id());
     fs::write(&shm, b"ok").map_err(|e| format!("write {shm}: {e}"))?;
     fs::remove_file(&shm).map_err(|e| format!("remove {shm}: {e}"))?;
-    eprintln!("testapp: /dev/shm ok");
+    say!("/dev/shm ok");
     Ok(())
 }
 
@@ -131,7 +140,7 @@ fn check_root() -> Result<(), String> {
     if root.uid() != 0 || mode != 0o755 {
         return Err(format!("/ is {mode:o} uid {}, want 755 root", root.uid()));
     }
-    eprintln!("testapp: / is 0755 root");
+    say!("/ is 0755 root");
     match OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -147,7 +156,7 @@ fn check_root() -> Result<(), String> {
         }
         Err(e) => return Err(format!("create {BOOT_MARKER}: {e}")),
     }
-    eprintln!("testapp: clean root, write ok");
+    say!("clean root, write ok");
     Ok(())
 }
 
@@ -165,7 +174,7 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Reads the request head, then answers 200, or aborts on `GET /crash`, or
 /// dials out on `GET /dial`.
-fn respond(mut conn: &TcpStream) -> std::io::Result<()> {
+fn respond(mut conn: &TcpStream) -> io::Result<()> {
     conn.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
@@ -175,7 +184,7 @@ fn respond(mut conn: &TcpStream) -> std::io::Result<()> {
         return Ok(());
     }
     if line.starts_with("GET /crash ") {
-        eprintln!("testapp: /crash requested, aborting");
+        say!("/crash requested, aborting");
         process::abort();
     }
     let target = line.split(' ').nth(1).unwrap_or_default().to_owned();
@@ -210,7 +219,7 @@ fn dial(query: &str) -> (&'static str, String) {
         );
     };
     let result = addr.to_socket_addrs().and_then(|addrs| {
-        let mut last = std::io::Error::other("no addresses");
+        let mut last = io::Error::other("no addresses");
         for sa in addrs {
             match TcpStream::connect_timeout(&sa, DIAL_TIMEOUT) {
                 Ok(_) => return Ok(sa),
@@ -223,6 +232,6 @@ fn dial(query: &str) -> (&'static str, String) {
         Ok(sa) => ("200 OK", format!("ok {sa}\n")),
         Err(e) => ("502 Bad Gateway", format!("error: {e}\n")),
     };
-    eprintln!("testapp: dial {addr}: {}", body.trim_end());
+    say!("dial {addr}: {}", body.trim_end());
     (status, body)
 }
