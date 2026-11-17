@@ -18,7 +18,7 @@ another by one nft table (ADR 0008). There is no daemon yet.
 
 | Crate | Role |
 | --- | --- |
-| [`dassie`](crates/dassie) | Host daemon and CLI: reconcile loop, SQLite, systemd, Caddy |
+| [`dassie`](crates/dassie) | Host daemon and CLI: reconcile loop, store (redb), systemd, Caddy |
 | [`dassie-vm`](crates/dassie-vm) | Firecracker and jailer config, Firecracker API socket |
 | [`dassie-image`](crates/dassie-image) | OCI image to erofs guest rootfs |
 | [`dassie-proto`](crates/dassie-proto) | Host <-> guest protocol over vsock |
