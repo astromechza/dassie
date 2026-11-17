@@ -90,8 +90,8 @@ record the result.
 ### Errors
 
 - **Typed errors**, such as `NotFound`, `AlreadyExists`,
-  `Conflict { field, value, holder }` and `StillReferenced`, are for the
-  caller to handle.
+  `Conflict { field, value, holder }`, `StillReferenced` and `Stale`, are for
+  the caller to handle.
 - **Storage and corruption errors are fatal.** These are any redb error, and
   a row that will not decode, which is reported with its table and key. After
   any I/O error, redb fails every later operation until the database is
@@ -129,7 +129,8 @@ app's records in order. Keys never contain `Option`, whose encoding redb's
 next major version changes.
 
 **Values are JSON.** Specs and statuses are Rust structs, serialised with
-`serde_json` into `&[u8]` values.
+`serde_json`. Each value is stored as `(u64, &[u8])`: the row's revision
+(below), then the JSON, so the Rust types never carry the revision.
 
 - Every struct has `#[serde(deny_unknown_fields)]`. Optional fields are
   `#[serde(default)]` and skipped when unset. `#[serde(flatten)]` is not
@@ -139,6 +140,37 @@ next major version changes.
   already a dependency. At this size the cost is nothing.
 - The store decodes rows itself. redb's `Value::from_bytes` cannot fail, so
   JSON types get no redb `Value` impl, which could only panic.
+
+### Revisions and conditional writes
+
+**One revision counter for the whole store,** as etcd's `mod_revision` and
+Kubernetes' `resourceVersion` work:
+
+- `meta` holds the store's revision. A write that changes anything takes the
+  next one, once for the whole transaction, and stamps it on every row it
+  writes. A write that changes nothing leaves it alone.
+- Reads return `Versioned<T> { revision, value }`.
+- A recreated key gets a fresh, higher revision. So a caller holding the
+  revision of a row that has since been deleted can never match the new one,
+  which a per-row counter starting at 1 would allow.
+- Revisions order every change in the store, and "has anything changed since
+  R?" is one read of `meta`.
+
+**Every write method takes a `Precondition`:** `Any`, `Absent` or
+`At(revision)`. A row that does not match returns
+`Stale { key, expected, actual }`. Like any `Err`, it aborts the whole write,
+so a write over several rows applies all of them or none.
+
+- **Spec and status get revisions of their own,** because they are separate
+  tables. A status write never moves the spec's revision, so the spec's
+  revision acts as Kubernetes' `generation`. A status can record the spec
+  revision it acted on, as `observedGeneration` does.
+- **Reconcile's last step is conditional.** It reads a spec at revision R,
+  records its intent, acts outside the store, then records the result only
+  if the spec is still at R. If the operator changed the spec meanwhile, the
+  stale result is refused rather than written over the change.
+- **The CLI** can apply unconditionally. A read-edit-write command sends back
+  the revision it read.
 
 ### Lookups scan
 
@@ -172,7 +204,8 @@ So a value is never reused while something on the host still carries it.
 - pairs every spec with its status;
 - checks that every reference names a record that exists;
 - checks that every allocation's holder exists or is being torn down;
-- checks that no unique field is held twice.
+- checks that no unique field is held twice;
+- checks that no row's revision is above the store's.
 
 It returns every inconsistency it finds, each with its table, key and what
 was expected, rather than stopping at the first. `open` runs it, tests run it
@@ -228,8 +261,9 @@ redb is light enough to give every test its own store.
 - **Per operation:** the effect on records, each typed error, and an aborted
   write leaving no trace.
 - **Model tests** run seeded random sequences of operations against both the
-  store and a plain `BTreeMap` model. They compare every result and error,
-  and run `check` after each step. A failure prints its seed. This catches
+  store and a plain `BTreeMap` model, including conditional writes with
+  stale and current revisions. They compare every result, error and
+  revision, and run `check` after each step. A failure prints its seed. This catches
   logic the store and `check` could both get wrong in the same way.
 - **Fault injection:** a test backend wraps the in-memory one and fails the
   Nth write or sync. With it, the abort and fatal-error paths are actually
@@ -260,6 +294,9 @@ All of it runs on macOS.
   daemon stopped, or an export from the running daemon.
 - Lookups scan. That is fine at this scale, and a store that grows past it
   can add stored indexes without changing callers.
+- Conditional writes make read-act-write safe across separate transactions,
+  which reconcile's "intent, act, result" depends on. They also leave room
+  for a change feed or watch later, keyed by revision.
 - A daemon cannot be rolled back past a schema bump except by restoring the
   copy `open` made.
 - An I/O error restarts the daemon rather than being handled in place.
