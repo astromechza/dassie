@@ -89,7 +89,10 @@ structs, serialised with `serde_json` into `&[u8]` values.
 
 - Every struct has `#[serde(deny_unknown_fields)]`, and optional fields are
   `#[serde(default)]` and skipped when unset. A new optional field then
-  needs no migration, and a misspelt one is an error.
+  needs no rewrite of existing rows, and a misspelt one is an error. It
+  still bumps the schema version, with an empty migration, in the same
+  change that first writes it: an older binary would refuse the row, so it
+  must refuse the store at open instead.
 - JSON over a positional format such as postcard: rows can be read in a
   dump, a field's name protects it from reordering, and `serde_json` is
   already a dependency. At this size the cost is nothing.
@@ -104,11 +107,15 @@ transaction.**
   is a multimap table from index key to primary keys.
 - Each resource has one pure function that returns the index keys of a
   record. Unit tests can call it directly, and `check` uses it too.
-- A write loads the old record, computes its index keys and the new
-  record's, and removes those that went away. It then checks each new
-  unique key, adds the new entries, and writes the record. A key held by
-  another record returns a typed error, and the write aborts, undoing the
-  removals with it.
+- A write loads the old record and computes its index keys and the new
+  record's. It checks every new unique key first: a key held by another
+  record returns a typed error before anything has changed. Only then does
+  it remove the entries that went away, add the new ones and write the
+  record.
+- So a typed error from a store method always leaves the transaction as it
+  was, and a caller may catch it and carry on. Any other error, such as
+  redb's, can come halfway through a change. It poisons the `Write`, and
+  `Store::write` then aborts even if the closure returns `Ok`.
 - A delete removes the record, its status and the index entries computed
   from the removed record.
 - Allocations are unique indexes keyed by the allocated value. The lowest
@@ -119,8 +126,9 @@ transaction.**
   index lists any.
 
 **`Store::check` verifies everything an SQL engine would have.** It decodes
-every row, pairs every spec with its status, rebuilds every index from the
-records, and diffs the result against the stored index tables. It runs in a
+every row, pairs every spec with its status, checks that every reference
+names a record that exists, rebuilds every index from the records, and
+diffs the result against the stored index tables. It runs in a
 read transaction. Tests call it after every operation, and the CLI exposes
 it later as a debug command.
 
