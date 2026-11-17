@@ -114,8 +114,9 @@ transaction.**
   record.
 - So a typed error from a store method always leaves the transaction as it
   was, and a caller may catch it and carry on. Any other error, such as
-  redb's, can come halfway through a change. It poisons the `Write`, and
-  `Store::write` then aborts even if the closure returns `Ok`.
+  redb's, can come halfway through a change. It poisons the `Write`:
+  `Store::write` then commits nothing and returns that first error, even if
+  the closure returns `Ok` or a different error.
 - A delete removes the record, its status and the index entries computed
   from the removed record.
 - Allocations are unique indexes keyed by the allocated value. The lowest
