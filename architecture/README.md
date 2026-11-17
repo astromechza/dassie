@@ -21,6 +21,7 @@ same change that makes the decision. Start new ones from
 | [0012](0012-per-vm-runner.md) | Per-VM runner | Accepted |
 | [0013](0013-jailed-firecracker.md) | Firecracker runs in the jailer | Accepted |
 | [0015](0015-guest-config-drive.md) | Guest config drive | Accepted |
+| [0016](0016-store-data-access-layer.md) | Store data access layer | Proposed |
 | [0017](0017-flattener-writes-fresh-tar-headers.md) | The flattener writes fresh tar headers | Accepted |
 
 ## Diagrams
