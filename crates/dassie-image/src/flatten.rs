@@ -499,9 +499,10 @@ fn link_target<R: Read>(entry: &tar::Entry<'_, R>) -> Result<PathBuf, Error> {
     normalise(&raw)?.ok_or_else(|| Error::BadPath(raw.into_owned()))
 }
 
-/// xattr namespaces erofs stores. mkfs.erofs drops others (macOS's
-/// `com.apple.*`, for one), so they are dropped here too.
-const XATTR_NAMESPACES: [&str; 4] = ["user.", "trusted.", "security.", "system.posix_acl_"];
+/// xattr namespaces erofs stores, besides the two POSIX ACLs. mkfs.erofs
+/// drops others (macOS's `com.apple.*`, for one), so they are dropped here
+/// too.
+const XATTR_NAMESPACES: [&str; 3] = ["user.", "trusted.", "security."];
 
 /// What an entry's inode carries into the rootfs. Nothing else in its header
 /// or PAX records is written out.
@@ -600,19 +601,34 @@ impl Meta {
 }
 
 /// Whether an xattr reaches the guest as written: a name in a namespace
-/// erofs stores, and for `security.capability` a value the kernel accepts
-/// (a `vfs_cap_data` of revision 1, 2 or 3). The kernel refuses to read a
-/// malformed one, so the file has no capabilities either way.
+/// erofs stores, and a value the kernel will read back for the two it
+/// parses. It refuses a malformed one, so the file has no capabilities or
+/// ACL either way.
 fn keep_xattr(name: &str, value: &[u8]) -> bool {
-    let known = XATTR_NAMESPACES
-        .iter()
-        .any(|ns| name.len() > ns.len() && name.starts_with(ns));
-    if !known || name.contains('\0') {
+    if name.contains('\0') {
         return false;
     }
-    if name != "security.capability" {
-        return true;
+    match name {
+        "security.capability" => valid_capability(value),
+        "system.posix_acl_access" | "system.posix_acl_default" => valid_acl(value),
+        _ => XATTR_NAMESPACES
+            .iter()
+            .any(|ns| name.len() > ns.len() && name.starts_with(ns)),
     }
+}
+
+/// A POSIX ACL xattr with at least one entry: version 2, then 8-byte
+/// `(tag, perm, id)` entries. The kernel reads a header with no entries as
+/// no ACL, and refuses other versions and sizes. It does not check the
+/// entries themselves on read.
+fn valid_acl(value: &[u8]) -> bool {
+    value.first_chunk::<4>().map(|v| u32::from_le_bytes(*v)) == Some(2)
+        && value.len() > 4
+        && (value.len() - 4).is_multiple_of(8)
+}
+
+/// A `vfs_cap_data` of revision 1, 2 or 3, the size its revision says.
+fn valid_capability(value: &[u8]) -> bool {
     let Some(magic) = value.first_chunk::<4>() else {
         return false;
     };
@@ -1294,7 +1310,8 @@ pub(crate) mod tests {
     #[test]
     fn xattrs_erofs_would_drop_are_dropped() {
         // Found by the flatten_erofs fuzz target: mkfs.erofs drops unknown
-        // namespaces, and the kernel will not read a malformed capability.
+        // namespaces (`system.posix_acl_ty` among them), and the kernel will
+        // not read a malformed capability or ACL.
         let layer = with_pax(
             EntryType::Regular,
             &[
@@ -1303,6 +1320,9 @@ pub(crate) mod tests {
                 ("SCHILY.xattr.com.apple.provenance", b"2"),
                 ("SCHILY.xattr.user.", b"3"),
                 ("SCHILY.xattr.security.capability", b"\x01"),
+                ("SCHILY.xattr.system.posix_acl_ty", b"\x01"),
+                ("SCHILY.xattr.system.posix_acl_access", b"\x02\0\0\0"),
+                ("SCHILY.xattr.system.posix_acl_default", b"\x01"),
                 ("LIBARCHIVE.xattr.user.b64", b"NA=="),
                 ("atime", b"1"),
             ],
@@ -1318,11 +1338,19 @@ pub(crate) mod tests {
             ["SCHILY.xattr.user.keep", "SCHILY.xattr.trusted.empty"]
         );
 
+        // `user::rw-`, `group::r--`, `other::r--`, as setfacl writes it.
+        let acl = [
+            2, 0, 0, 0, 1, 0, 6, 0, 0xff, 0xff, 0xff, 0xff, 4, 0, 4, 0, 0xff, 0xff, 0xff, 0xff,
+            0x20, 0, 4, 0, 0xff, 0xff, 0xff, 0xff,
+        ];
         let layer = with_pax(
             EntryType::Regular,
-            &[("SCHILY.xattr.security.capability", CAP.as_slice())],
+            &[
+                ("SCHILY.xattr.security.capability", CAP.as_slice()),
+                ("SCHILY.xattr.system.posix_acl_access", acl.as_slice()),
+            ],
         );
         let out = flatten(&[layer], b"{}").unwrap();
-        assert_eq!(find(&out, "f").xattrs.len(), 1);
+        assert_eq!(find(&out, "f").xattrs.len(), 2);
     }
 }

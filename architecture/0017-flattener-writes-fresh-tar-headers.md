@@ -45,11 +45,14 @@ nothing else from the input header.
   (erofs's limit). mtime keeps whole seconds, and times before the epoch
   become 0. A field that does not parse is an error, except an empty
   (all-NUL or all-space) field, which GNU tar and mkfs.erofs read as 0.
-- **xattrs:** only `SCHILY.xattr.*` records in the namespaces erofs stores
-  (`user.`, `trusted.`, `security.`, `system.posix_acl_*`). Others, such as
-  macOS's `com.apple.*`, are dropped, as mkfs.erofs would drop them. A
-  `security.capability` that is not a revision 1, 2 or 3 `vfs_cap_data` is
-  dropped too, since the kernel refuses to read it. Every other PAX record
+- **xattrs:** only `SCHILY.xattr.*` records erofs stores: the `user.`,
+  `trusted.` and `security.` namespaces, and `system.posix_acl_access` and
+  `system.posix_acl_default`. Others, such as macOS's `com.apple.*`, are
+  dropped, as mkfs.erofs would drop them. The kernel parses two values and
+  refuses to read malformed ones, so those are dropped too: a
+  `security.capability` that is not a revision 1, 2 or 3 `vfs_cap_data`,
+  and an ACL that is not version 2 with at least one 8-byte entry. Every
+  other PAX record
   (`uname`, `gname`, `atime`, `ctime`, `LIBARCHIVE.xattr.*`, `GNU.sparse.*`,
   …) is dropped.
 - **Entry types:** regular (`0`, NUL, contiguous `7`), directory, symlink,
