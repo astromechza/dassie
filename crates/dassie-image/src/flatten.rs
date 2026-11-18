@@ -37,7 +37,10 @@ pub(crate) const ROOT_MODE: u32 = 0o755;
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    /// A path with a `..` component.
+    /// A path or link target with a `..` component or a NUL byte. tar
+    /// carries NULs in PAX and GNU long names, but mkfs.erofs, like other C
+    /// readers, cuts the name at the first one, so it would build a
+    /// different tree from the one checked here.
     BadPath(PathBuf),
     /// An entry type dassie does not carry over: GNU sparse files, and PAX
     /// or GNU extension headers in a format tar did not recognise.
@@ -58,7 +61,11 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "{e}"),
-            Self::BadPath(p) => write!(f, "layer path {} escapes the root", p.display()),
+            Self::BadPath(p) => write!(
+                f,
+                "layer path {} has a `..` component or a NUL byte",
+                p.as_os_str().as_encoded_bytes().escape_ascii()
+            ),
             Self::Unsupported(p, t) => write!(f, "{}: unsupported entry type {t:?}", p.display()),
             Self::DanglingLink { path, target } => {
                 write!(
@@ -420,6 +427,14 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
     {
         return Err(Error::Unsupported(path, entry_type));
     }
+    // Symlink targets are not paths in the tree, so `normalise` never sees
+    // them, but mkfs.erofs would cut them at a NUL too.
+    if entry_type == EntryType::Symlink
+        && let Some(target) = entry.link_name()?
+        && has_nul(target.as_os_str())
+    {
+        return Err(Error::BadPath(target.into_owned()));
+    }
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
     let parent = path.parent().map_or_default(Path::to_path_buf);
     Ok(if name == OPAQUE {
@@ -434,12 +449,13 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
     })
 }
 
-/// Strips `/` and `.`, rejects `..`. `None` means the root.
+/// Strips `/` and `.`, rejects `..` and NUL bytes. `None` means the root.
 fn normalise(path: &Path) -> Result<Option<PathBuf>, Error> {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {
-            Component::Normal(part) => out.push(part),
+            Component::Normal(part) if !has_nul(part) => out.push(part),
+            Component::Normal(_) => return Err(Error::BadPath(path.to_path_buf())),
             Component::RootDir | Component::CurDir => {}
             Component::ParentDir | Component::Prefix(_) => {
                 return Err(Error::BadPath(path.to_path_buf()));
@@ -447,6 +463,10 @@ fn normalise(path: &Path) -> Result<Option<PathBuf>, Error> {
         }
     }
     Ok((!out.as_os_str().is_empty()).then_some(out))
+}
+
+fn has_nul(s: &OsStr) -> bool {
+    s.as_encoded_bytes().contains(&0)
 }
 
 fn link_target<R: Read>(entry: &tar::Entry<'_, R>) -> Result<PathBuf, Error> {
@@ -913,6 +933,36 @@ pub(crate) mod tests {
         header.set_cksum();
         layer[..512].copy_from_slice(header.as_bytes());
         assert!(matches!(flatten(&[layer], b"{}"), Err(Error::BadPath(_))));
+    }
+
+    #[test]
+    fn nul_bytes_in_paths_and_link_targets_are_rejected() {
+        // PAX records carry NULs, and tar reads them back, but mkfs.erofs
+        // cuts names at the first one: `<name>\0x` would land at `<name>`.
+        // Past 100 bytes the builder writes them out in GNU long names.
+        let name = "a".repeat(120);
+        let bad = format!("{name}\0x");
+        let base = Layer::default().file(&name, "x", 0o644, 0).tar();
+        for (key, entry) in [
+            ("path", EntryType::Regular),
+            ("linkpath", EntryType::Link),
+            ("linkpath", EntryType::Symlink),
+        ] {
+            let mut tar = Builder::new(Vec::new());
+            tar.append_pax_extensions([(key, bad.as_bytes())]).unwrap();
+            // The PAX record overrides the placeholder names here.
+            let layer = match entry {
+                EntryType::Regular => Layer(tar).file("b", "y", 0o644, 0),
+                EntryType::Link => Layer(tar).hardlink("b", "a"),
+                _ => Layer(tar).symlink("b", "a"),
+            }
+            .tar();
+            let err = flatten(&[base.clone(), layer], b"{}").unwrap_err();
+            assert!(
+                matches!(&err, Error::BadPath(p) if p.as_os_str() == bad.as_str()),
+                "{key} on {entry:?}: {err}"
+            );
+        }
     }
 
     #[test]

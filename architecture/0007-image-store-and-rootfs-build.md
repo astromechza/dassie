@@ -60,7 +60,10 @@ hex>.v<N>.ext4`.
      removes only what lower layers put there, as overlayfs does.
    - A non-directory replacing a directory drops the directory's subtree.
    - Missing parent directories are implied (`0755 root:root`).
-   - Paths with `..` are rejected. Image content under `/.dassie` is dropped.
+   - Paths with `..` are rejected, as are paths holding a NUL byte and the
+     link targets of kept entries holding one: mkfs.erofs cuts names at the
+     first NUL, so it would build a different tree. Image content under
+     `/.dassie` is dropped.
    - A hard link whose target a later layer replaces is an error, rather than
      carrying the old file across layers.
 2. Write one tar stream:
