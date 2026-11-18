@@ -12,6 +12,9 @@ use dassie_image::Tree;
 use dassie_image::error::Flatten;
 use tar::{Archive, EntryType};
 
+#[cfg(target_os = "linux")]
+pub mod erofs;
+
 /// What an output entry is, with the content that matters for comparing it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
@@ -132,7 +135,7 @@ pub fn check_output(out: &[u8], config: &[u8]) -> BTreeMap<Vec<u8>, Kind> {
 }
 
 /// `a/./b/` → `a/b`. Panics on an absolute path, a `..` component or a NUL.
-fn normalise(raw: &[u8]) -> Vec<u8> {
+pub(crate) fn normalise(raw: &[u8]) -> Vec<u8> {
     assert!(!raw.contains(&0), "NUL in output path {}", show(raw));
     let mut parts: Vec<&[u8]> = Vec::new();
     for c in Path::new(OsStr::from_bytes(raw)).components() {

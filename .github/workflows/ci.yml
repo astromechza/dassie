@@ -68,7 +68,7 @@ jobs:
       - name: Unused dependencies
         run: cargo shear
 
-  # Short libFuzzer runs of the dassie-proto targets in fuzz/ (see README).
+  # Short libFuzzer runs of the targets in fuzz/ (see README).
   fuzz:
     runs-on: ubuntu-latest
     strategy:
@@ -122,8 +122,26 @@ jobs:
             "$TARGET" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" -- \
             -max_total_time=60 -max_len=131072 ${DICT:+"-dict=fuzz/$DICT"}
 
+      # The corpus the run above grew, replayed through the real mkfs.erofs
+      # (fuzz/src/erofs.rs). Root, to loop-mount each image.
+      - name: Replay through mkfs.erofs
+        id: replay
+        if: matrix.target == 'flatten_bytes'
+        # Known divergences until the flattener rebuilds headers itself.
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends erofs-utils
+          mkfs.erofs --version
+          sudo modprobe erofs
+          cargo fuzz build --target x86_64-unknown-linux-gnu flatten_erofs
+          mkdir -p fuzz/artifacts/flatten_erofs
+          sudo fuzz/target/x86_64-unknown-linux-gnu/release/flatten_erofs \
+            -runs=0 -artifact_prefix=fuzz/artifacts/flatten_erofs/ \
+            fuzz/corpus/flatten_bytes fuzz/seeds/flatten_bytes
+
       - name: Upload crash inputs
-        if: failure()
+        if: failure() || steps.replay.outcome == 'failure'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
