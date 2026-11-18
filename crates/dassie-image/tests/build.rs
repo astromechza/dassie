@@ -47,7 +47,14 @@ fn layout(root: &Path) {
         .unwrap();
     // A PAX header applies to the entry after it.
     layer
-        .append_pax_extensions([("SCHILY.xattr.security.capability", &b"\x01\x02"[..])])
+        // A revision 2 `vfs_cap_data` (`CAP_NET_RAW`): the flattener drops
+        // malformed ones.
+        .append_pax_extensions([(
+            "SCHILY.xattr.security.capability",
+            &[
+                1, 0, 0, 2, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ][..],
+        )])
         .unwrap();
     let mut file = header(EntryType::Regular, 0o640, 101, 4);
     layer
@@ -108,7 +115,7 @@ fn builds_erofs_with_ownership_and_reuses_it() {
     let path = build(&store, &image, out.path(), &Options::default())
         .unwrap()
         .path;
-    assert!(path.to_string_lossy().ends_with(".v3.erofs"), "{path:?}");
+    assert!(path.to_string_lossy().ends_with(".v4.erofs"), "{path:?}");
     let meta = fs::metadata(&path).unwrap();
     assert_eq!(meta.permissions().mode() & 0o777, 0o444);
 

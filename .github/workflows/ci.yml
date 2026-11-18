@@ -127,8 +127,6 @@ jobs:
       - name: Replay through mkfs.erofs
         id: replay
         if: matrix.target == 'flatten_bytes'
-        # Known divergences until the flattener rebuilds headers itself.
-        continue-on-error: true
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends erofs-utils
@@ -141,7 +139,7 @@ jobs:
             fuzz/corpus/flatten_bytes fuzz/seeds/flatten_bytes
 
       - name: Upload crash inputs
-        if: failure() || steps.replay.outcome == 'failure'
+        if: failure()
         uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
