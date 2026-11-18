@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
@@ -197,30 +197,29 @@ pub fn erofs_view(out: &[u8]) -> View {
         .args(["-t", "erofs", "-o", "loop,ro"])
         .arg(&image)
         .arg(&root));
-    // Read everything before unmounting: a panic in between would leave
-    // the mount behind.
-    let walked = std::panic::catch_unwind(|| {
-        let mut view = View::new();
-        walk(&root, &root, &mut view);
-        view
-    });
+    // Read everything, then unmount, and only then fail: libFuzzer aborts
+    // on a panic, so nothing would unwind to unmount it.
+    let mut view = View::new();
+    let walked = walk(&root, &root, &mut view);
     run(Command::new("umount").arg(&root));
-    let mut view = walked.unwrap_or_else(|e| std::panic::resume_unwind(e));
+    if let Err(e) = walked {
+        panic!("reading the mounted image: {e}");
+    }
     regroup(&mut view);
     view
 }
 
 /// Adds `path` and everything under it to `view`. Until [`regroup`],
 /// `group` holds the inode number, or the path for a directory.
-fn walk(root: &Path, path: &Path, view: &mut View) {
-    let meta = fs::symlink_metadata(path).expect("lstat");
+fn walk(root: &Path, path: &Path, view: &mut View) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
     let ft = meta.file_type();
     let kind = if ft.is_dir() {
         Kind::Dir
     } else if ft.is_file() {
-        Kind::File(fs::read(path).expect("read file"))
+        Kind::File(fs::read(path)?)
     } else if ft.is_symlink() {
-        let target = fs::read_link(path).expect("readlink");
+        let target = fs::read_link(path)?;
         Kind::Symlink(target.as_os_str().as_bytes().to_vec())
     } else if ft.is_char_device() {
         Kind::Other(EntryType::Char.as_byte())
@@ -235,8 +234,7 @@ fn walk(root: &Path, path: &Path, view: &mut View) {
         let r = meta.rdev();
         (u64::from(dev_major(r)), u64::from(dev_minor(r)))
     });
-    let xattrs = xattr::list(path)
-        .expect("list xattrs")
+    let xattrs = xattr::list(path)?
         .map(|name| {
             // An xattr the kernel lists but will not read is a divergence
             // too, so it shows in the diff rather than panicking here.
@@ -247,7 +245,7 @@ fn walk(root: &Path, path: &Path, view: &mut View) {
             (name.as_bytes().to_vec(), value)
         })
         .collect();
-    let rel = path.strip_prefix(root).expect("under root");
+    let rel = path.strip_prefix(root).map_err(io::Error::other)?;
     view.insert(
         rel.as_os_str().as_bytes().to_vec(),
         Node {
@@ -267,10 +265,11 @@ fn walk(root: &Path, path: &Path, view: &mut View) {
         },
     );
     if ft.is_dir() {
-        for entry in fs::read_dir(path).expect("read dir") {
-            walk(root, &entry.expect("dir entry").path(), view);
+        for entry in fs::read_dir(path)? {
+            walk(root, &entry?.path(), view)?;
         }
     }
+    Ok(())
 }
 
 /// Replaces each node's `group` key with the smallest path sharing it.

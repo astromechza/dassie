@@ -139,7 +139,7 @@ jobs:
             fuzz/corpus/flatten_bytes fuzz/seeds/flatten_bytes
 
       - name: Upload crash inputs
-        if: failure()
+        if: failure() || steps.replay.outcome == 'failure'
         uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
