@@ -283,7 +283,7 @@ impl Tree {
             match &node.kind {
                 Kind::Dir { header, pax } => {
                     let mut header = header.as_ref().clone();
-                    clear_gnu_times(&mut header);
+                    clear_prefix(&mut header);
                     header.set_size(0);
                     append_pax(&mut tar, pax)?;
                     tar.append_data(&mut header, path, io::empty())?;
@@ -306,7 +306,7 @@ impl Tree {
                 }
                 let pax = pax(&mut entry)?;
                 let mut header = entry.header().clone();
-                clear_gnu_times(&mut header);
+                clear_prefix(&mut header);
                 match &node.kind {
                     Kind::Dir { .. } => {}
                     Kind::Hardlink { target, .. } => {
@@ -479,12 +479,19 @@ fn append_pax<W: Write>(tar: &mut Builder<W>, pax: &[(String, Vec<u8>)]) -> io::
     tar.append_pax_extensions(pax.iter().map(|(k, v)| (k.as_str(), v.as_slice())))
 }
 
-/// Zeroes a GNU header's `atime` and `ctime`. They sit where a ustar header
-/// has its `prefix`, and mkfs.erofs (1.8.6) reads that field as a path
-/// prefix whatever the format, so `bin/app` with an atime of `1` would land
-/// at `00000000001/bin/app`. Neither time reaches the filesystem anyway.
-fn clear_gnu_times(header: &mut Header) {
-    if let Some(gnu) = header.as_gnu_mut() {
+/// Zeroes the bytes a copied header holds where ustar keeps its path
+/// `prefix`, before the builder writes the normalised path.
+///
+/// - ustar: the old `prefix` itself. `Header::set_path` leaves it alone when
+///   the path fits the name field, so `d/f` (prefix `d`, name `f`) would
+///   come out as `d/d/f`.
+/// - GNU: `atime` and `ctime`. mkfs.erofs (1.8.6) reads that field as a path
+///   prefix whatever the format, so `bin/app` with an atime of `1` would land
+///   at `00000000001/bin/app`. Neither time reaches the filesystem anyway.
+fn clear_prefix(header: &mut Header) {
+    if let Some(ustar) = header.as_ustar_mut() {
+        ustar.prefix = [0; 155];
+    } else if let Some(gnu) = header.as_gnu_mut() {
         gnu.atime = [0; 12];
         gnu.ctime = [0; 12];
     }
@@ -957,5 +964,30 @@ pub(crate) mod tests {
             seen.push(entry.path().unwrap().to_string_lossy().into_owned());
         }
         assert_eq!(seen[1..3], ["bin", "bin/app"]);
+    }
+
+    #[test]
+    fn ustar_prefixes_are_not_applied_twice() {
+        // Found by the flatten_bytes fuzz target: `d/f` held as prefix `d`
+        // and name `f` came out as `d/d/f`, ahead of any `d/d`, because
+        // `Header::set_path` leaves the prefix alone when the path fits the
+        // name field.
+        let mut tar = Builder::new(Vec::new());
+        for (t, prefix, name, data) in [
+            (EntryType::Directory, b"d", "e", &b""[..]),
+            (EntryType::Regular, b"d", "f", &b"x"[..]),
+        ] {
+            let mut h = Layer::header(t, 0o755, 0, 0, data.len() as u64);
+            h.set_path(name).unwrap();
+            h.as_ustar_mut().unwrap().prefix[..1].copy_from_slice(prefix);
+            h.set_cksum();
+            tar.append(&h, data).unwrap();
+        }
+        let layer = tar.into_inner().unwrap();
+        let out = flatten(&[layer], b"{}").unwrap();
+        assert_eq!(
+            paths(&out),
+            ["d", "d/e", "d/f", ".dassie", ".dassie/image.json"]
+        );
     }
 }
