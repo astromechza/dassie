@@ -39,6 +39,8 @@ pub fn flatten(layers: &[&[u8]], config: &[u8]) -> Result<Vec<u8>, Flatten> {
 /// - the first entry is the root (`./`), a `0755 root:root` directory, and
 ///   no other entry is the root;
 /// - no path is absolute or contains `..`, and none appears twice;
+/// - no path or link target holds a NUL byte, which mkfs.erofs would cut
+///   the name at;
 /// - every entry's parent directory appears earlier;
 /// - every hard link's target appears earlier and is not a directory;
 /// - `.dassie` and `.dassie/image.json` (holding `config`) are the last two
@@ -70,7 +72,15 @@ pub fn check_output(out: &[u8], config: &[u8]) -> BTreeMap<Vec<u8>, Kind> {
                 entry.read_to_end(&mut data).expect("output entry data");
                 Kind::File(data)
             }
-            EntryType::Symlink => Kind::Symlink(link_name(&entry)),
+            EntryType::Symlink => {
+                let target = link_name(&entry);
+                assert!(
+                    !target.contains(&0),
+                    "NUL in symlink target {}",
+                    show(&target)
+                );
+                Kind::Symlink(target)
+            }
             EntryType::Link => Kind::Hardlink(normalise(&link_name(&entry))),
             other => Kind::Other(other.as_byte()),
         };
@@ -121,8 +131,9 @@ pub fn check_output(out: &[u8], config: &[u8]) -> BTreeMap<Vec<u8>, Kind> {
     entries.into_iter().collect()
 }
 
-/// `a/./b/` → `a/b`. Panics on an absolute path or a `..` component.
+/// `a/./b/` → `a/b`. Panics on an absolute path, a `..` component or a NUL.
 fn normalise(raw: &[u8]) -> Vec<u8> {
+    assert!(!raw.contains(&0), "NUL in output path {}", show(raw));
     let mut parts: Vec<&[u8]> = Vec::new();
     for c in Path::new(OsStr::from_bytes(raw)).components() {
         match c {
