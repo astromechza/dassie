@@ -163,6 +163,22 @@ cargo +nightly fuzz run init_config fuzz/corpus/init_config fuzz/seeds/init_conf
 - `flatten_bytes` feeds arbitrary bytes to the flattener as one layer. It may
   reject them, but must not panic, and anything it accepts must meet the
   same output invariants.
+- `flatten_erofs` (Linux, as root, with the erofs module and erofs-utils) is
+  `flatten_bytes` checked against the real filesystem: an accepted layer's
+  stream must build with `mkfs.erofs --tar=f`, and the image, loop-mounted,
+  must hold the tree the `tar` crate reads from it, with the same paths,
+  types, contents, link targets, hard link groups, modes, owners, mtimes,
+  device numbers and xattrs. The other targets parse the output with the
+  same crate that wrote it, so they cannot see a field mkfs.erofs reads
+  differently. It spawns two processes per input, so rather than fuzz with
+  it, replay a corpus `flatten_bytes` grew:
+
+  ```sh
+  cargo +nightly fuzz build flatten_erofs
+  sudo fuzz/target/*/release/flatten_erofs -runs=0 fuzz/corpus/flatten_bytes fuzz/seeds/flatten_bytes
+  ```
+
+  CI does this after its `flatten_bytes` run.
 - `init_config` feeds `dassie-init` the image config JSON, `guest.json`,
   kernel cmdline, `/etc/passwd` and `/etc/group`, split on NUL bytes
   (ADR 0005, ADR 0015). The image config is untrusted and this runs in PID 1,
