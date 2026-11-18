@@ -51,10 +51,10 @@ nothing else from the input header.
   dropped, as mkfs.erofs would drop them. The kernel parses two values and
   refuses to read malformed ones, so those are dropped too: a
   `security.capability` that is not a revision 1, 2 or 3 `vfs_cap_data`,
-  and an ACL that is not version 2 with at least one 8-byte entry. Every
-  other PAX record
-  (`uname`, `gname`, `atime`, `ctime`, `LIBARCHIVE.xattr.*`, `GNU.sparse.*`,
-  …) is dropped.
+  and an ACL that is not version 2 with at least one 8-byte entry, all with
+  known tags and no named user or group of id `0xffffffff`. Every other
+  PAX record (`uname`, `gname`, `atime`, `ctime`, `LIBARCHIVE.xattr.*`,
+  `GNU.sparse.*`, …) is dropped.
 - **Entry types:** regular (`0`, NUL, contiguous `7`), directory, symlink,
   hard link, character and block devices, and FIFOs. Any other type is an
   error (`Unsupported`). Contiguous files are written as regular files.

@@ -625,14 +625,30 @@ fn keep_xattr(name: &str, value: &[u8]) -> bool {
     }
 }
 
-/// A POSIX ACL xattr with at least one entry: version 2, then 8-byte
-/// `(tag, perm, id)` entries. The kernel reads a header with no entries as
-/// no ACL, and refuses other versions and sizes. It does not check the
-/// entries themselves on read.
+/// A POSIX ACL xattr the kernel reads back (`posix_acl_from_xattr`): version
+/// 2, then one or more 8-byte little-endian `(tag, perm, id)` entries. It
+/// reads a header with no entries as no ACL, and refuses other versions and
+/// sizes, unknown tags, and a named user or group with the invalid id
+/// `u32::MAX`. It does not check permissions or the order of entries.
 fn valid_acl(value: &[u8]) -> bool {
-    value.first_chunk::<4>().map(|v| u32::from_le_bytes(*v)) == Some(2)
-        && value.len() > 4
-        && (value.len() - 4).is_multiple_of(8)
+    const USER: u16 = 0x02;
+    const GROUP: u16 = 0x08;
+    const TAGS: [u16; 6] = [0x01, USER, 0x04, GROUP, 0x10, 0x20];
+    let Some((version, entries)) = value.split_first_chunk::<4>() else {
+        return false;
+    };
+    if u32::from_le_bytes(*version) != 2 || entries.is_empty() || !entries.len().is_multiple_of(8) {
+        return false;
+    }
+    entries
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .all(|&[t0, t1, _, _, i0, i1, i2, i3]| {
+            let tag = u16::from_le_bytes([t0, t1]);
+            let id = u32::from_le_bytes([i0, i1, i2, i3]);
+            TAGS.contains(&tag) && !(matches!(tag, USER | GROUP) && id == u32::MAX)
+        })
 }
 
 /// A `vfs_cap_data` of revision 1, 2 or 3, the size its revision says.
@@ -1424,5 +1440,38 @@ pub(crate) mod tests {
             let out = flatten(&[layer], b"{}").unwrap();
             assert_eq!(find(&out, "l").link, target);
         }
+    }
+
+    #[test]
+    fn acls_are_kept_only_as_the_kernel_reads_them() {
+        // Each case checked against Linux 6.12 reading an erofs image.
+        fn acl(entries: &[(u16, u16, u32)], version: u32) -> Vec<u8> {
+            let mut v = version.to_le_bytes().to_vec();
+            for (tag, perm, id) in entries {
+                v.extend(tag.to_le_bytes());
+                v.extend(perm.to_le_bytes());
+                v.extend(id.to_le_bytes());
+            }
+            v
+        }
+        let any = u32::MAX;
+        let base = [(0x01, 6, any), (0x04, 4, any), (0x20, 4, any)];
+        for (entries, version, kept) in [
+            (&base[..], 2, true),
+            // Order and permissions are not checked.
+            (&[(0x20, 4, any), (0x01, 6, any), (0x04, 4, any)], 2, true),
+            (&[(0x01, 0xffff, any)], 2, true),
+            (&[(0x02, 6, 1000)], 2, true),
+            (&base, 1, false),
+            (&[], 2, false),
+            (&[(0xffff, 0, any)], 2, false),
+            (&[(0x03, 6, any)], 2, false),
+            (&[(0x01, 6, any), (0x02, 6, any), (0x10, 6, any)], 2, false),
+            (&[(0x08, 6, any)], 2, false),
+        ] {
+            let value = acl(entries, version);
+            assert_eq!(valid_acl(&value), kept, "{entries:x?} v{version}");
+        }
+        assert!(!valid_acl(&[2, 0, 0, 0, 1]));
     }
 }
