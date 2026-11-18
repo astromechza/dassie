@@ -548,7 +548,13 @@ impl Meta {
         let mode = (number(header.mode().map(u64::from), &old.mode, "mode")? & 0o7777) as u32;
         let mut uid = number(header.uid(), &old.uid, "uid")?;
         let mut gid = number(header.gid(), &old.gid, "gid")?;
-        let mut mtime = number(header.mtime(), &old.mtime, "mtime")?;
+        // A negative GNU base-256 time starts 0xff; tar decodes it as huge.
+        // Times before the epoch become 0, as with PAX.
+        let mut mtime = if old.mtime[0] == 0xff {
+            0
+        } else {
+            number(header.mtime(), &old.mtime, "mtime")?
+        };
         // The last record for a key wins, as in mkfs.erofs, before any is
         // judged.
         let mut records = BTreeMap::new();
@@ -580,9 +586,9 @@ impl Meta {
         }
         let xattrs = records
             .into_iter()
-            .filter(|(k, v)| {
-                k.strip_prefix(XATTR_PREFIX)
-                    .is_some_and(|n| keep_xattr(n, v))
+            .filter_map(|(k, v)| {
+                let v = guest_xattr(k.strip_prefix(XATTR_PREFIX)?, v)?;
+                Some((k, v))
             })
             .collect();
         Ok(Self {
@@ -608,20 +614,23 @@ impl Meta {
     }
 }
 
-/// Whether an xattr reaches the guest as written: a name in a namespace
-/// erofs stores, and a value the kernel will read back for the two it
-/// parses. It refuses a malformed one, so the file has no capabilities or
-/// ACL either way.
-fn keep_xattr(name: &str, value: &[u8]) -> bool {
+/// The xattr value the guest reads back, or `None` to drop it: its name
+/// must be in a namespace erofs stores, and the kernel parses capabilities
+/// and ACLs on read. It refuses a malformed one, so the file has no
+/// capabilities or ACL either way.
+fn guest_xattr(name: &str, value: Vec<u8>) -> Option<Vec<u8>> {
     if name.contains('\0') {
-        return false;
+        return None;
     }
     match name {
-        "security.capability" => valid_capability(value),
-        "system.posix_acl_access" | "system.posix_acl_default" => valid_acl(value),
+        "security.capability" => capability(value),
+        "system.posix_acl_access" | "system.posix_acl_default" => {
+            valid_acl(&value).then_some(value)
+        }
         _ => XATTR_NAMESPACES
             .iter()
-            .any(|ns| name.len() > ns.len() && name.starts_with(ns)),
+            .any(|ns| name.len() > ns.len() && name.starts_with(ns))
+            .then_some(value),
     }
 }
 
@@ -651,18 +660,33 @@ fn valid_acl(value: &[u8]) -> bool {
         })
 }
 
-/// A `vfs_cap_data` of revision 1, 2 or 3, the size its revision says.
-fn valid_capability(value: &[u8]) -> bool {
-    let Some(magic) = value.first_chunk::<4>() else {
-        return false;
-    };
-    let size = match u32::from_le_bytes(*magic) & 0xff00_0000 {
-        0x0100_0000 => 12,
-        0x0200_0000 => 20,
-        0x0300_0000 => 24,
-        _ => return false,
-    };
-    value.len() == size
+/// A `vfs_cap_data` as the kernel reads it back (`cap_inode_getsecurity`):
+/// revision 2 (20 bytes) or 3 (24, ending in a root uid), with no flag but
+/// the effective bit. Revision 1, other flags and a root uid of
+/// `u32::MAX` are refused, and revision 3 with root uid 0 reads back as
+/// revision 2, so it is written that way.
+fn capability(mut value: Vec<u8>) -> Option<Vec<u8>> {
+    const REVISION_2: u32 = 0x0200_0000;
+    const REVISION_3: u32 = 0x0300_0000;
+    const EFFECTIVE: u32 = 0x00_0001;
+    let magic = u32::from_le_bytes(*value.first_chunk::<4>()?);
+    if magic & !(0xff00_0000 | EFFECTIVE) != 0 {
+        return None;
+    }
+    match (magic & 0xff00_0000, value.len()) {
+        (REVISION_2, 20) => Some(value),
+        (REVISION_3, 24) => match value.last_chunk::<4>().map(|r| u32::from_le_bytes(*r)) {
+            Some(u32::MAX) => None,
+            Some(0) => {
+                value.truncate(20);
+                let v2 = REVISION_2 | (magic & EFFECTIVE);
+                value.get_mut(..4)?.copy_from_slice(&v2.to_le_bytes());
+                Some(value)
+            }
+            _ => Some(value),
+        },
+        _ => None,
+    }
 }
 
 /// A PAX time (`123`, `123.456`, `-1.5`) in whole seconds. Times before the
@@ -1473,5 +1497,45 @@ pub(crate) mod tests {
             assert_eq!(valid_acl(&value), kept, "{entries:x?} v{version}");
         }
         assert!(!valid_acl(&[2, 0, 0, 0, 1]));
+    }
+
+    #[test]
+    fn capabilities_are_kept_as_the_kernel_reads_them() {
+        // Each case checked against Linux 6.12 reading an erofs image.
+        fn cap(magic: u32, root: Option<u32>) -> Vec<u8> {
+            let mut v = magic.to_le_bytes().to_vec();
+            v.extend([0, 0x20, 0, 0]);
+            v.extend([0; 12]);
+            v.extend(root.map(u32::to_le_bytes).into_iter().flatten());
+            v
+        }
+        for (value, want) in [
+            (cap(0x0200_0001, None), Some(cap(0x0200_0001, None))),
+            (cap(0x0200_0000, None), Some(cap(0x0200_0000, None))),
+            (
+                cap(0x0300_0001, Some(1000)),
+                Some(cap(0x0300_0001, Some(1000))),
+            ),
+            (cap(0x0300_0001, Some(0)), Some(cap(0x0200_0001, None))),
+            (cap(0x0300_0001, Some(u32::MAX)), None),
+            (cap(0x0200_0002, None), None),
+            (cap(0x0200_0001, Some(0)), None),
+            (vec![0, 0, 0, 1, 0, 0x20, 0, 0, 0, 0, 0, 0], None),
+        ] {
+            assert_eq!(capability(value.clone()), want, "{value:x?}");
+        }
+    }
+
+    #[test]
+    fn negative_gnu_times_become_zero() {
+        let mut tar = Builder::new(Vec::new());
+        let mut h = Header::new_gnu();
+        h.set_entry_type(EntryType::Regular);
+        h.set_mode(0o644);
+        h.set_size(1);
+        h.as_gnu_mut().unwrap().mtime = [0xff; 12];
+        tar.append_data(&mut h, "f", b"x".as_slice()).unwrap();
+        let out = flatten(&[tar.into_inner().unwrap()], b"{}").unwrap();
+        assert_eq!(find(&out, "f").mtime, 0);
     }
 }

@@ -43,14 +43,17 @@ nothing else from the input header.
 - **PAX `uid`, `gid` and `mtime`** replace the header fields, as POSIX
   says, and are written back as header fields. uid and gid must fit 32 bits
   (erofs's limit). mtime keeps whole seconds, and times before the epoch
-  become 0. A field that does not parse is an error, except an empty
-  (all-NUL or all-space) field, which GNU tar and mkfs.erofs read as 0.
+  (in PAX or in GNU base-256) become 0. A field that does not parse is an
+  error, except an empty (all-NUL or all-space) field, which GNU tar and
+  mkfs.erofs read as 0.
 - **xattrs:** only `SCHILY.xattr.*` records erofs stores: the `user.`,
   `trusted.` and `security.` namespaces, and `system.posix_acl_access` and
   `system.posix_acl_default`. Others, such as macOS's `com.apple.*`, are
-  dropped, as mkfs.erofs would drop them. The kernel parses two values and
-  refuses to read malformed ones, so those are dropped too: a
-  `security.capability` that is not a revision 1, 2 or 3 `vfs_cap_data`,
+  dropped, as mkfs.erofs would drop them. The kernel parses two values on
+  read, so they are written as it reads them, and dropped where it refuses
+  them: a `security.capability` must be a revision 2 or 3 `vfs_cap_data`
+  with no flag but the effective bit, and not a root uid of `0xffffffff`
+  (revision 3 with root uid 0 reads back, and is written, as revision 2);
   and an ACL that is not version 2 with at least one 8-byte entry, all with
   known tags and no named user or group of id `0xffffffff`. Every other
   PAX record (`uname`, `gname`, `atime`, `ctime`, `LIBARCHIVE.xattr.*`,
