@@ -64,10 +64,12 @@ impl Store {
 }
 ```
 
-- `write` commits when the closure returns `Ok`. Any `Err` aborts the whole
-  write, whichever call returned it, so a write never commits half a change.
-  A caller that wants to try one thing and fall back to another reads first,
-  in the same transaction.
+- `write` commits when the closure returns `Ok` and no store method in it
+  failed. A store method that returns `Err` marks the transaction failed,
+  and `write` then aborts and returns that error, even if the closure caught
+  it and returned `Ok`. So a write never commits half a change. A caller
+  that wants to try one thing and fall back to another reads first, in the
+  same transaction.
 - The closure's error type is the caller's, so a request or reconcile error
   needs no store variant.
 - `ReadTxn` and `WriteTxn` both implement a sealed `Reads` trait, which holds
@@ -90,8 +92,9 @@ record the result.
 ### Errors
 
 - **Typed errors**, such as `NotFound`, `AlreadyExists`,
-  `Conflict { field, value, holder }`, `StillReferenced` and `Stale`, are for
-  the caller to handle.
+  `Conflict { field, value, holder }`, `StillReferenced` and `Stale`, abort
+  the write and go back to the caller. The caller decides whether to report
+  them or to retry with a new write.
 - **Storage and corruption errors are fatal.** These are any redb error, and
   a row that will not decode, which is reported with its table and key. After
   any I/O error, redb fails every later operation until the database is
@@ -153,22 +156,36 @@ Kubernetes' `resourceVersion` work:
 - A recreated key gets a fresh, higher revision. So a caller holding the
   revision of a row that has since been deleted can never match the new one,
   which a per-row counter starting at 1 would allow.
+- A revision carries the store's **epoch** as well as its number. `meta` holds
+  the epoch, a random id that `init` sets and that every restore or load
+  replaces. A restored store's counter starts again from an older value, so
+  a number alone could match a different row. A revision from another epoch
+  never matches.
 - Revisions order every change in the store, and "has anything changed since
   R?" is one read of `meta`.
 
 **Every write method takes a `Precondition`:** `Any`, `Absent` or
 `At(revision)`. A row that does not match returns
 `Stale { key, expected, actual }`. Like any `Err`, it aborts the whole write,
-so a write over several rows applies all of them or none.
+caught or not, so a write over several rows applies all of them or none.
 
 - **Spec and status get revisions of their own,** because they are separate
   tables. A status write never moves the spec's revision, so the spec's
   revision acts as Kubernetes' `generation`. A status can record the spec
   revision it acted on, as `observedGeneration` does.
+- **A status write takes a second precondition, on its spec.**
+  `set_<kind>_status` takes one `Precondition` for the status row and one
+  for the spec row, checked in the same transaction. A spec that no longer
+  matches returns `Stale` naming the spec row.
 - **Reconcile's last step is conditional.** It reads a spec at revision R,
   records its intent, acts outside the store, then records the result only
   if the spec is still at R. If the operator changed the spec meanwhile, the
   stale result is refused rather than written over the change.
+- **Reconcile runs one at a time per resource, and a refused result starts
+  another run.** Preconditions protect the store, not the host. An older
+  run's host change cannot be undone by refusing its result, so runs for one
+  resource never overlap. A `Stale` result queues a new run against the
+  current spec, which corrects the host.
 - **The CLI** can apply unconditionally. A read-edit-write command sends back
   the revision it read.
 
@@ -199,10 +216,18 @@ its holder, and it outlives the resource that used it:
 **The host can know of values the store does not.** For example, after the
 pre-migration copy is restored, VMs created since the copy still have their
 units, TAPs and chroots. So at start, before its first allocation, the
-daemon finds every value still in use on the host, by its units, TAPs and
-jail chroots. Each one no allocation records becomes a releasing allocation
-with no holder, and is torn down like any other. So a value is never reused
-while something on the host still carries it.
+daemon finds every value still in use on the host, and which holder uses it.
+Units and jail chroots are named by instance id, which gives the holder, and
+a TAP's name gives the value.
+
+- A value no allocation records becomes a releasing allocation with no
+  holder, and is torn down like any other.
+- A value whose host holder differs from its allocation's holder conflicts.
+  An example is index 5, held by A in a restored copy but used by B since.
+  B's resources are torn down, and A is not started on that value until the
+  teardown is confirmed.
+
+So a value is never reused while something on the host still carries it.
 
 ### Check
 
@@ -238,14 +263,16 @@ after every operation, and the CLI exposes it as a debug command.
   or removed.
 - **A copy first:** before migrating, `open` copies the file to
   `dassie.redb.v<N>`. A store newer than the binary is refused, so rolling
-  the binary back past a bump means restoring that copy. Changes made since
-  the copy are lost, and the start-up scan for host values (above) tears
-  down what they left on the host.
+  the binary back past a bump means restoring that copy, with
+  `dassie store restore`, which gives it a new epoch. Changes made since the
+  copy are lost, and the start-up scan for host values (above) tears down
+  what they left on the host.
 
 ### Dump and load
 
-`dassie store dump` and `dassie store load` run with the daemon stopped,
-which the exclusive open enforces. A dump writes every table as JSON, and a
+`dassie store dump`, `load` and `restore` run with the daemon stopped,
+which the exclusive open enforces. `load` and `restore` give the store a new
+epoch. A dump writes every table as JSON, and a
 row that will not decode as its raw bytes, so it works on exactly the store
 the daemon refused. One tool covers four needs:
 
@@ -307,9 +334,11 @@ All of it runs on macOS.
   daemon stopped, or an export from the running daemon.
 - Lookups scan. That is fine at this scale, and a store that grows past it
   can add stored indexes without changing callers.
-- Conditional writes make read-act-write safe across separate transactions,
-  which reconcile's "intent, act, result" depends on. They also leave room
-  for a change feed or watch later, keyed by revision.
+- Conditional writes keep the store consistent across separate
+  transactions, so a stale result never overwrites a newer spec. The host is
+  kept right by running reconcile one at a time per resource, and rerunning
+  it after a refused result. Revisions also leave room for a change feed or
+  watch later.
 - A daemon cannot be rolled back past a schema bump except by restoring the
   copy `open` made.
 - An I/O error restarts the daemon rather than being handled in place.
