@@ -330,9 +330,9 @@ impl Tree {
                         append_xattrs(&mut tar, &meta)?;
                         match entry.header().entry_type() {
                             t @ EntryType::Symlink => {
-                                let target = entry.link_name()?.unwrap_or_default().into_owned();
+                                let target = entry.link_name_bytes().unwrap_or_default();
                                 let mut header = meta.header(t, 0);
-                                tar.append_link(&mut header, &path, target)?;
+                                append_symlink(&mut tar, &mut header, &path, &target)?;
                             }
                             t @ (EntryType::Char | EntryType::Block) => {
                                 let mut header = meta.header(t, 0);
@@ -499,6 +499,8 @@ fn link_target<R: Read>(entry: &tar::Entry<'_, R>) -> Result<PathBuf, Error> {
     normalise(&raw)?.ok_or_else(|| Error::BadPath(raw.into_owned()))
 }
 
+const XATTR_PREFIX: &str = "SCHILY.xattr.";
+
 /// xattr namespaces erofs stores, besides the two POSIX ACLs. mkfs.erofs
 /// drops others (macOS's `com.apple.*`, for one), so they are dropped here
 /// too.
@@ -547,7 +549,9 @@ impl Meta {
         let mut uid = number(header.uid(), &old.uid, "uid")?;
         let mut gid = number(header.gid(), &old.gid, "gid")?;
         let mut mtime = number(header.mtime(), &old.mtime, "mtime")?;
-        let mut xattrs = Vec::new();
+        // The last record for a key wins, as in mkfs.erofs, before any is
+        // judged.
+        let mut records = BTreeMap::new();
         if let Some(exts) = entry.pax_extensions()? {
             for ext in exts {
                 let ext = ext?;
@@ -567,16 +571,20 @@ impl Meta {
                     "mtime" => {
                         mtime = text().and_then(pax_time).ok_or_else(|| bad("mtime"))?;
                     }
-                    _ => {
-                        if let Some(name) = key.strip_prefix("SCHILY.xattr.")
-                            && keep_xattr(name, ext.value_bytes())
-                        {
-                            xattrs.push((key.to_owned(), ext.value_bytes().to_vec()));
-                        }
+                    _ if key.starts_with(XATTR_PREFIX) => {
+                        records.insert(key.to_owned(), ext.value_bytes().to_vec());
                     }
+                    _ => {}
                 }
             }
         }
+        let xattrs = records
+            .into_iter()
+            .filter(|(k, v)| {
+                k.strip_prefix(XATTR_PREFIX)
+                    .is_some_and(|n| keep_xattr(n, v))
+            })
+            .collect();
         Ok(Self {
             mode,
             uid: uid.try_into().map_err(|_| bad("uid"))?,
@@ -668,6 +676,31 @@ fn device(path: &Path, header: &Header) -> Result<(u32, u32), Error> {
         .flatten()
         .ok_or_else(|| bad("device minor"))?;
     Ok((major, minor))
+}
+
+/// Writes a symlink with its target byte for byte. `Builder::append_link`
+/// drops `.` components and trailing slashes from a target that fits the
+/// header (or would, cleaned up), which changes what `readlink` returns. A
+/// longer target goes in a `././@LongLink` entry of type `K`, as the builder
+/// would write it.
+fn append_symlink<W: Write>(
+    tar: &mut Builder<W>,
+    header: &mut Header,
+    path: &Path,
+    target: &[u8],
+) -> io::Result<()> {
+    let field = header.as_old().linkname.len();
+    if target.len() > field {
+        let mut long = owned_header(EntryType::GNULongLink, 0o644, target.len() as u64 + 1);
+        long.as_gnu_mut()
+            .ok_or_else(|| io::Error::other("not a GNU header"))?
+            .name[..13]
+            .copy_from_slice(b"././@LongLink");
+        long.set_cksum();
+        tar.append(&long, target.chain(&[0][..]))?;
+    }
+    header.set_link_name_literal(target.get(..field).unwrap_or(target))?;
+    tar.append_data(header, path, io::empty())
 }
 
 fn append_xattrs<W: Write>(tar: &mut Builder<W>, meta: &Meta) -> io::Result<()> {
@@ -802,7 +835,14 @@ pub(crate) mod tests {
             .unwrap()
             .map(|e| {
                 let mut e = e.unwrap();
-                let xattrs = Meta::read(Path::new(""), &mut e).unwrap().xattrs;
+                // Every PAX record the output carries, unfiltered.
+                let xattrs = e.pax_extensions().unwrap().map_or_default(|exts| {
+                    exts.map(|x| {
+                        let x = x.unwrap();
+                        (x.key().unwrap().to_owned(), x.value_bytes().to_vec())
+                    })
+                    .collect()
+                });
                 let h = e.header().clone();
                 let mut data = String::new();
                 e.read_to_string(&mut data).unwrap();
@@ -1335,7 +1375,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["SCHILY.xattr.user.keep", "SCHILY.xattr.trusted.empty"]
+            ["SCHILY.xattr.trusted.empty", "SCHILY.xattr.user.keep"]
         );
 
         // `user::rw-`, `group::r--`, `other::r--`, as setfacl writes it.
@@ -1352,5 +1392,37 @@ pub(crate) mod tests {
         );
         let out = flatten(&[layer], b"{}").unwrap();
         assert_eq!(find(&out, "f").xattrs.len(), 2);
+    }
+
+    #[test]
+    fn the_last_xattr_record_wins_before_filtering() {
+        // mkfs.erofs keeps the last value for a key, so a malformed last
+        // capability means none, whatever came first.
+        for (records, kept) in [
+            ([CAP.as_slice(), b"\x01"], 0),
+            ([b"\x01".as_slice(), CAP.as_slice()], 1),
+        ] {
+            let pax: Vec<_> = records
+                .iter()
+                .map(|v| ("SCHILY.xattr.security.capability", *v))
+                .collect();
+            let out = flatten(&[with_pax(EntryType::Regular, &pax)], b"{}").unwrap();
+            assert_eq!(find(&out, "f").xattrs.len(), kept);
+        }
+    }
+
+    #[test]
+    fn symlink_targets_are_written_byte_for_byte() {
+        let long = format!("{}/./x/", "a".repeat(120));
+        let short_cleaned = format!("{}x", "./".repeat(60));
+        for target in ["f/.", "./f", "d//f/", short_cleaned.as_str(), long.as_str()] {
+            // `Builder::append_link` would clean the fixture's target too.
+            let mut tar = Builder::new(Vec::new());
+            let mut h = Layer::header(EntryType::Symlink, 0o777, 0, 0, 0);
+            append_symlink(&mut tar, &mut h, Path::new("l"), target.as_bytes()).unwrap();
+            let layer = tar.into_inner().unwrap();
+            let out = flatten(&[layer], b"{}").unwrap();
+            assert_eq!(find(&out, "l").link, target);
+        }
     }
 }
