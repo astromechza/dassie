@@ -127,8 +127,6 @@ jobs:
       - name: Replay through mkfs.erofs
         id: replay
         if: matrix.target == 'flatten_bytes'
-        # Known divergences until the flattener rebuilds headers itself.
-        continue-on-error: true
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends erofs-utils

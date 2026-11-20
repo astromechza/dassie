@@ -22,7 +22,10 @@ use crate::store::{self, Image, Store};
 ///
 /// 3: erofs with lz4hc instead of ext4, and an explicit `0755 root` root
 /// (ADR 0009).
-pub const FORMAT_VERSION: u32 = 3;
+///
+/// 4: fresh tar headers, so mkfs.erofs reads only fields the flattener
+/// checked (ADR 0017).
+pub const FORMAT_VERSION: u32 = 4;
 
 /// The artefact's file extension: its filesystem type, as `rootfstype=`
 /// names it.

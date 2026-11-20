@@ -75,6 +75,10 @@ hex>.v<N>.ext4`.
    Headers and PAX records are copied as they are, so numeric ids, modes,
    device numbers and `SCHILY.xattr.*` reach the filesystem unchanged.
 
+   _Superseded by [ADR 0017](0017-flattener-writes-fresh-tar-headers.md):
+   every output header is written fresh, carrying only the fields the
+   flattener parsed and checked._
+
 Layers may be uncompressed or gzip. zstd is rejected for now.
 
 _Superseded by [ADR 0009](0009-read-only-rootfs-format-erofs.md): the

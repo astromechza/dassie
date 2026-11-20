@@ -11,9 +11,12 @@
 //!    keeps hard link targets ahead of their links. `/.dassie/image.json` goes
 //!    last.
 //!
-//! Headers are copied, not rebuilt, so numeric uid/gid, mode, mtime, device
-//! numbers and PAX records (including `SCHILY.xattr.*`) reach the filesystem
-//! unchanged. Nothing is ever unpacked to a host directory.
+//! Every output header is written fresh (ADR 0017): one GNU header per entry
+//! carrying only what dassie read and checked (type, path, link target,
+//! mode, numeric uid/gid, mtime, size, device numbers), plus the entry's
+//! `SCHILY.xattr.*` records in namespaces erofs stores. Nothing else in an
+//! input header reaches mkfs.erofs, so it cannot read a field differently
+//! from the `tar` crate here. Nothing is ever unpacked to a host directory.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -42,9 +45,17 @@ pub enum Error {
     /// readers, cuts the name at the first one, so it would build a
     /// different tree from the one checked here.
     BadPath(PathBuf),
-    /// An entry type dassie does not carry over: GNU sparse files, and PAX
-    /// or GNU extension headers in a format tar did not recognise.
+    /// An entry type dassie does not carry over: anything but regular
+    /// files, directories, symlinks, hard links, devices and FIFOs. That
+    /// covers GNU sparse files, and PAX or GNU extension headers in a format
+    /// tar did not recognise.
     Unsupported(PathBuf, EntryType),
+    /// A header field or PAX record that does not parse, or does not fit
+    /// the filesystem (uid and gid are 32-bit in erofs).
+    BadField {
+        path: PathBuf,
+        field: &'static str,
+    },
     /// A hard link to a path no lower entry created.
     DanglingLink {
         path: PathBuf,
@@ -67,6 +78,7 @@ impl fmt::Display for Error {
                 p.as_os_str().as_encoded_bytes().escape_ascii()
             ),
             Self::Unsupported(p, t) => write!(f, "{}: unsupported entry type {t:?}", p.display()),
+            Self::BadField { path, field } => write!(f, "{}: bad {field}", path.display()),
             Self::DanglingLink { path, target } => {
                 write!(
                     f,
@@ -104,16 +116,13 @@ enum Source {
 
 #[derive(Debug, Clone)]
 enum Kind {
-    /// Kept whole: directories are emitted from the stored header.
-    Dir {
-        header: Box<Header>,
-        pax: Vec<(String, Vec<u8>)>,
-    },
+    /// Directories are emitted from what pass 1 read.
+    Dir(Meta),
     Hardlink {
         target: PathBuf,
         target_source: Source,
     },
-    /// Files, symlinks and special files: copied from the layer in pass 2.
+    /// Files, symlinks and special files: written from the layer in pass 2.
     Other,
 }
 
@@ -192,23 +201,25 @@ impl Tree {
                 }
                 Action::Put(path) => steps.push(match entry.header().entry_type() {
                     EntryType::Directory => Step::Put {
+                        kind: Kind::Dir(Meta::read(&path, &mut entry)?),
                         path,
                         index,
-                        kind: Kind::Dir {
-                            header: Box::new(entry.header().clone()),
-                            pax: pax(&mut entry)?,
-                        },
                     },
                     EntryType::Link => Step::Link {
                         path,
                         index,
                         target: link_target(&entry)?,
                     },
-                    _ => Step::Put {
-                        path,
-                        index,
-                        kind: Kind::Other,
-                    },
+                    _ => {
+                        // Checked now, so a bad field fails the scan rather
+                        // than halfway through writing the output.
+                        Meta::read(&path, &mut entry)?;
+                        Step::Put {
+                            path,
+                            index,
+                            kind: Kind::Other,
+                        }
+                    }
                 }),
             }
         }
@@ -235,7 +246,7 @@ impl Tree {
                     let target_source = self
                         .nodes
                         .get(&target)
-                        .filter(|t| !matches!(t.kind, Kind::Dir { .. }))
+                        .filter(|t| !matches!(t.kind, Kind::Dir(_)))
                         .map(|t| t.source)
                         .ok_or_else(|| Error::DanglingLink {
                             path: path.clone(),
@@ -287,15 +298,10 @@ impl Tree {
         root.set_cksum();
         tar.append(&root, io::empty())?;
         for (path, node) in &self.nodes {
-            match &node.kind {
-                Kind::Dir { header, pax } => {
-                    let mut header = header.as_ref().clone();
-                    clear_prefix(&mut header);
-                    header.set_size(0);
-                    append_pax(&mut tar, pax)?;
-                    tar.append_data(&mut header, path, io::empty())?;
-                }
-                Kind::Hardlink { .. } | Kind::Other => {}
+            if let Kind::Dir(meta) = &node.kind {
+                let mut header = meta.header(EntryType::Directory, 0);
+                append_xattrs(&mut tar, meta)?;
+                tar.append_data(&mut header, path, io::empty())?;
             }
         }
         for layer in 0..self.layers {
@@ -311,24 +317,40 @@ impl Tree {
                 if node.source != (Source::Entry { layer, index }) {
                     continue;
                 }
-                let pax = pax(&mut entry)?;
-                let mut header = entry.header().clone();
-                clear_prefix(&mut header);
                 match &node.kind {
-                    Kind::Dir { .. } => {}
+                    Kind::Dir(_) => {}
+                    // A hard link names its target's inode: mkfs.erofs
+                    // takes nothing else from its header.
                     Kind::Hardlink { target, .. } => {
-                        header.set_size(0);
-                        append_pax(&mut tar, &pax)?;
+                        let mut header = Meta::owned(0o644).header(EntryType::Link, 0);
                         tar.append_link(&mut header, &path, target)?;
                     }
                     Kind::Other => {
-                        append_pax(&mut tar, &pax)?;
-                        if header.entry_type() == EntryType::Symlink {
-                            let target = entry.link_name()?.unwrap_or_default().into_owned();
-                            tar.append_link(&mut header, &path, target)?;
-                        } else {
-                            header.set_size(entry.size());
-                            tar.append_data(&mut header, &path, &mut entry)?;
+                        let meta = Meta::read(&path, &mut entry)?;
+                        append_xattrs(&mut tar, &meta)?;
+                        match entry.header().entry_type() {
+                            t @ EntryType::Symlink => {
+                                let target = entry.link_name_bytes().unwrap_or_default();
+                                let mut header = meta.header(t, 0);
+                                append_symlink(&mut tar, &mut header, &path, &target)?;
+                            }
+                            t @ (EntryType::Char | EntryType::Block) => {
+                                let mut header = meta.header(t, 0);
+                                let (major, minor) = device(&path, entry.header())?;
+                                header.set_device_major(major)?;
+                                header.set_device_minor(minor)?;
+                                tar.append_data(&mut header, &path, io::empty())?;
+                            }
+                            t @ EntryType::Fifo => {
+                                let mut header = meta.header(t, 0);
+                                tar.append_data(&mut header, &path, io::empty())?;
+                            }
+                            // Regular or contiguous (`classify` allows no
+                            // other type here): both are plain files.
+                            _ => {
+                                let mut header = meta.header(EntryType::Regular, entry.size());
+                                tar.append_data(&mut header, &path, &mut entry)?;
+                            }
                         }
                     }
                 }
@@ -354,8 +376,8 @@ impl Tree {
         let replaces_dir = self
             .nodes
             .get(&path)
-            .is_some_and(|old| matches!(old.kind, Kind::Dir { .. }));
-        if replaces_dir && !matches!(node.kind, Kind::Dir { .. }) {
+            .is_some_and(|old| matches!(old.kind, Kind::Dir(_)));
+        if replaces_dir && !matches!(node.kind, Kind::Dir(_)) {
             self.remove_children(&path);
         }
         self.nodes.insert(path, node);
@@ -371,16 +393,13 @@ impl Tree {
             let is_dir = self
                 .nodes
                 .get(ancestor)
-                .is_some_and(|n| matches!(n.kind, Kind::Dir { .. }));
+                .is_some_and(|n| matches!(n.kind, Kind::Dir(_)));
             if !is_dir {
                 self.nodes.insert(
                     ancestor.to_path_buf(),
                     Node {
                         source: Source::Implied { layer },
-                        kind: Kind::Dir {
-                            header: Box::new(owned_header(EntryType::Directory, 0o755, 0)),
-                            pax: Vec::new(),
-                        },
+                        kind: Kind::Dir(Meta::owned(0o755)),
                     },
                 );
             }
@@ -416,15 +435,21 @@ fn classify<R: Read>(entry: &tar::Entry<'_, R>) -> Result<Action, Error> {
     if path.starts_with(DASSIE_DIR) {
         return Ok(Action::Skip);
     }
-    // tar only hands over PAX and GNU long name headers as entries when it
-    // does not recognise the header's format, so it has not applied them.
-    // Copied out, mkfs might, and read a different archive from the one
-    // checked here. `pax` would also consume their data.
-    if entry_type.is_gnu_sparse()
-        || entry_type.is_pax_local_extensions()
-        || entry_type.is_gnu_longname()
-        || entry_type.is_gnu_longlink()
-    {
+    // Anything else has no inode to carry over, or (GNU sparse files) data
+    // tar does not decode. tar also hands over PAX and GNU long name headers
+    // as entries when it does not recognise the header's format, so it has
+    // not applied them.
+    if !matches!(
+        entry_type,
+        EntryType::Regular
+            | EntryType::Continuous
+            | EntryType::Directory
+            | EntryType::Symlink
+            | EntryType::Link
+            | EntryType::Char
+            | EntryType::Block
+            | EntryType::Fifo
+    ) {
         return Err(Error::Unsupported(path, entry_type));
     }
     // Symlink targets are not paths in the tree, so `normalise` never sees
@@ -474,47 +499,288 @@ fn link_target<R: Read>(entry: &tar::Entry<'_, R>) -> Result<PathBuf, Error> {
     normalise(&raw)?.ok_or_else(|| Error::BadPath(raw.into_owned()))
 }
 
-/// The entry's PAX records, minus those the builder writes itself.
-fn pax<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<Vec<(String, Vec<u8>)>, Error> {
-    let Some(exts) = entry.pax_extensions()? else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    for ext in exts {
-        let ext = ext?;
-        let key = ext
-            .key()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if !matches!(key, "path" | "linkpath" | "size") {
-            out.push((key.to_owned(), ext.value_bytes().to_vec()));
+const XATTR_PREFIX: &str = "SCHILY.xattr.";
+
+/// xattr namespaces erofs stores, besides the two POSIX ACLs. mkfs.erofs
+/// drops others (macOS's `com.apple.*`, for one), so they are dropped here
+/// too.
+const XATTR_NAMESPACES: [&str; 3] = ["user.", "trusted.", "security."];
+
+/// What an entry's inode carries into the rootfs. Nothing else in its header
+/// or PAX records is written out.
+#[derive(Debug, Clone)]
+struct Meta {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    mtime: u64,
+    /// `SCHILY.xattr.*` records in [`XATTR_NAMESPACES`], keys as written.
+    xattrs: Vec<(String, Vec<u8>)>,
+}
+
+impl Meta {
+    fn owned(mode: u32) -> Self {
+        Self {
+            mode,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+            xattrs: Vec::new(),
         }
     }
-    Ok(out)
+
+    /// Reads the entry's header fields, with PAX `uid`, `gid` and `mtime`
+    /// records in their place where present, as POSIX says.
+    fn read<R: Read>(path: &Path, entry: &mut tar::Entry<'_, R>) -> Result<Self, Error> {
+        let bad = |field| Error::BadField {
+            path: path.to_path_buf(),
+            field,
+        };
+        let header = entry.header();
+        let old = header.as_old();
+        // GNU tar and mkfs.erofs read an empty field as 0; tar refuses it.
+        let number = |value: io::Result<u64>, raw: &[u8], field| match value {
+            Ok(v) => Ok(v),
+            Err(_) if raw.iter().all(|&b| b == 0 || b == b' ') => Ok(0),
+            Err(_) => Err(bad(field)),
+        };
+        // The masked value always fits.
+        let mode = (number(header.mode().map(u64::from), &old.mode, "mode")? & 0o7777) as u32;
+        let mut uid = number(header.uid(), &old.uid, "uid")?;
+        let mut gid = number(header.gid(), &old.gid, "gid")?;
+        // A negative GNU base-256 time starts 0xff; tar decodes it as huge.
+        // Times before the epoch become 0, as with PAX.
+        let mut mtime = if old.mtime[0] == 0xff {
+            0
+        } else {
+            number(header.mtime(), &old.mtime, "mtime")?
+        };
+        // The last record for a key wins, as in mkfs.erofs, before any is
+        // judged.
+        let mut records = BTreeMap::new();
+        if let Some(exts) = entry.pax_extensions()? {
+            for ext in exts {
+                let ext = ext?;
+                let key = ext.key().map_err(|_| bad("PAX key"))?;
+                let text = || std::str::from_utf8(ext.value_bytes()).ok();
+                match key {
+                    "uid" => {
+                        uid = text()
+                            .and_then(|v| v.parse().ok())
+                            .ok_or_else(|| bad("uid"))?;
+                    }
+                    "gid" => {
+                        gid = text()
+                            .and_then(|v| v.parse().ok())
+                            .ok_or_else(|| bad("gid"))?;
+                    }
+                    "mtime" => {
+                        mtime = text().and_then(pax_time).ok_or_else(|| bad("mtime"))?;
+                    }
+                    _ if key.starts_with(XATTR_PREFIX) => {
+                        records.insert(key.to_owned(), ext.value_bytes().to_vec());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut xattrs = Vec::new();
+        for (key, value) in records {
+            let name = key.strip_prefix(XATTR_PREFIX).unwrap_or_default();
+            if let Some(value) = guest_xattr(name, value).map_err(bad)? {
+                xattrs.push((key, value));
+            }
+        }
+        Ok(Self {
+            mode,
+            uid: uid.try_into().map_err(|_| bad("uid"))?,
+            gid: gid.try_into().map_err(|_| bad("gid"))?,
+            mtime,
+            xattrs,
+        })
+    }
+
+    /// A fresh GNU header: long names go in `././@LongLink` entries, never a
+    /// ustar prefix, and numbers too big for octal in base-256.
+    fn header(&self, entry_type: EntryType, size: u64) -> Header {
+        let mut h = Header::new_gnu();
+        h.set_entry_type(entry_type);
+        h.set_mode(self.mode);
+        h.set_uid(self.uid.into());
+        h.set_gid(self.gid.into());
+        h.set_mtime(self.mtime);
+        h.set_size(size);
+        h
+    }
 }
 
-fn append_pax<W: Write>(tar: &mut Builder<W>, pax: &[(String, Vec<u8>)]) -> io::Result<()> {
-    if pax.is_empty() {
+/// The xattr value to write so the guest gets what the layer meant: `None`
+/// drops it, an error rejects the entry.
+///
+/// A name must be in a namespace erofs stores; mkfs.erofs drops the others.
+/// The kernel enforces two values, and neither may simply be dropped: file
+/// capabilities restrict a setuid-root binary, which without them runs with
+/// every capability, and an ACL it cannot parse denies all access, which
+/// without it the mode bits would grant. So a capability or ACL is written
+/// in the form the kernel enforces and reads back, dropped only where the
+/// kernel would ignore it anyway, and otherwise rejected.
+fn guest_xattr(name: &str, value: Vec<u8>) -> Result<Option<Vec<u8>>, &'static str> {
+    if name.contains('\0') {
+        // mkfs.erofs would cut the name at the NUL: `security.capability\0x`
+        // would become a capability.
+        return Err("xattr name");
+    }
+    match name {
+        "security.capability" => capability(&value),
+        "system.posix_acl_access" | "system.posix_acl_default" => {
+            if value == [2, 0, 0, 0] {
+                // No entries: the kernel reads this as no ACL.
+                Ok(None)
+            } else if valid_acl(&value) {
+                Ok(Some(value))
+            } else {
+                Err("POSIX ACL")
+            }
+        }
+        _ => Ok(XATTR_NAMESPACES
+            .iter()
+            .any(|ns| name.len() > ns.len() && name.starts_with(ns))
+            .then_some(value)),
+    }
+}
+
+/// A POSIX ACL xattr the kernel reads back (`posix_acl_from_xattr`): version
+/// 2, then one or more 8-byte little-endian `(tag, perm, id)` entries. It
+/// reads a header with no entries as no ACL, and refuses other versions and
+/// sizes, unknown tags, and a named user or group with the invalid id
+/// `u32::MAX`. It does not check permissions or the order of entries.
+fn valid_acl(value: &[u8]) -> bool {
+    const USER: u16 = 0x02;
+    const GROUP: u16 = 0x08;
+    const TAGS: [u16; 6] = [0x01, USER, 0x04, GROUP, 0x10, 0x20];
+    let Some((version, entries)) = value.split_first_chunk::<4>() else {
+        return false;
+    };
+    if u32::from_le_bytes(*version) != 2 || entries.is_empty() || !entries.len().is_multiple_of(8) {
+        return false;
+    }
+    entries
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .all(|&[t0, t1, _, _, i0, i1, i2, i3]| {
+            let tag = u16::from_le_bytes([t0, t1]);
+            let id = u32::from_le_bytes([i0, i1, i2, i3]);
+            TAGS.contains(&tag) && !(matches!(tag, USER | GROUP) && id == u32::MAX)
+        })
+}
+
+/// `security.capability` in the form exec enforces it
+/// (`get_vfs_caps_from_disk`) and `getxattr` reads it back
+/// (`cap_inode_getsecurity`), checked against Linux 6.12 on erofs.
+///
+/// - Revision 1 and flag bits other than effective: exec honours them but
+///   `getxattr` refuses them, so they are written as the same revision 2
+///   capability.
+/// - Revision 3 with root uid 0 reads back as revision 2, so it is written
+///   that way. With root uid `u32::MAX` exec ignores it, as if there were
+///   none, so `Ok(None)` drops it. Any other root uid is kept: exec only
+///   honours it in a user namespace with that root.
+/// - Anything else makes exec fail, so it is an error.
+fn capability(value: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
+    const BAD: &str = "security.capability";
+    const REVISION_1: u32 = 0x0100_0000;
+    const REVISION_2: u32 = 0x0200_0000;
+    const REVISION_3: u32 = 0x0300_0000;
+    const EFFECTIVE: u32 = 0x00_0001;
+    let magic = u32::from_le_bytes(*value.first_chunk::<4>().ok_or(BAD)?);
+    let effective = magic & EFFECTIVE;
+    // `permitted` and `inheritable`, low words then (but for revision 1)
+    // high words.
+    let data = value.get(4..).ok_or(BAD)?;
+    let v2 = |data: &[u8]| {
+        let mut out = (REVISION_2 | effective).to_le_bytes().to_vec();
+        out.extend(data);
+        out.resize(20, 0);
+        out
+    };
+    Ok(match (magic & 0xff00_0000, value.len()) {
+        (REVISION_1, 12) | (REVISION_2, 20) => Some(v2(data)),
+        (REVISION_3, 24) => {
+            let (caps, root) = data.split_last_chunk::<4>().ok_or(BAD)?;
+            match u32::from_le_bytes(*root) {
+                u32::MAX => None,
+                0 => Some(v2(caps)),
+                _ => {
+                    let mut out = (REVISION_3 | effective).to_le_bytes().to_vec();
+                    out.extend(data);
+                    Some(out)
+                }
+            }
+        }
+        _ => return Err(BAD),
+    })
+}
+
+/// A PAX time (`123`, `123.456`, `-1.5`) in whole seconds. Times before the
+/// epoch become 0: erofs stores them unsigned.
+fn pax_time(s: &str) -> Option<u64> {
+    let (secs, frac) = s.split_once('.').unwrap_or((s, ""));
+    if !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let secs: i64 = secs.parse().ok()?;
+    Some(secs.try_into().unwrap_or(0))
+}
+
+fn device(path: &Path, header: &Header) -> Result<(u32, u32), Error> {
+    let bad = |field| Error::BadField {
+        path: path.to_path_buf(),
+        field,
+    };
+    let major = header
+        .device_major()
+        .ok()
+        .flatten()
+        .ok_or_else(|| bad("device major"))?;
+    let minor = header
+        .device_minor()
+        .ok()
+        .flatten()
+        .ok_or_else(|| bad("device minor"))?;
+    Ok((major, minor))
+}
+
+/// Writes a symlink with its target byte for byte. `Builder::append_link`
+/// drops `.` components and trailing slashes from a target that fits the
+/// header (or would, cleaned up), which changes what `readlink` returns. A
+/// longer target goes in a `././@LongLink` entry of type `K`, as the builder
+/// would write it.
+fn append_symlink<W: Write>(
+    tar: &mut Builder<W>,
+    header: &mut Header,
+    path: &Path,
+    target: &[u8],
+) -> io::Result<()> {
+    let field = header.as_old().linkname.len();
+    if target.len() > field {
+        let mut long = owned_header(EntryType::GNULongLink, 0o644, target.len() as u64 + 1);
+        long.as_gnu_mut()
+            .ok_or_else(|| io::Error::other("not a GNU header"))?
+            .name[..13]
+            .copy_from_slice(b"././@LongLink");
+        long.set_cksum();
+        tar.append(&long, target.chain(&[0][..]))?;
+    }
+    header.set_link_name_literal(target.get(..field).unwrap_or(target))?;
+    tar.append_data(header, path, io::empty())
+}
+
+fn append_xattrs<W: Write>(tar: &mut Builder<W>, meta: &Meta) -> io::Result<()> {
+    if meta.xattrs.is_empty() {
         return Ok(());
     }
-    tar.append_pax_extensions(pax.iter().map(|(k, v)| (k.as_str(), v.as_slice())))
-}
-
-/// Zeroes the bytes a copied header holds where ustar keeps its path
-/// `prefix`, before the builder writes the normalised path.
-///
-/// - ustar: the old `prefix` itself. `Header::set_path` leaves it alone when
-///   the path fits the name field, so `d/f` (prefix `d`, name `f`) would
-///   come out as `d/d/f`.
-/// - GNU: `atime` and `ctime`. mkfs.erofs (1.8.6) reads that field as a path
-///   prefix whatever the format, so `bin/app` with an atime of `1` would land
-///   at `00000000001/bin/app`. Neither time reaches the filesystem anyway.
-fn clear_prefix(header: &mut Header) {
-    if let Some(ustar) = header.as_ustar_mut() {
-        ustar.prefix = [0; 155];
-    } else if let Some(gnu) = header.as_gnu_mut() {
-        gnu.atime = [0; 12];
-        gnu.ctime = [0; 12];
-    }
+    tar.append_pax_extensions(meta.xattrs.iter().map(|(k, v)| (k.as_str(), v.as_slice())))
 }
 
 /// A root-owned header with a fixed mtime, so builds are reproducible.
@@ -532,6 +798,11 @@ pub(crate) fn owned_header(entry_type: EntryType, mode: u32, size: u64) -> Heade
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A revision 2 `vfs_cap_data` granting `CAP_NET_RAW`, as setcap writes it.
+    const CAP: [u8; 20] = [
+        0x01, 0, 0, 0x02, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
 
     /// Builds layer tars in memory.
     pub(crate) struct Layer(Builder<Vec<u8>>);
@@ -610,6 +881,7 @@ pub(crate) mod tests {
         mode: u32,
         uid: u64,
         gid: u64,
+        mtime: u64,
         data: String,
         link: String,
         xattrs: Vec<(String, Vec<u8>)>,
@@ -636,7 +908,14 @@ pub(crate) mod tests {
             .unwrap()
             .map(|e| {
                 let mut e = e.unwrap();
-                let xattrs = pax(&mut e).unwrap();
+                // Every PAX record the output carries, unfiltered.
+                let xattrs = e.pax_extensions().unwrap().map_or_default(|exts| {
+                    exts.map(|x| {
+                        let x = x.unwrap();
+                        (x.key().unwrap().to_owned(), x.value_bytes().to_vec())
+                    })
+                    .collect()
+                });
                 let h = e.header().clone();
                 let mut data = String::new();
                 e.read_to_string(&mut data).unwrap();
@@ -646,6 +925,7 @@ pub(crate) mod tests {
                     mode: h.mode().unwrap(),
                     uid: h.uid().unwrap(),
                     gid: h.gid().unwrap(),
+                    mtime: h.mtime().unwrap(),
                     data,
                     link: e
                         .link_name()
@@ -866,7 +1146,7 @@ pub(crate) mod tests {
             .dir("home/app", 0o700, 1000)
             .file("srv/data", "d", 0o640, 101)
             .file("usr/bin/su", "elf", 0o4755, 0)
-            .xattr("security.capability", b"\x01\x00\x00\x02")
+            .xattr("security.capability", &CAP)
             .file("usr/bin/ping", "elf", 0o755, 0)
             .char_dev("dev/null", 1, 3)
             .symlink("lib", "usr/lib")
@@ -879,10 +1159,7 @@ pub(crate) mod tests {
         assert_eq!(find(&out, "usr/bin/su").mode, 0o4755);
         assert_eq!(
             find(&out, "usr/bin/ping").xattrs,
-            [(
-                "SCHILY.xattr.security.capability".to_owned(),
-                b"\x01\x00\x00\x02".to_vec()
-            )]
+            [("SCHILY.xattr.security.capability".to_owned(), CAP.to_vec())]
         );
         assert_eq!(find(&out, "dev/null").kind, EntryType::Char);
         assert_eq!(find(&out, "lib").link, "usr/lib");
@@ -1039,5 +1316,316 @@ pub(crate) mod tests {
             paths(&out),
             ["d", "d/e", "d/f", ".dassie", ".dassie/image.json"]
         );
+    }
+
+    /// A layer whose one entry, `f`, has `ty` and the PAX records `pax`.
+    fn with_pax(ty: EntryType, pax: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut tar = Builder::new(Vec::new());
+        tar.append_pax_extensions(pax.iter().copied()).unwrap();
+        let mut h = Layer::header(ty, 0o644, 1, 1, 1);
+        tar.append_data(&mut h, "f", b"x".as_slice()).unwrap();
+        tar.into_inner().unwrap()
+    }
+
+    #[test]
+    fn output_headers_are_written_fresh() {
+        // Found by the flatten_erofs fuzz target: copied v7 headers and
+        // headers with a mangled magic made mkfs.erofs fail ("invalid tar
+        // magic", "chksum mismatch"), and fields dassie never reads went
+        // straight through.
+        let mut tar = Builder::new(Vec::new());
+        let mut v7 = Header::new_old();
+        v7.set_entry_type(EntryType::Regular);
+        v7.set_mode(0o100_755);
+        v7.set_uid(7);
+        v7.set_size(1);
+        tar.append_data(&mut v7, "v7", b"x".as_slice()).unwrap();
+        let mut odd = Layer::header(EntryType::Regular, 0o644, 0, 0, 1);
+        odd.as_ustar_mut().unwrap().uname[..4].copy_from_slice(b"evil");
+        odd.as_mut_bytes()[257..265].copy_from_slice(b"star  \0\0");
+        tar.append_data(&mut odd, "odd", b"y".as_slice()).unwrap();
+        let layer = tar.into_inner().unwrap();
+
+        let mut tree = Tree::new();
+        tree.scan(layer.as_slice()).unwrap();
+        tree.finish().unwrap();
+        let out = tree
+            .emit(|_| Ok(layer.as_slice()), b"{}", Vec::new())
+            .unwrap();
+        let mut archive = Archive::new(out.as_slice());
+        let mut seen = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let entry = entry.unwrap();
+            let gnu = entry.header().as_gnu().expect("a GNU header");
+            assert_eq!((gnu.uname, gnu.gname), ([0; 32], [0; 32]));
+            seen.push((
+                entry.path().unwrap().to_string_lossy().into_owned(),
+                entry.header().mode().unwrap(),
+                entry.header().uid().unwrap(),
+            ));
+        }
+        // Mode type bits are dropped.
+        assert_eq!(
+            seen[1..3],
+            [("v7".into(), 0o755, 7), ("odd".into(), 0o644, 0)]
+        );
+    }
+
+    #[test]
+    fn pax_numbers_replace_header_fields() {
+        let layer = with_pax(
+            EntryType::Regular,
+            &[
+                ("uid", b"70000"),
+                ("gid", b"5"),
+                ("mtime", b"1700000000.25"),
+            ],
+        );
+        let out = flatten(&[layer], b"{}").unwrap();
+        let f = find(&out, "f");
+        assert_eq!((f.uid, f.gid, f.mtime), (70000, 5, 1_700_000_000));
+
+        let before_epoch = with_pax(EntryType::Regular, &[("mtime", b"-5.5")]);
+        let out = flatten(&[before_epoch], b"{}").unwrap();
+        assert_eq!(find(&out, "f").mtime, 0);
+
+        for (key, value) in [
+            ("uid", &b"4294967296"[..]),
+            ("gid", b"x"),
+            ("mtime", b"1.x"),
+        ] {
+            let layer = with_pax(EntryType::Regular, &[(key, value)]);
+            let err = flatten(&[layer], b"{}").unwrap_err();
+            assert!(
+                matches!(err, Error::BadField { field, .. } if field == key),
+                "{key}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_inode_entry_types_are_carried_over() {
+        for ty in *b"VMDZ" {
+            let layer = with_pax(EntryType::new(ty), &[]);
+            let err = flatten(&[layer], b"{}").unwrap_err();
+            assert!(
+                matches!(err, Error::Unsupported(_, t) if t.as_byte() == ty),
+                "{err}"
+            );
+        }
+        let fifo = with_pax(EntryType::Fifo, &[]);
+        assert_eq!(
+            find(&flatten(&[fifo], b"{}").unwrap(), "f").kind,
+            EntryType::Fifo
+        );
+    }
+
+    #[test]
+    fn xattrs_erofs_would_drop_are_dropped() {
+        // Found by the flatten_erofs fuzz target: mkfs.erofs drops unknown
+        // namespaces, `system.posix_acl_ty` among them.
+        let layer = with_pax(
+            EntryType::Regular,
+            &[
+                ("SCHILY.xattr.user.keep", b"1"),
+                ("SCHILY.xattr.trusted.empty", b""),
+                ("SCHILY.xattr.com.apple.provenance", b"2"),
+                ("SCHILY.xattr.user.", b"3"),
+                ("SCHILY.xattr.system.posix_acl_ty", b"\x01"),
+                // No entries: the kernel reads it as no ACL.
+                ("SCHILY.xattr.system.posix_acl_access", b"\x02\0\0\0"),
+                ("LIBARCHIVE.xattr.user.b64", b"NA=="),
+                ("atime", b"1"),
+            ],
+        );
+        let out = flatten(&[layer], b"{}").unwrap();
+        let keys: Vec<_> = find(&out, "f")
+            .xattrs
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            ["SCHILY.xattr.trusted.empty", "SCHILY.xattr.user.keep"]
+        );
+
+        // `user::rw-`, `group::r--`, `other::r--`, as setfacl writes it.
+        let acl = [
+            2, 0, 0, 0, 1, 0, 6, 0, 0xff, 0xff, 0xff, 0xff, 4, 0, 4, 0, 0xff, 0xff, 0xff, 0xff,
+            0x20, 0, 4, 0, 0xff, 0xff, 0xff, 0xff,
+        ];
+        let layer = with_pax(
+            EntryType::Regular,
+            &[
+                ("SCHILY.xattr.security.capability", CAP.as_slice()),
+                ("SCHILY.xattr.system.posix_acl_access", acl.as_slice()),
+            ],
+        );
+        let out = flatten(&[layer], b"{}").unwrap();
+        assert_eq!(find(&out, "f").xattrs.len(), 2);
+    }
+
+    #[test]
+    fn capabilities_and_acls_the_kernel_would_enforce_are_never_dropped() {
+        // Dropping a capability the kernel cannot parse would let a
+        // setuid-root binary run with every capability, where the layer's
+        // binary would not run at all; dropping a bad ACL would let the
+        // mode bits grant what the kernel would deny.
+        for (key, value) in [
+            ("security.capability", &b"\x01"[..]),
+            ("system.posix_acl_access", b"\x01"),
+            (
+                "system.posix_acl_default",
+                b"\x01\0\0\0\x01\0\x06\0\xff\xff\xff\xff",
+            ),
+            ("security.capability\0x", b"1"),
+        ] {
+            let key = format!("SCHILY.xattr.{key}");
+            let err =
+                flatten(&[with_pax(EntryType::Regular, &[(&key, value)])], b"{}").unwrap_err();
+            assert!(matches!(err, Error::BadField { .. }), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn setuid_root_keeps_its_revision_1_capability() {
+        // From review: revision 1 restricts a setuid-root binary to its
+        // capabilities at exec (checked on Linux 6.12), but `getxattr`
+        // refuses it. It is written as the same revision 2 capability.
+        let mut v1 = 0x0100_0001_u32.to_le_bytes().to_vec();
+        v1.extend((1_u32 << 13).to_le_bytes()); // CAP_NET_RAW permitted
+        v1.extend(0_u32.to_le_bytes());
+        let mut tar = Builder::new(Vec::new());
+        tar.append_pax_extensions([("SCHILY.xattr.security.capability", v1.as_slice())])
+            .unwrap();
+        let mut h = Layer::header(EntryType::Regular, 0o4755, 0, 0, 3);
+        tar.append_data(&mut h, "usr/bin/ping", b"elf".as_slice())
+            .unwrap();
+        let out = flatten(&[tar.into_inner().unwrap()], b"{}").unwrap();
+        let ping = find(&out, "usr/bin/ping");
+        assert_eq!((ping.mode, ping.uid), (0o4755, 0));
+        assert_eq!(
+            ping.xattrs,
+            [("SCHILY.xattr.security.capability".to_owned(), CAP.to_vec())]
+        );
+    }
+
+    #[test]
+    fn the_last_xattr_record_wins_before_filtering() {
+        // mkfs.erofs keeps the last value for a key, so a malformed last
+        // capability is what counts, whatever came first.
+        let pax = |values: [&[u8]; 2]| {
+            let pax: Vec<_> = values
+                .iter()
+                .map(|v| ("SCHILY.xattr.security.capability", *v))
+                .collect();
+            flatten(&[with_pax(EntryType::Regular, &pax)], b"{}")
+        };
+        assert!(matches!(
+            pax([CAP.as_slice(), b"\x01"]),
+            Err(Error::BadField { .. })
+        ));
+        let out = pax([b"\x01".as_slice(), CAP.as_slice()]).unwrap();
+        assert_eq!(find(&out, "f").xattrs.len(), 1);
+    }
+
+    #[test]
+    fn symlink_targets_are_written_byte_for_byte() {
+        let long = format!("{}/./x/", "a".repeat(120));
+        let short_cleaned = format!("{}x", "./".repeat(60));
+        for target in ["f/.", "./f", "d//f/", short_cleaned.as_str(), long.as_str()] {
+            // `Builder::append_link` would clean the fixture's target too.
+            let mut tar = Builder::new(Vec::new());
+            let mut h = Layer::header(EntryType::Symlink, 0o777, 0, 0, 0);
+            append_symlink(&mut tar, &mut h, Path::new("l"), target.as_bytes()).unwrap();
+            let layer = tar.into_inner().unwrap();
+            let out = flatten(&[layer], b"{}").unwrap();
+            assert_eq!(find(&out, "l").link, target);
+        }
+    }
+
+    #[test]
+    fn acls_are_kept_only_as_the_kernel_reads_them() {
+        // Each case checked against Linux 6.12 reading an erofs image.
+        fn acl(entries: &[(u16, u16, u32)], version: u32) -> Vec<u8> {
+            let mut v = version.to_le_bytes().to_vec();
+            for (tag, perm, id) in entries {
+                v.extend(tag.to_le_bytes());
+                v.extend(perm.to_le_bytes());
+                v.extend(id.to_le_bytes());
+            }
+            v
+        }
+        let any = u32::MAX;
+        let base = [(0x01, 6, any), (0x04, 4, any), (0x20, 4, any)];
+        for (entries, version, kept) in [
+            (&base[..], 2, true),
+            // Order and permissions are not checked.
+            (&[(0x20, 4, any), (0x01, 6, any), (0x04, 4, any)], 2, true),
+            (&[(0x01, 0xffff, any)], 2, true),
+            (&[(0x02, 6, 1000)], 2, true),
+            (&base, 1, false),
+            (&[], 2, false),
+            (&[(0xffff, 0, any)], 2, false),
+            (&[(0x03, 6, any)], 2, false),
+            (&[(0x01, 6, any), (0x02, 6, any), (0x10, 6, any)], 2, false),
+            (&[(0x08, 6, any)], 2, false),
+        ] {
+            let value = acl(entries, version);
+            assert_eq!(valid_acl(&value), kept, "{entries:x?} v{version}");
+        }
+        assert!(!valid_acl(&[2, 0, 0, 0, 1]));
+    }
+
+    #[test]
+    fn capabilities_are_kept_as_the_kernel_reads_them() {
+        // Each case checked against Linux 6.12 reading an erofs image.
+        fn cap(magic: u32, root: Option<u32>) -> Vec<u8> {
+            let mut v = magic.to_le_bytes().to_vec();
+            v.extend([0, 0x20, 0, 0]);
+            v.extend([0; 12]);
+            v.extend(root.map(u32::to_le_bytes).into_iter().flatten());
+            v
+        }
+        let v1 = |magic: u32| {
+            let mut v = magic.to_le_bytes().to_vec();
+            v.extend([0, 0x20, 0, 0, 0, 0, 0, 0]);
+            v
+        };
+        // `Err`: rejected. `Ok(None)`: dropped, as exec ignores it.
+        for (value, want) in [
+            (cap(0x0200_0001, None), Ok(Some(cap(0x0200_0001, None)))),
+            (cap(0x0200_0000, None), Ok(Some(cap(0x0200_0000, None)))),
+            (v1(0x0100_0001), Ok(Some(cap(0x0200_0001, None)))),
+            (v1(0x0100_0000), Ok(Some(cap(0x0200_0000, None)))),
+            // exec ignores other flag bits; getxattr refuses them.
+            (cap(0x0200_0003, None), Ok(Some(cap(0x0200_0001, None)))),
+            (cap(0x0200_0002, None), Ok(Some(cap(0x0200_0000, None)))),
+            (
+                cap(0x0300_0001, Some(1000)),
+                Ok(Some(cap(0x0300_0001, Some(1000)))),
+            ),
+            (cap(0x0300_0003, Some(0)), Ok(Some(cap(0x0200_0001, None)))),
+            (cap(0x0300_0001, Some(u32::MAX)), Ok(None)),
+            (cap(0x0200_0001, Some(0)), Err("security.capability")),
+            (cap(0x0400_0001, None), Err("security.capability")),
+            (vec![1], Err("security.capability")),
+            (vec![], Err("security.capability")),
+        ] {
+            assert_eq!(capability(&value), want, "{value:x?}");
+        }
+    }
+
+    #[test]
+    fn negative_gnu_times_become_zero() {
+        let mut tar = Builder::new(Vec::new());
+        let mut h = Header::new_gnu();
+        h.set_entry_type(EntryType::Regular);
+        h.set_mode(0o644);
+        h.set_size(1);
+        h.as_gnu_mut().unwrap().mtime = [0xff; 12];
+        tar.append_data(&mut h, "f", b"x".as_slice()).unwrap();
+        let out = flatten(&[tar.into_inner().unwrap()], b"{}").unwrap();
+        assert_eq!(find(&out, "f").mtime, 0);
     }
 }
