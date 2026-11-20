@@ -584,13 +584,13 @@ impl Meta {
                 }
             }
         }
-        let xattrs = records
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let v = guest_xattr(k.strip_prefix(XATTR_PREFIX)?, v)?;
-                Some((k, v))
-            })
-            .collect();
+        let mut xattrs = Vec::new();
+        for (key, value) in records {
+            let name = key.strip_prefix(XATTR_PREFIX).unwrap_or_default();
+            if let Some(value) = guest_xattr(name, value).map_err(bad)? {
+                xattrs.push((key, value));
+            }
+        }
         Ok(Self {
             mode,
             uid: uid.try_into().map_err(|_| bad("uid"))?,
@@ -614,23 +614,38 @@ impl Meta {
     }
 }
 
-/// The xattr value the guest reads back, or `None` to drop it: its name
-/// must be in a namespace erofs stores, and the kernel parses capabilities
-/// and ACLs on read. It refuses a malformed one, so the file has no
-/// capabilities or ACL either way.
-fn guest_xattr(name: &str, value: Vec<u8>) -> Option<Vec<u8>> {
+/// The xattr value to write so the guest gets what the layer meant: `None`
+/// drops it, an error rejects the entry.
+///
+/// A name must be in a namespace erofs stores; mkfs.erofs drops the others.
+/// The kernel enforces two values, and neither may simply be dropped: file
+/// capabilities restrict a setuid-root binary, which without them runs with
+/// every capability, and an ACL it cannot parse denies all access, which
+/// without it the mode bits would grant. So a capability or ACL is written
+/// in the form the kernel enforces and reads back, dropped only where the
+/// kernel would ignore it anyway, and otherwise rejected.
+fn guest_xattr(name: &str, value: Vec<u8>) -> Result<Option<Vec<u8>>, &'static str> {
     if name.contains('\0') {
-        return None;
+        // mkfs.erofs would cut the name at the NUL: `security.capability\0x`
+        // would become a capability.
+        return Err("xattr name");
     }
     match name {
-        "security.capability" => capability(value),
+        "security.capability" => capability(&value),
         "system.posix_acl_access" | "system.posix_acl_default" => {
-            valid_acl(&value).then_some(value)
+            if value == [2, 0, 0, 0] {
+                // No entries: the kernel reads this as no ACL.
+                Ok(None)
+            } else if valid_acl(&value) {
+                Ok(Some(value))
+            } else {
+                Err("POSIX ACL")
+            }
         }
-        _ => XATTR_NAMESPACES
+        _ => Ok(XATTR_NAMESPACES
             .iter()
             .any(|ns| name.len() > ns.len() && name.starts_with(ns))
-            .then_some(value),
+            .then_some(value)),
     }
 }
 
@@ -660,33 +675,51 @@ fn valid_acl(value: &[u8]) -> bool {
         })
 }
 
-/// A `vfs_cap_data` as the kernel reads it back (`cap_inode_getsecurity`):
-/// revision 2 (20 bytes) or 3 (24, ending in a root uid), with no flag but
-/// the effective bit. Revision 1, other flags and a root uid of
-/// `u32::MAX` are refused, and revision 3 with root uid 0 reads back as
-/// revision 2, so it is written that way.
-fn capability(mut value: Vec<u8>) -> Option<Vec<u8>> {
+/// `security.capability` in the form exec enforces it
+/// (`get_vfs_caps_from_disk`) and `getxattr` reads it back
+/// (`cap_inode_getsecurity`), checked against Linux 6.12 on erofs.
+///
+/// - Revision 1 and flag bits other than effective: exec honours them but
+///   `getxattr` refuses them, so they are written as the same revision 2
+///   capability.
+/// - Revision 3 with root uid 0 reads back as revision 2, so it is written
+///   that way. With root uid `u32::MAX` exec ignores it, as if there were
+///   none, so `Ok(None)` drops it. Any other root uid is kept: exec only
+///   honours it in a user namespace with that root.
+/// - Anything else makes exec fail, so it is an error.
+fn capability(value: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
+    const BAD: &str = "security.capability";
+    const REVISION_1: u32 = 0x0100_0000;
     const REVISION_2: u32 = 0x0200_0000;
     const REVISION_3: u32 = 0x0300_0000;
     const EFFECTIVE: u32 = 0x00_0001;
-    let magic = u32::from_le_bytes(*value.first_chunk::<4>()?);
-    if magic & !(0xff00_0000 | EFFECTIVE) != 0 {
-        return None;
-    }
-    match (magic & 0xff00_0000, value.len()) {
-        (REVISION_2, 20) => Some(value),
-        (REVISION_3, 24) => match value.last_chunk::<4>().map(|r| u32::from_le_bytes(*r)) {
-            Some(u32::MAX) => None,
-            Some(0) => {
-                value.truncate(20);
-                let v2 = REVISION_2 | (magic & EFFECTIVE);
-                value.get_mut(..4)?.copy_from_slice(&v2.to_le_bytes());
-                Some(value)
+    let magic = u32::from_le_bytes(*value.first_chunk::<4>().ok_or(BAD)?);
+    let effective = magic & EFFECTIVE;
+    // `permitted` and `inheritable`, low words then (but for revision 1)
+    // high words.
+    let data = value.get(4..).ok_or(BAD)?;
+    let v2 = |data: &[u8]| {
+        let mut out = (REVISION_2 | effective).to_le_bytes().to_vec();
+        out.extend(data);
+        out.resize(20, 0);
+        out
+    };
+    Ok(match (magic & 0xff00_0000, value.len()) {
+        (REVISION_1, 12) | (REVISION_2, 20) => Some(v2(data)),
+        (REVISION_3, 24) => {
+            let (caps, root) = data.split_last_chunk::<4>().ok_or(BAD)?;
+            match u32::from_le_bytes(*root) {
+                u32::MAX => None,
+                0 => Some(v2(caps)),
+                _ => {
+                    let mut out = (REVISION_3 | effective).to_le_bytes().to_vec();
+                    out.extend(data);
+                    Some(out)
+                }
             }
-            _ => Some(value),
-        },
-        _ => None,
-    }
+        }
+        _ => return Err(BAD),
+    })
 }
 
 /// A PAX time (`123`, `123.456`, `-1.5`) in whole seconds. Times before the
@@ -1390,8 +1423,7 @@ pub(crate) mod tests {
     #[test]
     fn xattrs_erofs_would_drop_are_dropped() {
         // Found by the flatten_erofs fuzz target: mkfs.erofs drops unknown
-        // namespaces (`system.posix_acl_ty` among them), and the kernel will
-        // not read a malformed capability or ACL.
+        // namespaces, `system.posix_acl_ty` among them.
         let layer = with_pax(
             EntryType::Regular,
             &[
@@ -1399,10 +1431,9 @@ pub(crate) mod tests {
                 ("SCHILY.xattr.trusted.empty", b""),
                 ("SCHILY.xattr.com.apple.provenance", b"2"),
                 ("SCHILY.xattr.user.", b"3"),
-                ("SCHILY.xattr.security.capability", b"\x01"),
                 ("SCHILY.xattr.system.posix_acl_ty", b"\x01"),
+                // No entries: the kernel reads it as no ACL.
                 ("SCHILY.xattr.system.posix_acl_access", b"\x02\0\0\0"),
-                ("SCHILY.xattr.system.posix_acl_default", b"\x01"),
                 ("LIBARCHIVE.xattr.user.b64", b"NA=="),
                 ("atime", b"1"),
             ],
@@ -1435,20 +1466,67 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn capabilities_and_acls_the_kernel_would_enforce_are_never_dropped() {
+        // Dropping a capability the kernel cannot parse would let a
+        // setuid-root binary run with every capability, where the layer's
+        // binary would not run at all; dropping a bad ACL would let the
+        // mode bits grant what the kernel would deny.
+        for (key, value) in [
+            ("security.capability", &b"\x01"[..]),
+            ("system.posix_acl_access", b"\x01"),
+            (
+                "system.posix_acl_default",
+                b"\x01\0\0\0\x01\0\x06\0\xff\xff\xff\xff",
+            ),
+            ("security.capability\0x", b"1"),
+        ] {
+            let key = format!("SCHILY.xattr.{key}");
+            let err =
+                flatten(&[with_pax(EntryType::Regular, &[(&key, value)])], b"{}").unwrap_err();
+            assert!(matches!(err, Error::BadField { .. }), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn setuid_root_keeps_its_revision_1_capability() {
+        // From review: revision 1 restricts a setuid-root binary to its
+        // capabilities at exec (checked on Linux 6.12), but `getxattr`
+        // refuses it. It is written as the same revision 2 capability.
+        let mut v1 = 0x0100_0001_u32.to_le_bytes().to_vec();
+        v1.extend((1_u32 << 13).to_le_bytes()); // CAP_NET_RAW permitted
+        v1.extend(0_u32.to_le_bytes());
+        let mut tar = Builder::new(Vec::new());
+        tar.append_pax_extensions([("SCHILY.xattr.security.capability", v1.as_slice())])
+            .unwrap();
+        let mut h = Layer::header(EntryType::Regular, 0o4755, 0, 0, 3);
+        tar.append_data(&mut h, "usr/bin/ping", b"elf".as_slice())
+            .unwrap();
+        let out = flatten(&[tar.into_inner().unwrap()], b"{}").unwrap();
+        let ping = find(&out, "usr/bin/ping");
+        assert_eq!((ping.mode, ping.uid), (0o4755, 0));
+        assert_eq!(
+            ping.xattrs,
+            [("SCHILY.xattr.security.capability".to_owned(), CAP.to_vec())]
+        );
+    }
+
+    #[test]
     fn the_last_xattr_record_wins_before_filtering() {
         // mkfs.erofs keeps the last value for a key, so a malformed last
-        // capability means none, whatever came first.
-        for (records, kept) in [
-            ([CAP.as_slice(), b"\x01"], 0),
-            ([b"\x01".as_slice(), CAP.as_slice()], 1),
-        ] {
-            let pax: Vec<_> = records
+        // capability is what counts, whatever came first.
+        let pax = |values: [&[u8]; 2]| {
+            let pax: Vec<_> = values
                 .iter()
                 .map(|v| ("SCHILY.xattr.security.capability", *v))
                 .collect();
-            let out = flatten(&[with_pax(EntryType::Regular, &pax)], b"{}").unwrap();
-            assert_eq!(find(&out, "f").xattrs.len(), kept);
-        }
+            flatten(&[with_pax(EntryType::Regular, &pax)], b"{}")
+        };
+        assert!(matches!(
+            pax([CAP.as_slice(), b"\x01"]),
+            Err(Error::BadField { .. })
+        ));
+        let out = pax([b"\x01".as_slice(), CAP.as_slice()]).unwrap();
+        assert_eq!(find(&out, "f").xattrs.len(), 1);
     }
 
     #[test]
@@ -1509,20 +1587,32 @@ pub(crate) mod tests {
             v.extend(root.map(u32::to_le_bytes).into_iter().flatten());
             v
         }
+        let v1 = |magic: u32| {
+            let mut v = magic.to_le_bytes().to_vec();
+            v.extend([0, 0x20, 0, 0, 0, 0, 0, 0]);
+            v
+        };
+        // `Err`: rejected. `Ok(None)`: dropped, as exec ignores it.
         for (value, want) in [
-            (cap(0x0200_0001, None), Some(cap(0x0200_0001, None))),
-            (cap(0x0200_0000, None), Some(cap(0x0200_0000, None))),
+            (cap(0x0200_0001, None), Ok(Some(cap(0x0200_0001, None)))),
+            (cap(0x0200_0000, None), Ok(Some(cap(0x0200_0000, None)))),
+            (v1(0x0100_0001), Ok(Some(cap(0x0200_0001, None)))),
+            (v1(0x0100_0000), Ok(Some(cap(0x0200_0000, None)))),
+            // exec ignores other flag bits; getxattr refuses them.
+            (cap(0x0200_0003, None), Ok(Some(cap(0x0200_0001, None)))),
+            (cap(0x0200_0002, None), Ok(Some(cap(0x0200_0000, None)))),
             (
                 cap(0x0300_0001, Some(1000)),
-                Some(cap(0x0300_0001, Some(1000))),
+                Ok(Some(cap(0x0300_0001, Some(1000)))),
             ),
-            (cap(0x0300_0001, Some(0)), Some(cap(0x0200_0001, None))),
-            (cap(0x0300_0001, Some(u32::MAX)), None),
-            (cap(0x0200_0002, None), None),
-            (cap(0x0200_0001, Some(0)), None),
-            (vec![0, 0, 0, 1, 0, 0x20, 0, 0, 0, 0, 0, 0], None),
+            (cap(0x0300_0003, Some(0)), Ok(Some(cap(0x0200_0001, None)))),
+            (cap(0x0300_0001, Some(u32::MAX)), Ok(None)),
+            (cap(0x0200_0001, Some(0)), Err("security.capability")),
+            (cap(0x0400_0001, None), Err("security.capability")),
+            (vec![1], Err("security.capability")),
+            (vec![], Err("security.capability")),
         ] {
-            assert_eq!(capability(value.clone()), want, "{value:x?}");
+            assert_eq!(capability(&value), want, "{value:x?}");
         }
     }
 

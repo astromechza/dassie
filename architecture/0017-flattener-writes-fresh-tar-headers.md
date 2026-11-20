@@ -49,15 +49,28 @@ nothing else from the input header.
 - **xattrs:** only `SCHILY.xattr.*` records erofs stores: the `user.`,
   `trusted.` and `security.` namespaces, and `system.posix_acl_access` and
   `system.posix_acl_default`. Others, such as macOS's `com.apple.*`, are
-  dropped, as mkfs.erofs would drop them. The kernel parses two values on
-  read, so they are written as it reads them, and dropped where it refuses
-  them: a `security.capability` must be a revision 2 or 3 `vfs_cap_data`
-  with no flag but the effective bit, and not a root uid of `0xffffffff`
-  (revision 3 with root uid 0 reads back, and is written, as revision 2);
-  and an ACL that is not version 2 with at least one 8-byte entry, all with
-  known tags and no named user or group of id `0xffffffff`. Every other
-  PAX record (`uname`, `gname`, `atime`, `ctime`, `LIBARCHIVE.xattr.*`,
-  `GNU.sparse.*`, …) is dropped.
+  dropped, as mkfs.erofs would drop them. Where the same key appears twice,
+  the last record wins, as in mkfs.erofs. Every other PAX record (`uname`,
+  `gname`, `atime`, `ctime`, `LIBARCHIVE.xattr.*`, `GNU.sparse.*`, …) is
+  dropped.
+- **Capabilities and ACLs are never silently dropped.** The kernel
+  enforces both. File capabilities restrict a setuid-root binary, which
+  without them runs with every capability; an ACL the kernel cannot parse
+  denies all access, which without it the mode bits would grant. So each is
+  written in the form the kernel enforces and `getxattr` reads back,
+  dropped only where the kernel ignores it anyway, and otherwise the entry
+  is rejected (`BadField`). Checked against Linux 6.12 on erofs:
+  - `security.capability`: revision 1, and flag bits other than effective,
+    are honoured at exec but refused by `getxattr`, so they are written as
+    the same revision 2 capability. Revision 3 with root uid 0 reads back
+    as revision 2 and is written that way; with root uid `0xffffffff` exec
+    ignores it, so it is dropped. Any other shape makes exec fail and is
+    rejected.
+  - ACLs must be version 2 with known tags and no named user or group of id
+    `0xffffffff`. A header with no entries reads as no ACL and is dropped.
+    Anything else is rejected.
+  - An xattr name holding a NUL is rejected: mkfs.erofs would cut it, so
+    `security.capability\0x` would become a capability.
 - **Entry types:** regular (`0`, NUL, contiguous `7`), directory, symlink,
   hard link, character and block devices, and FIFOs. Any other type is an
   error (`Unsupported`). Contiguous files are written as regular files.
@@ -74,8 +87,9 @@ nothing else from the input header.
 - `clear_prefix` and the field-by-field fixes go away. The NUL and `..`
   checks on names stay: a fresh header can still carry those bytes.
 - Some images that built before now fail with `BadField` or `Unsupported`:
-  a uid above 2³²−1, an unparseable numeric field, or a GNU volume or
-  multi-volume entry. None of these could have produced a faithful rootfs.
+  a uid above 2³²−1, an unparseable numeric field, a GNU volume or
+  multi-volume entry, or a capability or ACL the kernel could not
+  enforce. None of these could have produced a faithful rootfs.
 - Some metadata is dropped on purpose: user and group names (erofs stores
   numeric ids only), sub-second mtimes, and xattrs in namespaces erofs does
   not store or in libarchive's encoding. Images built by Docker, BuildKit
