@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use redb::StorageBackend;
 use redb::backends::InMemoryBackend;
 
-use super::widget::{Colour, Phase, SPEC, STATUS, WidgetReads, WidgetSpec, WidgetStatus};
+use super::test_kind::{Colour, Phase, SPEC, STATUS, WidgetReads, WidgetSpec, WidgetStatus};
 use super::*;
 
 fn spec(size: u32, label: Option<&str>) -> WidgetSpec {
@@ -144,7 +144,7 @@ fn a_status_write_against_a_changed_spec_is_stale() {
         })
         .unwrap_err();
     assert!(
-        matches!(&err, Error::Stale { table, .. } if table == "widget"),
+        matches!(&err, Error::Stale { table, .. } if table == "test_widget"),
         "{err}"
     );
 }
@@ -382,11 +382,11 @@ fn check_reports_every_problem() {
         .map(|i| (i.table, i.key))
         .collect();
     let want: Vec<(String, String)> = [
-        ("widget", "future"),
-        ("widget", "lonely"),
-        ("widget_status", "orphan"),
-        ("widget", "junk"),
-        ("widget", "dup"),
+        ("test_widget", "future"),
+        ("test_widget", "lonely"),
+        ("test_widget_status", "orphan"),
+        ("test_widget", "junk"),
+        ("test_widget", "dup"),
     ]
     .iter()
     .map(|(t, k)| ((*t).into(), (*k).into()))
@@ -462,7 +462,10 @@ fn an_interrupted_init_is_finished_by_the_next() {
 
 #[test]
 fn an_older_store_is_copied_then_migrated_to_the_same_tables_as_a_new_one() {
-    const { assert!(SCHEMA_VERSION >= 2, "tests run with the widget migration") };
+    assert!(
+        build_version() >= 2,
+        "tests run with the test kind's migration"
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dassie.redb");
     Store::init_at(&path, 1);
@@ -472,7 +475,7 @@ fn an_older_store_is_copied_then_migrated_to_the_same_tables_as_a_new_one() {
     let store = Store::open(&path).unwrap();
     assert!(dir.path().join("dassie.redb.v1").exists());
     assert!(!dir.path().join("dassie.redb.v1.tmp").exists());
-    assert_eq!(stored_version(&store.db).unwrap(), SCHEMA_VERSION);
+    assert_eq!(stored_version(&store.db).unwrap(), build_version());
     assert_eq!(file_tables(&store), schema_tables());
     assert_eq!(file_tables(&Store::in_memory().unwrap()), schema_tables());
     create(&store, "a", None);
@@ -500,7 +503,7 @@ fn check_holds_the_file_to_the_schemas_tables() {
     tx.commit().unwrap();
     let found = store.check().unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!(found[0].table, "widget_status");
+    assert_eq!(found[0].table, "test_widget_status");
     assert!(found[0].problem.contains("missing"), "{found:?}");
 }
 
@@ -525,13 +528,13 @@ fn a_store_newer_than_the_binary_is_refused() {
     let tx = store.db.begin_write().unwrap();
     tx.open_table(META)
         .unwrap()
-        .insert(META_VERSION, SCHEMA_VERSION + 1)
+        .insert(META_VERSION, build_version() + 1)
         .unwrap();
     tx.commit().unwrap();
     drop(store);
     assert!(matches!(
         Store::open(&path),
-        Err(Error::TooNew { found, .. }) if found == SCHEMA_VERSION + 1
+        Err(Error::TooNew { found, .. }) if found == build_version() + 1
     ));
 }
 
@@ -635,17 +638,20 @@ fn a_storage_fault_is_fatal_and_leaves_one_state_or_the_other() {
     panic!("the commit never got through");
 }
 
-/// Every stored type's JSON Schema, as of `SCHEMA_VERSION`. A change in
-/// shape without a version bump fails here. To accept a change after
-/// bumping the version, run with `DASSIE_UPDATE_SCHEMA=1`.
+/// The production schema as of `SCHEMA_VERSION`: every table with its key
+/// and value types, and each production kind's JSON Schemas. The test kind
+/// is test data and is left out. A change in shape without a version bump
+/// fails here. To accept a change after bumping the version, run with
+/// `DASSIE_UPDATE_SCHEMA=1`.
 #[test]
 fn schema_snapshot() {
+    let values: serde_json::Map<_, _> = KINDS
+        .iter()
+        .map(|k| (table_name(k.spec), (k.schemas)()))
+        .collect();
     let schemas = serde_json::json!({
-        "tables": tables(),
-        "values": {
-            "widget": schemars::schema_for!(WidgetSpec),
-            "widget_status": schemars::schema_for!(WidgetStatus),
-        },
+        "tables": production_tables(),
+        "values": values,
     });
     let got = serde_json::to_string_pretty(&schemas).unwrap() + "\n";
     let path = format!(

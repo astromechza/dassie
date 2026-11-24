@@ -1,0 +1,10 @@
+{
+  "tables": [
+    {
+      "key": "&str",
+      "name": "meta",
+      "value": "u64"
+    }
+  ],
+  "values": {}
+}

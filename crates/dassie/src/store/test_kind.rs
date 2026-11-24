@@ -1,7 +1,9 @@
-//! A resource kind that exists only in tests. It exercises the store's
-//! plumbing the way a real kind will, without settling the data model ahead
-//! of its ADR: a spec and a status, a unique field, and preconditions on
-//! every write.
+//! Test data, not schema: a resource kind that exists only in tests. It
+//! exercises the store's plumbing the way a real kind will, without settling
+//! the data model ahead of its ADR: a spec and a status, a unique field, and
+//! preconditions on every write. Its tables are named `test_*`, come from a
+//! test-only migration after the production ones, and are left out of the
+//! schema snapshot.
 
 use std::collections::BTreeMap;
 
@@ -13,21 +15,26 @@ use super::{
     WriteTxn, get, scan, table_name,
 };
 
-pub(super) const SPEC: Rows = Rows::new("widget");
-pub(super) const STATUS: Rows = Rows::new("widget_status");
+pub(super) const SPEC: Rows = Rows::new("test_widget");
+pub(super) const STATUS: Rows = Rows::new("test_widget_status");
 
-/// The test-only migration that creates widget tables, after the real
-/// migrations, the way a real kind's own migration would.
-pub(super) const MIGRATION: super::Migration = |tx| {
+/// The test-only migrations, run after the production ones.
+pub(super) const MIGRATIONS: &[super::Migration] = &[|tx| {
     tx.open_table(SPEC)?;
     tx.open_table(STATUS)?;
     Ok(())
-};
+}];
 
 pub(super) const KIND: KindDef = KindDef {
     spec: SPEC,
     status: STATUS,
     check,
+    schemas: || {
+        serde_json::json!({
+            "spec": schemars::schema_for!(WidgetSpec),
+            "status": schemars::schema_for!(WidgetStatus),
+        })
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

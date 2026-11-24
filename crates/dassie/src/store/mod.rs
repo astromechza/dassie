@@ -4,7 +4,7 @@
 //! [`Store::read`] and [`Store::write`], and typed methods on the
 //! transactions those hand to their closures. Each resource kind adds its
 //! own methods, a migration that creates its tables, and its entry in
-//! [`KINDS`]. This file is the plumbing they share: migrations, the `meta`
+//! [`KINDS`]; a test-only kind lives in `test_kind`. This file is the plumbing they share: migrations, the `meta`
 //! table, revisions and preconditions, and the rule that a failed store
 //! method fails the whole write.
 
@@ -23,9 +23,9 @@ mod error;
 #[cfg(test)]
 mod model;
 #[cfg(test)]
-mod tests;
+mod test_kind;
 #[cfg(test)]
-mod widget;
+mod tests;
 
 pub(crate) use check::KindDef;
 pub(crate) use error::{Error, Inconsistency};
@@ -41,11 +41,9 @@ const META_VERSION: &str = "schema_version";
 const META_REVISION: &str = "revision";
 const META_EPOCH: &str = "epoch";
 
-/// Every resource kind this binary knows, for reads and `check`.
-const KINDS: &[KindDef] = &[
-    #[cfg(test)]
-    widget::KIND,
-];
+/// The production resource kinds. Tests add theirs through
+/// [`build_kinds`], never here.
+const KINDS: &[KindDef] = &[];
 
 /// The store's schema, as the steps that build it. Migration N takes the
 /// store from version N - 1 to N, in one write transaction with its version
@@ -57,18 +55,36 @@ const KINDS: &[KindDef] = &[
 /// tables through its own definitions, and rewrites rows as
 /// `serde_json::Value`, never through the current structs. No table is ever
 /// created on first use. A test-only kind's tables come from a test-only
-/// migration after the real ones.
+/// migration after the real ones (see [`build_migrations`]).
 type Migration = fn(&redb::WriteTransaction) -> Result<()>;
-const MIGRATIONS: &[Migration] = &[
-    v1_meta,
-    #[cfg(test)]
-    widget::MIGRATION,
-];
+const MIGRATIONS: &[Migration] = &[v1_meta];
 
-/// The schema version this binary reads and writes. In test builds the
-/// test-only migrations make it higher, so the schema snapshot's file is
-/// named for the test build's version.
+/// The production schema version, which the schema snapshot is named for.
 pub(crate) const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
+
+/// The migrations this build runs: the production ones, then in test builds
+/// the test kind's, which never reach the production schema or its
+/// snapshot. So test builds run a higher version than release builds.
+fn build_migrations() -> Vec<Migration> {
+    #[cfg(test)]
+    return [MIGRATIONS, test_kind::MIGRATIONS].concat();
+    #[cfg(not(test))]
+    MIGRATIONS.to_vec()
+}
+
+/// The resource kinds this build knows: the production ones, then in test
+/// builds the test kind.
+fn build_kinds() -> Vec<KindDef> {
+    #[cfg(test)]
+    return [KINDS, &[test_kind::KIND]].concat();
+    #[cfg(not(test))]
+    KINDS.to_vec()
+}
+
+/// The schema version this build reads and writes.
+fn build_version() -> u64 {
+    u64::try_from(build_migrations().len()).expect("migrations fit in u64")
+}
 
 /// Version 1: the store's own counters. `schema_version` is written by
 /// every migration.
@@ -82,7 +98,8 @@ fn v1_meta(tx: &redb::WriteTransaction) -> Result<()> {
 /// Applies migrations `from + 1 ..= to`, each in its own write.
 fn migrate(db: &Database, from: u64, to: u64) -> Result<()> {
     for version in from + 1..=to {
-        let step = MIGRATIONS[usize::try_from(version - 1).expect("schema versions fit in usize")];
+        let step =
+            build_migrations()[usize::try_from(version - 1).expect("schema versions fit in usize")];
         let tx = db.begin_write()?;
         step(&tx)?;
         tx.open_table(META)?.insert(META_VERSION, version)?;
@@ -119,12 +136,22 @@ fn table_info<K: redb::Key + 'static, V: redb::Value + 'static>(
     }
 }
 
-/// Every table the current schema has, which `check` holds the file to.
+/// Every table this build's schema has, which `check` holds the file to.
 /// redb also records each table's key and value types, and refuses to open
 /// a table under different ones.
 pub(crate) fn tables() -> Vec<TableInfo> {
+    tables_of(&build_kinds())
+}
+
+/// The production schema's tables, for the snapshot.
+#[cfg(test)]
+pub(crate) fn production_tables() -> Vec<TableInfo> {
+    tables_of(KINDS)
+}
+
+fn tables_of(kinds: &[KindDef]) -> Vec<TableInfo> {
     let mut all = vec![table_info(META)];
-    for kind in KINDS {
+    for kind in kinds {
         all.push(table_info(kind.spec));
         all.push(table_info(kind.status));
     }
@@ -186,7 +213,7 @@ impl Store {
         if stored_version(&db)? != 0 {
             return Err(Error::StoreExists(path.to_owned()));
         }
-        migrate(&db, 0, SCHEMA_VERSION)?;
+        migrate(&db, 0, build_version())?;
         Store::from_db(db)
     }
 
@@ -203,18 +230,19 @@ impl Store {
         if version == 0 {
             return Err(Error::NoStore(path.to_owned()));
         }
-        if version > SCHEMA_VERSION {
+        let latest = build_version();
+        if version > latest {
             return Err(Error::TooNew {
                 found: version,
-                supported: SCHEMA_VERSION,
+                supported: latest,
             });
         }
-        if version < SCHEMA_VERSION {
+        if version < latest {
             // Keep the store as it was, for rolling the binary back. No
             // transaction is open, so the file is consistent on disk.
             backup(path, &format!("{}.v{version}", path.display()))
                 .map_err(|e| Error::Io(std::sync::Arc::new(e)))?;
-            migrate(&db, version, SCHEMA_VERSION)?;
+            migrate(&db, version, latest)?;
         }
         let store = Store::from_db(db)?;
         let found = store.check()?;
@@ -234,7 +262,7 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn with_backend(backend: impl redb::StorageBackend) -> Result<Store> {
         let db = Database::builder().create_with_backend(backend)?;
-        migrate(&db, 0, SCHEMA_VERSION)?;
+        migrate(&db, 0, build_version())?;
         Store::from_db(db)
     }
 

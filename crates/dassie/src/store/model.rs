@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::widget::{Colour, Phase, WidgetReads, WidgetSpec, WidgetStatus};
+use super::test_kind::{Colour, Phase, WidgetReads, WidgetSpec, WidgetStatus};
 use super::{Error, Precondition, Reads, Revision, Store, WriteTxn};
 
 const KEYS: [&str; 4] = ["a", "b", "c", "d"];

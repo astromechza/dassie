@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use serde::de::DeserializeOwned;
 
 use super::{
-    Inconsistency, KINDS, ReadTxn, Reads, Result, Revision, Rows, Versioned, decode, raw_scan,
-    table_name, tables,
+    Inconsistency, ReadTxn, Reads, Result, Revision, Rows, Versioned, build_kinds, decode,
+    raw_scan, table_name, tables,
 };
 
 /// One resource kind, as `init` and `check` see it: its spec and status
@@ -17,6 +17,9 @@ pub(crate) struct KindDef {
     pub(crate) spec: Rows,
     pub(crate) status: Rows,
     pub(crate) check: fn(&ReadTxn, &mut Vec<Inconsistency>) -> Result<()>,
+    /// The JSON Schemas of its spec and status, for the schema snapshot.
+    #[cfg(test)]
+    pub(crate) schemas: fn() -> serde_json::Value,
 }
 
 pub(super) fn run(r: &ReadTxn) -> Result<Vec<Inconsistency>> {
@@ -46,7 +49,7 @@ pub(super) fn run(r: &ReadTxn) -> Result<Vec<Inconsistency>> {
         return Ok(found);
     }
     let store = r.revision()?;
-    for kind in KINDS {
+    for kind in build_kinds() {
         let specs = keys_checking_revisions(r, kind.spec, store, &mut found)?;
         let statuses = keys_checking_revisions(r, kind.status, store, &mut found)?;
         for key in specs.difference(&statuses) {
