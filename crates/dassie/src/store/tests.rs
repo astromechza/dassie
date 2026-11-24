@@ -215,6 +215,47 @@ fn after_a_failure_every_store_method_fails() {
         .unwrap_err();
 }
 
+#[test]
+fn a_caught_read_error_still_fails_the_write() {
+    let store = Store::in_memory().unwrap();
+    raw_put(
+        &store,
+        SPEC,
+        "junk",
+        1,
+        br#"{"size":1,"colour":"red","extra":1}"#,
+    );
+    raw_put(&store, STATUS, "junk", 1, br#"{"phase":"pending"}"#);
+    let err = store
+        .write(|w| {
+            w.create_widget("b", &spec(1, None), &pending())?;
+            assert!(w.widget("junk").is_err());
+            Ok::<_, Error>(())
+        })
+        .unwrap_err();
+    assert!(matches!(err, Error::Corrupt { .. }), "{err}");
+    assert_eq!(store.read(|r| r.widget("b")).unwrap(), None);
+}
+
+#[test]
+fn a_read_after_a_failure_returns_it() {
+    let store = Store::in_memory().unwrap();
+    create(&store, "a", None);
+    store
+        .write(|w| {
+            assert!(
+                w.replace_widget_spec("nope", &spec(1, None), Precondition::Any)
+                    .is_err()
+            );
+            let err = w.widget("a").unwrap_err();
+            assert!(matches!(err, Error::NotFound { .. }), "{err}");
+            let err = w.revision().unwrap_err();
+            assert!(matches!(err, Error::NotFound { .. }), "{err}");
+            Ok::<_, Error>(())
+        })
+        .unwrap_err();
+}
+
 /// A caller's own error type works with `?` on store calls.
 #[test]
 fn closures_return_the_callers_error() {
@@ -404,6 +445,9 @@ fn an_older_store_is_copied_then_migrated_to_the_same_tables_as_a_new_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dassie.redb");
     Store::init_at(&path, 1);
+    // An init interrupted after its first migration left an older store,
+    // which init refuses and open upgrades.
+    assert!(matches!(Store::init(&path), Err(Error::StoreExists(_))));
     let store = Store::open(&path).unwrap();
     assert!(dir.path().join("dassie.redb.v1").exists());
     assert_eq!(stored_version(&store.db).unwrap(), SCHEMA_VERSION);
@@ -436,6 +480,19 @@ fn check_holds_the_file_to_the_schemas_tables() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].table, "widget_status");
     assert!(found[0].problem.contains("missing"), "{found:?}");
+}
+
+#[test]
+fn check_refuses_a_multimap_table() {
+    let store = Store::in_memory().unwrap();
+    let tx = store.db.begin_write().unwrap();
+    tx.open_multimap_table(redb::MultimapTableDefinition::<&str, &str>::new("stray"))
+        .unwrap();
+    tx.commit().unwrap();
+    let found = store.check().unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].table, "stray");
+    assert!(found[0].problem.contains("multimap"), "{found:?}");
 }
 
 #[test]
@@ -537,12 +594,18 @@ fn a_storage_fault_is_fatal_and_leaves_one_state_or_the_other() {
         let store = Store::reopen_backend(backend).unwrap();
         assert_consistent(&store);
         assert!(store.read(|r| r.widget("a")).unwrap().is_some());
+        // Exactly the state before the write, or exactly the state after.
+        let revision = store.read(Reads::revision).unwrap().n;
         match store.read(|r| r.widget("b")).unwrap() {
-            None => lost += 1,
+            None => {
+                lost += 1;
+                assert_eq!(revision, 1, "fault after {allowed}");
+            }
             Some(b) => {
                 kept += 1;
+                assert_eq!(revision, 2, "fault after {allowed}");
                 assert_eq!(b.spec.revision.n, 2, "fault after {allowed}");
-                assert_eq!(store.read(Reads::revision).unwrap().n, 2);
+                assert_eq!(b.status.revision.n, 2, "fault after {allowed}");
             }
         }
         assert!(kept <= 1 || lost > 0, "fault after {allowed}");

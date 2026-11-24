@@ -47,7 +47,7 @@ pub(crate) enum Error {
     AlreadyRunning,
     /// `open` found no store at this path: only `init` creates one.
     NoStore(PathBuf),
-    /// `init` found a file at this path already.
+    /// `init` found a store at this path: a file a migration has run on.
     StoreExists(PathBuf),
     /// The store was written by a newer binary.
     TooNew { found: u64, supported: u64 },
@@ -94,7 +94,11 @@ impl fmt::Display for Error {
             Error::NoStore(path) => {
                 write!(f, "no store at {}; create one with init", path.display())
             }
-            Error::StoreExists(path) => write!(f, "{} already exists", path.display()),
+            Error::StoreExists(path) => write!(
+                f,
+                "{} is already a store; open upgrades it if it is older",
+                path.display()
+            ),
             Error::TooNew { found, supported } => write!(
                 f,
                 "the store is at schema version {found}, newer than this binary's {supported}"

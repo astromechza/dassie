@@ -34,6 +34,13 @@ pub(super) fn run(r: &ReadTxn) -> Result<Vec<Inconsistency>> {
     for name in have.difference(&want) {
         found.push(table_problem(name, "is not part of this schema"));
     }
+    // redb lists multimap tables apart, and this schema has none.
+    for t in r.tx.list_multimap_tables()? {
+        found.push(table_problem(
+            redb::MultimapTableHandle::name(&t),
+            "is a multimap table, which this schema never has",
+        ));
+    }
     if want.difference(&have).next().is_some() {
         // Reads of a missing table would fail; report what we have.
         return Ok(found);

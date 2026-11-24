@@ -8,7 +8,7 @@
 //! table, revisions and preconditions, and the rule that a failed store
 //! method fails the whole write.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::fs;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::path::Path;
@@ -174,9 +174,13 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    /// Creates the store at `path` by running every migration. A file left
-    /// by an interrupted `init` is finished, so `init` can be rerun; a store
-    /// that is already initialised is refused.
+    /// Creates the store at `path` by running every migration, and refuses
+    /// a file any migration has already run on.
+    ///
+    /// A rerun finishes an `init` interrupted before its first migration
+    /// committed. One interrupted later left a store at an older version,
+    /// which is indistinguishable from a store an older binary wrote, so
+    /// `open` upgrades it like any other.
     pub(crate) fn init(path: &Path) -> Result<Store> {
         let db = exclusive(Database::builder().create(path))?;
         if stored_version(&db)? != 0 {
@@ -366,15 +370,24 @@ pub(crate) trait Reads: sealed::Sealed {
     /// The store's current history.
     fn epoch(&self) -> u64;
 
+    /// Runs one read. In a write, a failed read fails the write like a
+    /// failed change does, and a read after a failure returns that failure.
+    #[doc(hidden)]
+    fn guarded<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        f()
+    }
+
     /// The revision of the last committed write.
     fn revision(&self) -> Result<Revision> {
-        let n = match self.txn() {
-            Txn::Read(t) => t.open_table(META)?.get(META_REVISION)?.map(|v| v.value()),
-            Txn::Write(t) => t.open_table(META)?.get(META_REVISION)?.map(|v| v.value()),
-        };
-        Ok(Revision {
-            epoch: self.epoch(),
-            n: n.unwrap_or_default(),
+        self.guarded(|| {
+            let n = match self.txn() {
+                Txn::Read(t) => t.open_table(META)?.get(META_REVISION)?.map(|v| v.value()),
+                Txn::Write(t) => t.open_table(META)?.get(META_REVISION)?.map(|v| v.value()),
+            };
+            Ok(Revision {
+                epoch: self.epoch(),
+                n: n.unwrap_or_default(),
+            })
         })
     }
 }
@@ -404,8 +417,9 @@ pub(crate) struct WriteTxn {
     /// The store's revision when this write began.
     base: u64,
     changed: bool,
-    /// The first error a store method returned. It fails the whole write.
-    failed: Option<Error>,
+    /// The first error a store method, read or change, returned. It fails
+    /// the whole write.
+    failed: OnceCell<Error>,
 }
 
 impl sealed::Sealed for WriteTxn {}
@@ -417,6 +431,17 @@ impl Reads for WriteTxn {
 
     fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    fn guarded<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        if let Some(e) = self.failed.get() {
+            return Err(e.clone());
+        }
+        let out = f();
+        if let Err(e) = &out {
+            let _first = self.failed.set(e.clone());
+        }
+        out
     }
 }
 
@@ -432,7 +457,7 @@ impl WriteTxn {
             epoch,
             base,
             changed: false,
-            failed: None,
+            failed: OnceCell::new(),
         })
     }
 
@@ -456,12 +481,12 @@ impl WriteTxn {
 
     /// Runs one store method. An error, or an earlier one, fails the write.
     fn op<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        if let Some(e) = &self.failed {
+        if let Some(e) = self.failed.get() {
             return Err(e.clone());
         }
         let out = f(self);
         if let Err(e) = &out {
-            self.failed = Some(e.clone());
+            let _first = self.failed.set(e.clone());
         }
         out
     }
@@ -583,9 +608,11 @@ pub(crate) fn get<T: DeserializeOwned>(
     table: Rows,
     key: &str,
 ) -> Result<Option<Versioned<T>>> {
-    raw_get(r, table, key)?
-        .map(|row| decode(r, table, key, row))
-        .transpose()
+    r.guarded(|| {
+        raw_get(r, table, key)?
+            .map(|row| decode(r, table, key, row))
+            .transpose()
+    })
 }
 
 /// Every row in `table`, in key order, decoded.
@@ -593,11 +620,13 @@ pub(crate) fn scan<T: DeserializeOwned>(
     r: &impl Reads,
     table: Rows,
 ) -> Result<Vec<(String, Versioned<T>)>> {
-    raw_scan(r, table)?
-        .into_iter()
-        .map(|(key, row)| {
-            let v = decode(r, table, &key, row)?;
-            Ok((key, v))
-        })
-        .collect()
+    r.guarded(|| {
+        raw_scan(r, table)?
+            .into_iter()
+            .map(|(key, row)| {
+                let v = decode(r, table, &key, row)?;
+                Ok((key, v))
+            })
+            .collect()
+    })
 }
