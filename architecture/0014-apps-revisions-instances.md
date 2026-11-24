@@ -55,8 +55,10 @@ fixed for the app's life.
 until the deletion finishes; a delete cannot be undone. Otherwise it builds
 the template from the operator's spec, pulls its
 image outside any store write (ADR 0016), creates the revision if no
-revision has that hash, and sets the app's `revision`. Applying an identical
-template finds the existing revision, so it changes nothing.
+revision has that hash, and writes the app's spec: its `revision` and its
+`replicas`. An identical template reuses the existing revision, so applying
+the same spec again changes nothing, while a change of `replicas` alone takes
+effect without a new revision.
 
 ### Revision
 
@@ -155,14 +157,20 @@ means not being deleted.
    instance of the app's revision. An instance being torn down is not
    counted, so a slow teardown never blocks a rollout. It does mean an app
    can briefly hold more than `R + 1` VMs' memory.
-2. **Remove.** While the app has more than `R` counted instances, take the
-   first of them in this order: older revisions before the app's revision,
-   then not ready before ready, then oldest first. Mark it for deletion if it
-   is not ready, or if more than `R` are ready; otherwise stop.
+2. **Remove.** While the app has more than `R` counted instances, mark for
+   deletion the first of them, in this order, that may go: older revisions
+   before the app's revision, then not ready before ready, then oldest
+   first. Stop when none may go.
+   - An instance **may go** if it is not ready, or if more than `R` are
+     ready.
+   - An instance of the app's revision may go only while that revision has
+     more than `R` counted instances, so rule 2 never undoes rule 1.
 
    Not ready first matters: without it, a crash-looping old instance, or a
    surplus one after a scale-down, would wait forever for a ready count that
-   never rises above `R`.
+   never rises above `R`. Skipping past an instance that must stay matters
+   too: with `R = 1`, one ready old instance and two failed new ones, the
+   surplus failed one goes while the old one keeps serving.
 
 - **A change of revision rolls one instance at a time.** One new instance
   starts, and an old one goes only once the new one is ready, so the ready
@@ -202,10 +210,14 @@ until it has gone.
   even if no row holds it.
 - A resource of instance X that uses the slot the store gave Y is X's orphan.
   It is torn down, and Y is not started until it has gone.
-- Resources whose names are not ULIDs, such as VMs deployed by hand in M1
-  (`fc@web`, `dt00003`), are not the daemon's. They are never touched, but
-  the slots they use are never allocated, and the daemon reports them. The
-  operator removes them when moving a host to the daemon.
+- VMs deployed by hand in M1 have units and directories whose names are not
+  ULIDs (`fc@web`, `vms/web`). They are not the daemon's: never touched, and
+  reported. Their slots, read from their `net.env` and `jail.env`, are never
+  allocated. The operator removes them when moving a host to the daemon.
+- A TAP is told apart by the slot it carries, not its name, since the
+  daemon's and M1's are both `dt<slot>` (the nft policy matches `dt*`). A TAP
+  whose slot no instance row and no M1 directory claims is an orphan, and is
+  torn down. One that an M1 directory claims is left alone.
 
 ### Writes
 
@@ -214,7 +226,11 @@ acts, then records the result, with preconditions:
 
 - creating an instance row requires the app's spec at the revision the pass
   read, so a pass never acts on an app that changed under it;
-- marking or deleting an instance requires its row at the revision read;
+- marking an instance for deletion under rule 2 requires both its row and
+  the app's spec at the revisions read, since the decision rests on the
+  app's `replicas`;
+- deleting an instance's row after teardown requires its row at the revision
+  read;
 - a `Stale` result starts a new pass. Passes for one app never overlap.
 
 ## Consequences
