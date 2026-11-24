@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use dassie_init::boot::{GUEST_DEVICE, GUEST_MOUNT, RootSpec};
 use dassie_init::control::ControlListener;
+use dassie_init::reporter::Conn;
 use dassie_proto::GuestConfig;
 use dassie_proto::guest_config::Ipv4Cidr;
 use dassie_proto::guest_config::{GUEST_FILE, MAX_CONFIG_BYTES};
@@ -408,7 +409,7 @@ fn stream() -> io::Result<OwnedFd> {
 
 /// Opens a connection to `port` on `cid`. Firecracker forwards it to the
 /// host socket `<uds_path>_<port>`, and resets it if nothing listens there.
-pub(super) fn vsock_connect(cid: u32, port: u32) -> io::Result<Box<dyn Write + Send>> {
+pub(super) fn vsock_connect(cid: u32, port: u32) -> io::Result<Box<dyn Conn>> {
     let fd = stream()?;
     connect(fd.as_raw_fd(), &VsockAddr::new(cid, port))?;
     Ok(Box::new(File::from(fd)))

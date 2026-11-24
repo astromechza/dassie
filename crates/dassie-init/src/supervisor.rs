@@ -26,7 +26,7 @@ use crate::config::RunSpec;
 use crate::control::{self, ControlListener};
 use crate::reporter::{Connector, Reporter};
 
-/// How long the supervisor waits for `exited` to reach the host.
+/// How long the supervisor waits for the host to confirm `exited`.
 const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 const PROBE_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -68,7 +68,7 @@ impl fmt::Debug for Deps {
 }
 
 /// Spawns the entrypoint and supervises it until it exits. Returns its exit
-/// status once `exited` has been reported, or has had its chance to be.
+/// status once the host has confirmed `exited`, or has had its chance to.
 pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
     let (control_tx, control_rx) = deps.control;
     let reporter = Reporter::start(deps.connect);
@@ -156,7 +156,9 @@ pub fn run(spec: &RunSpec, deps: Deps) -> io::Result<ExitStatus> {
     probe_done.store(true, Ordering::Relaxed);
     set_state(GuestState::Exited);
     reporter.send(Event::Exited { status: exit });
-    if !reporter.flush(EXIT_FLUSH_TIMEOUT) {
+    // PID 1 reboots once this returns, so wait for the host to confirm it
+    // read `exited` (ADR 0018).
+    if !reporter.finish(EXIT_FLUSH_TIMEOUT) {
         eprintln!("dassie-init: could not deliver exited event to the host");
     }
     Ok(exit)

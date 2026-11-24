@@ -173,6 +173,14 @@ boot() {
     echo "FAIL: boot $n ($mode): events not in started, ready, exited order" >&2
     exit 1
   fi
+  # vm-run closes the events connection once it has read `exited`, and init
+  # waits for that close before it reboots (ADR 0018). A close that never
+  # reaches the guest costs every boot 2 s, so it fails the test.
+  if grep -qF "could not deliver exited event" "$run/console.log"; then
+    dump
+    echo "FAIL: boot $n ($mode): the guest saw no close after exited" >&2
+    exit 1
+  fi
   # testapp runs as a non-root user and exits early unless it can reopen
   # /dev/stderr and write /dev/shm (ADR 0005, ADR 0006), and unless the
   # overlay root is 0755 root and holds no file from an earlier boot.

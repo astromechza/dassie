@@ -143,6 +143,8 @@ fn log_events(conn_id: usize, conn: UnixStream, exited_tx: &mpsc::Sender<()>) {
                 println!("[conn {conn_id}] {event:?}");
                 if matches!(event, Event::Exited { .. }) {
                     let _ = exited_tx.send(());
+                    // Closing tells the guest it may reboot (ADR 0018).
+                    break;
                 }
             }
             Ok(None) => break,
