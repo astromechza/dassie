@@ -177,8 +177,11 @@ means not being deleted.
    surplus failed one goes while the old one keeps serving.
 
 - **A change of revision rolls one instance at a time.** One new instance
-  starts, and an old one goes only once the new one is ready, so the ready
-  count never drops below `R` because of a deploy. The surge of 1 and the
+  starts, and an old one goes only once the new one is ready. The daemon
+  never stops an instance that would leave fewer than `R` ready, as far as it
+  can see when it acts (below). A new instance that fails in the moment
+  between that check and the stop can still leave the app short: that is a
+  failure, which the deploy does not guard against. The surge of 1 and the
   unavailability of 0 are constants here; M4 makes them settings.
 - **Scaling up** starts every missing instance at once. **Scaling down** is
   rule 2.
