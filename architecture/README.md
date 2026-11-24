@@ -13,7 +13,7 @@ same change that makes the decision. Start new ones from
 | [0004](0004-host-guest-wire-protocol.md) | Host <-> guest wire protocol | Accepted |
 | [0005](0005-guest-init-contract.md) | Guest init contract | Accepted (cmdline config delivery superseded by 0015) |
 | [0006](0006-guest-assets-layout.md) | Guest assets and the initramfs switch-root | Accepted (host unit superseded by 0012 and 0013, per-VM boot args by 0015) |
-| [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009, retries by 0011) |
+| [0007](0007-image-store-and-rootfs-build.md) | Image store and rootfs build | Accepted (rootfs format superseded by 0009, retries by 0011, copied headers by 0017) |
 | [0008](0008-guest-networking.md) | Guest networking | Accepted (DNS delivery superseded by 0015) |
 | [0009](0009-read-only-rootfs-format-erofs.md) | Read-only rootfs format: erofs | Accepted |
 | [0010](0010-ingress-through-caddy.md) | Ingress through Caddy | Accepted |
@@ -21,6 +21,7 @@ same change that makes the decision. Start new ones from
 | [0012](0012-per-vm-runner.md) | Per-VM runner | Accepted |
 | [0013](0013-jailed-firecracker.md) | Firecracker runs in the jailer | Accepted |
 | [0015](0015-guest-config-drive.md) | Guest config drive | Accepted |
+| [0017](0017-flattener-writes-fresh-tar-headers.md) | The flattener writes fresh tar headers | Accepted |
 
 ## Diagrams
 
