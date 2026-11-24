@@ -1,6 +1,6 @@
 # 0016. Store data access layer
 
-Status: Proposed
+Status: Accepted
 Date: 2026-11-17
 
 ## Context
