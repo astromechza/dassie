@@ -56,8 +56,11 @@ until the deletion finishes; a delete cannot be undone. Otherwise it builds
 the template from the operator's spec, pulls its
 image outside any store write (ADR 0016), creates the revision if no
 revision has that hash, and writes the app's spec: its `revision` and its
-`replicas`. That write reads the app's status in the same transaction, and
-is refused, writing nothing, if a delete began during the pull. An identical template reuses the existing revision, so applying
+`replicas`. That write requires the app's spec at the revision read before
+the pull (or no app, for a new one), so an app deleted and recreated under
+the same name meanwhile makes it `Stale`. It also reads the app's status in
+the same transaction, and is refused, writing nothing, if a delete began
+during the pull. An identical template reuses the existing revision, so applying
 the same spec again changes nothing, while a change of `replicas` alone takes
 effect without a new revision.
 
@@ -201,8 +204,9 @@ other resources might.
 **A removal is checked again before it stops a unit.** Rule 2 decides on
 unit states the pass read, and a unit can fail after that. So just before
 stopping an instance that rule 2 marked, the pass reads unit states again.
-If stopping it would leave fewer than `R` ready, it withdraws the mark
-instead. That narrows the window to the moment between the check and the
+If the instance is ready now and stopping it would leave fewer than `R`
+ready, it withdraws the mark instead. An instance that is still not ready is
+stopped either way, since stopping it lowers no ready count. That narrows the window to the moment between the check and the
 stop. An instance that fails after an old one has stopped is a failure like
 any other, not a deploy. Instances marked because their app is being deleted
 are stopped regardless.
