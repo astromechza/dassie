@@ -12,9 +12,13 @@ clap.workspace = true
 dassie-image.workspace = true
 dassie-proto.workspace = true
 dassie-vm.workspace = true
+redb.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
+schemars.workspace = true
 tempfile.workspace = true
 
 [lints]
