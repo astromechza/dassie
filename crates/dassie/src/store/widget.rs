@@ -74,34 +74,40 @@ pub(crate) struct Widget {
     pub(crate) status: Versioned<WidgetStatus>,
 }
 
-/// Reads of widgets, for any transaction.
+/// Reads of widgets, for any transaction. Each runs whole inside
+/// `guarded`, so an error it raises itself, such as a spec without a status,
+/// fails a write like a failed `get` does.
 pub(crate) trait WidgetReads: Reads + Sized {
     fn widget(&self, key: &str) -> Result<Option<Widget>> {
-        let Some(spec) = get(self, SPEC, key)? else {
-            return Ok(None);
-        };
-        let status = get(self, STATUS, key)?.ok_or_else(|| Error::Corrupt {
-            table: table_name(STATUS),
-            key: key.into(),
-            reason: "spec without status".into(),
-        })?;
-        Ok(Some(Widget { spec, status }))
+        self.guarded(|| {
+            let Some(spec) = get(self, SPEC, key)? else {
+                return Ok(None);
+            };
+            let status = get(self, STATUS, key)?.ok_or_else(|| Error::Corrupt {
+                table: table_name(STATUS),
+                key: key.into(),
+                reason: "spec without status".into(),
+            })?;
+            Ok(Some(Widget { spec, status }))
+        })
     }
 
     /// Widgets in key order.
     fn widgets(&self) -> Result<Vec<(String, Widget)>> {
-        let mut statuses: BTreeMap<_, _> = scan(self, STATUS)?.into_iter().collect();
-        scan(self, SPEC)?
-            .into_iter()
-            .map(|(key, spec)| {
-                let status = statuses.remove(&key).ok_or_else(|| Error::Corrupt {
-                    table: table_name(STATUS),
-                    key: key.clone(),
-                    reason: "spec without status".into(),
-                })?;
-                Ok((key, Widget { spec, status }))
-            })
-            .collect()
+        self.guarded(|| {
+            let mut statuses: BTreeMap<_, _> = scan(self, STATUS)?.into_iter().collect();
+            scan(self, SPEC)?
+                .into_iter()
+                .map(|(key, spec)| {
+                    let status = statuses.remove(&key).ok_or_else(|| Error::Corrupt {
+                        table: table_name(STATUS),
+                        key: key.clone(),
+                        reason: "spec without status".into(),
+                    })?;
+                    Ok((key, Widget { spec, status }))
+                })
+                .collect()
+        })
     }
 }
 

@@ -386,6 +386,8 @@ pub(crate) trait Reads: sealed::Sealed {
 
     /// Runs one read. In a write, a failed read fails the write like a
     /// failed change does, and a read after a failure returns that failure.
+    /// A kind's own reads run whole inside it, so errors they raise
+    /// themselves count too.
     #[doc(hidden)]
     fn guarded<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         f()

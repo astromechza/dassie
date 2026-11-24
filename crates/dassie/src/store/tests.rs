@@ -238,6 +238,27 @@ fn a_caught_read_error_still_fails_the_write() {
 }
 
 #[test]
+fn a_caught_error_from_a_kinds_own_read_still_fails_the_write() {
+    let store = Store::in_memory().unwrap();
+    // A spec with no status: get succeeds, the kind's read raises Corrupt.
+    raw_put(&store, SPEC, "lonely", 1, br#"{"size":1,"colour":"red"}"#);
+    for read in [
+        |w: &WriteTxn| w.widget("lonely").map(drop),
+        |w: &WriteTxn| w.widgets().map(drop),
+    ] {
+        let err = store
+            .write(|w| {
+                w.create_widget("b", &spec(1, None), &pending())?;
+                assert!(read(w).is_err());
+                Ok::<_, Error>(())
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Corrupt { .. }), "{err}");
+        assert_eq!(store.read(|r| r.widget("b")).unwrap(), None);
+    }
+}
+
+#[test]
 fn a_read_after_a_failure_returns_it() {
     let store = Store::in_memory().unwrap();
     create(&store, "a", None);
