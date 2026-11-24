@@ -324,8 +324,9 @@ depend on them, but they are about the host, so they belong elsewhere:
 ## Consequences
 
 - The workspace stays pure Rust, and the lint aliases work as they do today.
-  serde and serde_json were already dependencies, and redb adds only itself
-  and `libc`.
+  serde and serde_json were already dependencies. redb's only dependency is
+  `libc`, which is Rust declarations of the C library every Rust binary
+  links anyway, compiles no C, and was already in the tree.
 - Commits are atomic and durable without the rename and `sync` dance
   `deploy-image.sh` does today.
 - There is no SQL. Uniqueness, references and validation are Rust in the
