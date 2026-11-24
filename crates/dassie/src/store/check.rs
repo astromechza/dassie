@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 
 use super::{
     Inconsistency, KINDS, ReadTxn, Reads, Result, Revision, Rows, Versioned, decode, raw_scan,
-    table_name,
+    table_name, tables,
 };
 
 /// One resource kind, as `init` and `check` see it: its spec and status
@@ -21,6 +21,23 @@ pub(crate) struct KindDef {
 
 pub(super) fn run(r: &ReadTxn) -> Result<Vec<Inconsistency>> {
     let mut found = Vec::new();
+    // The file must hold exactly the current schema's tables: a missing one
+    // is a forgotten migration, an extra one a stale or foreign store.
+    let want: BTreeSet<String> = tables().into_iter().map(|t| t.name).collect();
+    let have: BTreeSet<String> =
+        r.tx.list_tables()?
+            .map(|t| redb::TableHandle::name(&t).to_owned())
+            .collect();
+    for name in want.difference(&have) {
+        found.push(table_problem(name, "is missing: no migration created it"));
+    }
+    for name in have.difference(&want) {
+        found.push(table_problem(name, "is not part of this schema"));
+    }
+    if want.difference(&have).next().is_some() {
+        // Reads of a missing table would fail; report what we have.
+        return Ok(found);
+    }
     let store = r.revision()?;
     for kind in KINDS {
         let specs = keys_checking_revisions(r, kind.spec, store, &mut found)?;
@@ -77,5 +94,13 @@ pub(crate) fn problem(table: Rows, key: &str, problem: &str) -> Inconsistency {
         table: table_name(table),
         key: key.into(),
         problem: problem.into(),
+    }
+}
+
+fn table_problem(name: &str, problem: &str) -> Inconsistency {
+    Inconsistency {
+        table: name.into(),
+        key: String::new(),
+        problem: format!("table {problem}"),
     }
 }

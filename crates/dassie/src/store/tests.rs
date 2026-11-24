@@ -350,14 +350,13 @@ fn on_disk() {
     assert!(matches!(Store::open(&path), Err(Error::NoStore(_))));
     fs::write(&path, b"").unwrap();
     assert!(matches!(Store::open(&path), Err(Error::NoStore(_))));
-    assert!(matches!(Store::init(&path), Err(Error::StoreExists(_))));
-    fs::remove_file(&path).unwrap();
 
     let store = Store::init(&path).unwrap();
     let rev = create(&store, "a", None);
     assert!(matches!(Store::open(&path), Err(Error::AlreadyRunning)));
     drop(store);
 
+    assert!(matches!(Store::init(&path), Err(Error::StoreExists(_))));
     let store = Store::open(&path).unwrap();
     let w = store.read(|r| r.widget("a")).unwrap().unwrap();
     assert_eq!(w.spec.revision, rev, "the epoch survives a reopen");
@@ -366,6 +365,77 @@ fn on_disk() {
     raw_put(&store, SPEC, "lonely", 1, br#"{"size":1,"colour":"red"}"#);
     drop(store);
     assert!(matches!(Store::open(&path), Err(Error::Inconsistent(v)) if v.len() == 1));
+}
+
+/// The names of the tables in a store's file.
+fn file_tables(store: &Store) -> Vec<String> {
+    let tx = store.db.begin_read().unwrap();
+    let mut names: Vec<_> = tx
+        .list_tables()
+        .unwrap()
+        .map(|t| redb::TableHandle::name(&t).to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn schema_tables() -> Vec<String> {
+    let mut names: Vec<_> = tables().into_iter().map(|t| t.name).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_interrupted_init_is_finished_by_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dassie.redb");
+    // A redb file with no migration applied, as a crash during the first
+    // one leaves it.
+    drop(Database::builder().create(&path).unwrap());
+    assert!(matches!(Store::open(&path), Err(Error::NoStore(_))));
+    let store = Store::init(&path).unwrap();
+    assert_eq!(file_tables(&store), schema_tables());
+    assert_consistent(&store);
+}
+
+#[test]
+fn an_older_store_is_copied_then_migrated_to_the_same_tables_as_a_new_one() {
+    const { assert!(SCHEMA_VERSION >= 2, "tests run with the widget migration") };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dassie.redb");
+    Store::init_at(&path, 1);
+    let store = Store::open(&path).unwrap();
+    assert!(dir.path().join("dassie.redb.v1").exists());
+    assert_eq!(stored_version(&store.db).unwrap(), SCHEMA_VERSION);
+    assert_eq!(file_tables(&store), schema_tables());
+    assert_eq!(file_tables(&Store::in_memory().unwrap()), schema_tables());
+    create(&store, "a", None);
+    drop(store);
+    // The copy is the store as it was: version 1, no widget tables.
+    let old = Database::builder()
+        .open(dir.path().join("dassie.redb.v1"))
+        .unwrap();
+    assert_eq!(stored_version(&old).unwrap(), 1);
+}
+
+#[test]
+fn check_holds_the_file_to_the_schemas_tables() {
+    let store = Store::in_memory().unwrap();
+    let tx = store.db.begin_write().unwrap();
+    tx.open_table(Rows::new("stray")).unwrap();
+    tx.commit().unwrap();
+    let found = store.check().unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].table, "stray");
+
+    let tx = store.db.begin_write().unwrap();
+    tx.delete_table(Rows::new("stray")).unwrap();
+    tx.delete_table(STATUS).unwrap();
+    tx.commit().unwrap();
+    let found = store.check().unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].table, "widget_status");
+    assert!(found[0].problem.contains("missing"), "{found:?}");
 }
 
 #[test]
@@ -486,8 +556,11 @@ fn a_storage_fault_is_fatal_and_leaves_one_state_or_the_other() {
 #[test]
 fn schema_snapshot() {
     let schemas = serde_json::json!({
-        "widget": schemars::schema_for!(WidgetSpec),
-        "widget_status": schemars::schema_for!(WidgetStatus),
+        "tables": tables(),
+        "values": {
+            "widget": schemars::schema_for!(WidgetSpec),
+            "widget_status": schemars::schema_for!(WidgetStatus),
+        },
     });
     let got = serde_json::to_string_pretty(&schemas).unwrap() + "\n";
     let path = format!(

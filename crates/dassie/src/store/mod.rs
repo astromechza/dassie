@@ -3,9 +3,10 @@
 //! Nothing outside this module names redb or opens a table. Callers get
 //! [`Store::read`] and [`Store::write`], and typed methods on the
 //! transactions those hand to their closures. Each resource kind adds its
-//! own methods and its entry in [`KINDS`]; this file is the plumbing they
-//! share: the `meta` table, revisions and preconditions, and the rule that a
-//! failed store method fails the whole write.
+//! own methods, a migration that creates its tables, and its entry in
+//! [`KINDS`]. This file is the plumbing they share: migrations, the `meta`
+//! table, revisions and preconditions, and the rule that a failed store
+//! method fails the whole write.
 
 use std::cell::Cell;
 use std::fs;
@@ -31,9 +32,6 @@ pub(crate) use error::{Error, Inconsistency};
 
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// The schema version this binary reads and writes.
-pub(crate) const SCHEMA_VERSION: u64 = 1;
-
 /// A table of rows: key, then the row's revision number and its JSON.
 pub(crate) type Rows = TableDefinition<'static, &'static str, (u64, &'static [u8])>;
 
@@ -43,17 +41,98 @@ const META_VERSION: &str = "schema_version";
 const META_REVISION: &str = "revision";
 const META_EPOCH: &str = "epoch";
 
-/// Every resource kind the store holds, for `init` and `check`.
+/// Every resource kind this binary knows, for reads and `check`.
 const KINDS: &[KindDef] = &[
     #[cfg(test)]
     widget::KIND,
 ];
 
-/// Migrations from version N to N+1 are `MIGRATIONS[N - 1]`. They work on
-/// raw rows (`serde_json::Value`), never on the current structs.
+/// The store's schema, as the steps that build it. Migration N takes the
+/// store from version N - 1 to N, in one write transaction with its version
+/// bump, so it is applied once or not at all. Version 0 is an empty file.
+/// `init` and `open` both run this list, so a new store and an upgraded one
+/// end up the same.
+///
+/// Migrations are frozen once released. Each one creates, renames or drops
+/// tables through its own definitions, and rewrites rows as
+/// `serde_json::Value`, never through the current structs. No table is ever
+/// created on first use. A test-only kind's tables come from a test-only
+/// migration after the real ones.
 type Migration = fn(&redb::WriteTransaction) -> Result<()>;
-const MIGRATIONS: &[Migration] = &[];
-const _: () = assert!(MIGRATIONS.len() as u64 + 1 == SCHEMA_VERSION);
+const MIGRATIONS: &[Migration] = &[
+    v1_meta,
+    #[cfg(test)]
+    widget::MIGRATION,
+];
+
+/// The schema version this binary reads and writes.
+pub(crate) const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
+
+/// Version 1: the store's own counters. `schema_version` is written by
+/// every migration.
+fn v1_meta(tx: &redb::WriteTransaction) -> Result<()> {
+    let mut meta = tx.open_table(META)?;
+    meta.insert(META_REVISION, 0)?;
+    meta.insert(META_EPOCH, fresh_epoch())?;
+    Ok(())
+}
+
+/// Applies migrations `from + 1 ..= to`, each in its own write.
+fn migrate(db: &Database, from: u64, to: u64) -> Result<()> {
+    for version in from + 1..=to {
+        let step = MIGRATIONS[usize::try_from(version - 1).expect("schema versions fit in usize")];
+        let tx = db.begin_write()?;
+        step(&tx)?;
+        tx.open_table(META)?.insert(META_VERSION, version)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// The store's schema version: 0 if no migration has run.
+fn stored_version(db: &Database) -> Result<u64> {
+    let tx = db.begin_read()?;
+    match tx.open_table(META) {
+        Ok(meta) => Ok(meta.get(META_VERSION)?.map_or(0, |v| v.value())),
+        Err(redb::TableError::TableDoesNotExist(_)) => Ok(0),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// One table of the current schema: its name and its key and value types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct TableInfo {
+    pub(crate) name: String,
+    pub(crate) key: &'static str,
+    pub(crate) value: &'static str,
+}
+
+fn table_info<K: redb::Key + 'static, V: redb::Value + 'static>(
+    def: TableDefinition<'static, K, V>,
+) -> TableInfo {
+    TableInfo {
+        name: redb::TableHandle::name(&def).to_owned(),
+        key: std::any::type_name::<K>(),
+        value: std::any::type_name::<V>(),
+    }
+}
+
+/// Every table the current schema has, which `check` holds the file to.
+pub(crate) fn tables() -> Vec<TableInfo> {
+    let mut all = vec![table_info(META)];
+    for kind in KINDS {
+        all.push(table_info(kind.spec));
+        all.push(table_info(kind.status));
+    }
+    all
+}
+
+fn exclusive<T>(r: Result<T, redb::DatabaseError>) -> Result<T> {
+    match r {
+        Err(redb::DatabaseError::DatabaseAlreadyOpen) => Err(Error::AlreadyRunning),
+        r => Ok(r?),
+    }
+}
 
 /// One point in the store's history. The epoch changes whenever the store's
 /// history does (`init`, restore, load), so a revision from before a
@@ -91,27 +170,30 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    /// Creates a new, empty store at `path`, which must not exist yet.
+    /// Creates the store at `path` by running every migration. A file left
+    /// by an interrupted `init` is finished, so `init` can be rerun; a store
+    /// that is already initialised is refused.
     pub(crate) fn init(path: &Path) -> Result<Store> {
-        if path.exists() {
+        let db = exclusive(Database::builder().create(path))?;
+        if stored_version(&db)? != 0 {
             return Err(Error::StoreExists(path.to_owned()));
         }
-        Store::bootstrap(Database::builder().create(path)?)
+        migrate(&db, 0, SCHEMA_VERSION)?;
+        Store::from_db(db)
     }
 
-    /// Opens the store at `path`: migrates it if it is older than this
-    /// binary, then refuses it if `check` finds anything.
+    /// Opens the store at `path`. A store older than this binary is copied
+    /// aside and migrated; then `check` must find nothing.
     pub(crate) fn open(path: &Path) -> Result<Store> {
         match fs::metadata(path) {
             Ok(m) if m.len() > 0 => {}
             _ => return Err(Error::NoStore(path.to_owned())),
         }
-        let db = match Database::builder().open(path) {
-            Ok(db) => db,
-            Err(redb::DatabaseError::DatabaseAlreadyOpen) => return Err(Error::AlreadyRunning),
-            Err(e) => return Err(e.into()),
-        };
-        let version = read_meta(&db.begin_read()?, META_VERSION)?;
+        let db = exclusive(Database::builder().open(path))?;
+        let version = stored_version(&db)?;
+        if version == 0 {
+            return Err(Error::NoStore(path.to_owned()));
+        }
         if version > SCHEMA_VERSION {
             return Err(Error::TooNew {
                 found: version,
@@ -123,16 +205,7 @@ impl Store {
             // transaction is open, so the file is consistent on disk.
             let copy = format!("{}.v{version}", path.display());
             fs::copy(path, &copy).map_err(|e| Error::Io(std::sync::Arc::new(e)))?;
-            for (from, migrate) in MIGRATIONS
-                .iter()
-                .enumerate()
-                .skip(usize::try_from(version - 1).expect("schema versions fit in usize"))
-            {
-                let tx = db.begin_write()?;
-                migrate(&tx)?;
-                tx.open_table(META)?.insert(META_VERSION, from as u64 + 2)?;
-                tx.commit()?;
-            }
+            migrate(&db, version, SCHEMA_VERSION)?;
         }
         let store = Store::from_db(db)?;
         let found = store.check()?;
@@ -142,16 +215,18 @@ impl Store {
         Ok(store)
     }
 
-    /// A new, empty store in memory, for tests.
+    /// A new store in memory, for tests.
     #[cfg(test)]
     pub(crate) fn in_memory() -> Result<Store> {
         Store::with_backend(redb::backends::InMemoryBackend::new())
     }
 
-    /// A new, empty store on any backend, for tests that inject faults.
+    /// A new store on any backend, for tests that inject faults.
     #[cfg(test)]
     pub(crate) fn with_backend(backend: impl redb::StorageBackend) -> Result<Store> {
-        Store::bootstrap(Database::builder().create_with_backend(backend)?)
+        let db = Database::builder().create_with_backend(backend)?;
+        migrate(&db, 0, SCHEMA_VERSION)?;
+        Store::from_db(db)
     }
 
     /// Reopens a store a test made on `backend`.
@@ -160,21 +235,12 @@ impl Store {
         Store::from_db(Database::builder().create_with_backend(backend)?)
     }
 
-    /// Writes the meta rows and creates every table.
-    fn bootstrap(db: Database) -> Result<Store> {
-        let tx = db.begin_write()?;
-        {
-            let mut meta = tx.open_table(META)?;
-            meta.insert(META_VERSION, SCHEMA_VERSION)?;
-            meta.insert(META_REVISION, 0)?;
-            meta.insert(META_EPOCH, fresh_epoch())?;
-        }
-        for kind in KINDS {
-            tx.open_table(kind.spec)?;
-            tx.open_table(kind.status)?;
-        }
-        tx.commit()?;
-        Store::from_db(db)
+    /// Creates a store at `path` that stops at schema `version`, as an older
+    /// binary would have left it.
+    #[cfg(test)]
+    pub(crate) fn init_at(path: &Path, version: u64) {
+        let db = Database::builder().create(path).unwrap();
+        migrate(&db, 0, version).unwrap();
     }
 
     fn from_db(db: Database) -> Result<Store> {

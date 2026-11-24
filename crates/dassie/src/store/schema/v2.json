@@ -1,0 +1,89 @@
+{
+  "tables": [
+    {
+      "key": "&str",
+      "name": "meta",
+      "value": "u64"
+    },
+    {
+      "key": "&str",
+      "name": "widget",
+      "value": "(u64, &[u8])"
+    },
+    {
+      "key": "&str",
+      "name": "widget_status",
+      "value": "(u64, &[u8])"
+    }
+  ],
+  "values": {
+    "widget": {
+      "$defs": {
+        "Colour": {
+          "enum": [
+            "red",
+            "blue"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "colour": {
+          "$ref": "#/$defs/Colour"
+        },
+        "label": {
+          "description": "Unique across widgets when set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "colour"
+      ],
+      "title": "WidgetSpec",
+      "type": "object"
+    },
+    "widget_status": {
+      "$defs": {
+        "Phase": {
+          "enum": [
+            "pending",
+            "ready"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "observed": {
+          "description": "The spec revision number this status was written for.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "title": "WidgetStatus",
+      "type": "object"
+    }
+  }
+}

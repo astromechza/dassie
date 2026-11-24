@@ -16,6 +16,14 @@ use super::{
 pub(super) const SPEC: Rows = Rows::new("widget");
 pub(super) const STATUS: Rows = Rows::new("widget_status");
 
+/// The test-only migration that creates widget tables, after the real
+/// migrations, the way a real kind's own migration would.
+pub(super) const MIGRATION: super::Migration = |tx| {
+    tx.open_table(SPEC)?;
+    tx.open_table(STATUS)?;
+    Ok(())
+};
+
 pub(super) const KIND: KindDef = KindDef {
     spec: SPEC,
     status: STATUS,
