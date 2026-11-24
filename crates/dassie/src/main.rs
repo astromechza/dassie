@@ -15,6 +15,10 @@ use clap::{Args, Parser, Subcommand};
 
 mod guest_drive;
 mod runner;
+// The daemon's store (ADR 0016). Nothing outside tests uses it until the
+// daemon does.
+#[cfg_attr(not(test), allow(dead_code))]
+mod store;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "dassie: micro-VM app host")]

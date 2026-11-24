@@ -17,10 +17,15 @@ dassie-proto = { path = "crates/dassie-proto" }
 dassie-vm = { path = "crates/dassie-vm" }
 flate2 = "1"
 nix = { version = "0.31", default-features = false }
+# The daemon's store (ADR 0016). Pure Rust, so the musl lint aliases need no C
+# toolchain.
+redb = "4.6"
 # rustls's crypto provider. Pure Rust (and asm) for x86_64 and aarch64, so the
 # musl clippy aliases need no C cross toolchain; ring and aws-lc-rs both
 # compile C in their build scripts.
 rustls-graviola = "0.4"
+# JSON Schema snapshots of the store's types, in tests only (ADR 0016).
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
