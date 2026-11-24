@@ -56,7 +56,8 @@ until the deletion finishes; a delete cannot be undone. Otherwise it builds
 the template from the operator's spec, pulls its
 image outside any store write (ADR 0016), creates the revision if no
 revision has that hash, and writes the app's spec: its `revision` and its
-`replicas`. An identical template reuses the existing revision, so applying
+`replicas`. That write reads the app's status in the same transaction, and
+is refused, writing nothing, if a delete began during the pull. An identical template reuses the existing revision, so applying
 the same spec again changes nothing, while a change of `replicas` alone takes
 effect without a new revision.
 
@@ -190,10 +191,21 @@ short until the operator acts: deleting the instance lets rule 1 create a
 fresh one, and applying a fixed spec rolls past it. An old revision's failed
 instance is still removed by rule 2, as it is not ready.
 
-**Instances.** A counted instance's files (ADR 0013, ADR 0015) and unit are
-made to exist and started. One being deleted has its unit stopped, then its
-files, TAP and chroot removed, and then its row deleted, which frees its
-slot.
+**Instances.** A counted instance's directory, holding its files (ADR 0013,
+ADR 0015) and its slot, is written first; then its TAP and chroot are made,
+and its unit started. One being deleted is undone in reverse: unit stopped,
+then TAP and chroot removed, then its directory, and then its row deleted,
+which frees its slot. So an instance's directory exists whenever any of its
+other resources might.
+
+**A removal is checked again before it stops a unit.** Rule 2 decides on
+unit states the pass read, and a unit can fail after that. So just before
+stopping an instance that rule 2 marked, the pass reads unit states again.
+If stopping it would leave fewer than `R` ready, it withdraws the mark
+instead. That narrows the window to the moment between the check and the
+stop. An instance that fails after an old one has stopped is a failure like
+any other, not a deploy. Instances marked because their app is being deleted
+are stopped regardless.
 
 **What the host holds.** ADR 0016 requires that no host-wide value is reused
 while the host still carries it, including after a restore that left the
@@ -205,19 +217,23 @@ daemon also writes each instance's slot into its own directory, where the
 scan reads it. An orphan whose slot cannot be read blocks every new slot
 until it has gone.
 
-- A resource that belongs to no instance row is an orphan, and is torn down.
-- A slot in use on the host is not allocated until its resources are gone,
-  even if no row holds it.
-- A resource of instance X that uses the slot the store gave Y is X's orphan.
-  It is torn down, and Y is not started until it has gone.
+- **Directories claim slots, not rows.** A slot is in use on the host while
+  any directory, the daemon's or an M1 one, records it. A TAP is told apart
+  by the slot it carries, not its name, since both are `dt<slot>` (the nft
+  policy matches `dt*`). A TAP whose slot no directory records is an orphan,
+  whatever the rows say, and is torn down: the build and teardown orders
+  above mean no live instance is ever without its directory.
+- A unit, directory or chroot named by an id that no instance row holds is an
+  orphan, and is torn down.
+- A new instance takes no slot that is in use on the host.
+- **An instance starts only on a slot nothing else uses.** If its slot is
+  recorded by another directory, or carried by a TAP no directory claims, it
+  waits until the other resources have gone. A restored row whose slot an M1
+  VM still uses waits until the operator removes that VM.
 - VMs deployed by hand in M1 have units and directories whose names are not
   ULIDs (`fc@web`, `vms/web`). They are not the daemon's: never touched, and
-  reported. Their slots, read from their `net.env` and `jail.env`, are never
-  allocated. The operator removes them when moving a host to the daemon.
-- A TAP is told apart by the slot it carries, not its name, since the
-  daemon's and M1's are both `dt<slot>` (the nft policy matches `dt*`). A TAP
-  whose slot no instance row and no M1 directory claims is an orphan, and is
-  torn down. One that an M1 directory claims is left alone.
+  reported. Their slots are read from their `net.env` and `jail.env`. The
+  operator removes them when moving a host to the daemon.
 
 ### Writes
 
