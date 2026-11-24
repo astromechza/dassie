@@ -212,8 +212,8 @@ impl Store {
         if version < SCHEMA_VERSION {
             // Keep the store as it was, for rolling the binary back. No
             // transaction is open, so the file is consistent on disk.
-            let copy = format!("{}.v{version}", path.display());
-            fs::copy(path, &copy).map_err(|e| Error::Io(std::sync::Arc::new(e)))?;
+            backup(path, &format!("{}.v{version}", path.display()))
+                .map_err(|e| Error::Io(std::sync::Arc::new(e)))?;
             migrate(&db, version, SCHEMA_VERSION)?;
         }
         let store = Store::from_db(db)?;
@@ -313,6 +313,20 @@ fn read_meta(tx: &redb::ReadTransaction, key: &str) -> Result<u64> {
             key: key.into(),
             reason: "missing".into(),
         })
+}
+
+/// Copies `path` to `to` durably, before a migration can commit: through a
+/// temporary file that is synced, then renamed into place, then the
+/// directory is synced. A power cut leaves the old backup or the new one,
+/// never a partial file under the backup's name.
+fn backup(path: &Path, to: &str) -> std::io::Result<()> {
+    let tmp = format!("{to}.tmp");
+    let to = Path::new(to);
+    fs::copy(path, &tmp)?;
+    fs::File::open(&tmp)?.sync_all()?;
+    fs::rename(&tmp, to)?;
+    let dir = to.parent().filter(|d| !d.as_os_str().is_empty());
+    fs::File::open(dir.unwrap_or(Path::new(".")))?.sync_all()
 }
 
 /// A random id for a new history of the store.

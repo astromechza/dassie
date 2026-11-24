@@ -450,6 +450,7 @@ fn an_older_store_is_copied_then_migrated_to_the_same_tables_as_a_new_one() {
     assert!(matches!(Store::init(&path), Err(Error::StoreExists(_))));
     let store = Store::open(&path).unwrap();
     assert!(dir.path().join("dassie.redb.v1").exists());
+    assert!(!dir.path().join("dassie.redb.v1.tmp").exists());
     assert_eq!(stored_version(&store.db).unwrap(), SCHEMA_VERSION);
     assert_eq!(file_tables(&store), schema_tables());
     assert_eq!(file_tables(&Store::in_memory().unwrap()), schema_tables());
