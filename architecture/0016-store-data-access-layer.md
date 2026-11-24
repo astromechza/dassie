@@ -66,12 +66,13 @@ impl Store {
 ```
 
 - `write` commits when the closure returns `Ok` and no store method in it
-  failed. A store method that returns `Err` marks the transaction failed,
-  and `write` then aborts and returns that error, even if the closure caught
-  it and returned `Ok`. Every later store method in that write returns the
-  same error at once. So a write never commits half a change. A caller that
-  wants to try one thing and fall back to another reads first, in the same
-  transaction.
+  failed. A store method, read or change, that returns `Err` marks the
+  transaction failed, and `write` then aborts and returns that error, even if
+  the closure caught it and returned `Ok`. Every later store method in that
+  write returns the same error at once. So a write never commits half a
+  change, or a change built on a read that failed. A caller that wants to try
+  one thing and fall back to another reads first, in the same transaction: a
+  missing row is `Ok(None)`, not an error.
 - The closure's error type is the caller's, so a request or reconcile error
   needs no store variant.
 - `ReadTxn` and `WriteTxn` both implement a sealed `Reads` trait, which holds
@@ -236,12 +237,15 @@ that also records N, so it applies once or not at all. Version 0 is an empty
 file; migration 1 creates `meta` (`schema_version`, `revision`, `epoch`), and
 each kind's tables come from a migration of their own.
 
-- `init` runs every migration from 0, and can be rerun to finish an
-  interrupted one. `open` copies the file to `dassie.redb.v<N>`, then runs
-  those above its version. A new store and an upgraded one end up the same.
+- `init` runs every migration from 0, and refuses a file any migration has
+  run on. Rerun, it finishes an `init` interrupted before its first
+  migration. One interrupted later left a store at an older version, like
+  one an older binary wrote, which `open` upgrades.
+- `open` copies the file to `dassie.redb.v<N>`, then runs the migrations
+  above its version. A new store and an upgraded one end up the same.
 - No table is created on first use, so a kind shipped without its migration
   fails at `open`, not at its first read. `check` holds the file to exactly
-  the schema's tables.
+  the schema's tables, and no multimap tables.
 - Released migrations are frozen. They use their own table definitions and
   rewrite rows as `serde_json::Value`, never through the current structs.
 - Any change to what can be stored bumps the version: a table, a key or value
