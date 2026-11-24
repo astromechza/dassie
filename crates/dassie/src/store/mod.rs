@@ -65,7 +65,9 @@ const MIGRATIONS: &[Migration] = &[
     widget::MIGRATION,
 ];
 
-/// The schema version this binary reads and writes.
+/// The schema version this binary reads and writes. In test builds the
+/// test-only migrations make it higher, so the schema snapshot's file is
+/// named for the test build's version.
 pub(crate) const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 
 /// Version 1: the store's own counters. `schema_version` is written by
@@ -118,6 +120,8 @@ fn table_info<K: redb::Key + 'static, V: redb::Value + 'static>(
 }
 
 /// Every table the current schema has, which `check` holds the file to.
+/// redb also records each table's key and value types, and refuses to open
+/// a table under different ones.
 pub(crate) fn tables() -> Vec<TableInfo> {
     let mut all = vec![table_info(META)];
     for kind in KINDS {
@@ -182,8 +186,9 @@ impl Store {
         Store::from_db(db)
     }
 
-    /// Opens the store at `path`. A store older than this binary is copied
-    /// aside and migrated; then `check` must find nothing.
+    /// Opens the store at `path`. A file no migration has run on (version 0)
+    /// is no store. A store older than this binary is copied aside and
+    /// migrated; then `check` must find nothing.
     pub(crate) fn open(path: &Path) -> Result<Store> {
         match fs::metadata(path) {
             Ok(m) if m.len() > 0 => {}
