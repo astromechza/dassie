@@ -206,10 +206,12 @@ other resources might.
 
 **A removal is checked again before it stops a unit.** Rule 2 decides on
 unit states the pass read, and a unit can fail after that. So just before
-stopping an instance that rule 2 marked, the pass reads unit states again.
-If the instance is ready now and stopping it would leave fewer than `R`
-ready, it withdraws the mark instead. An instance that is still not ready is
-stopped either way, since stopping it lowers no ready count. That narrows the window to the moment between the check and the
+stopping an instance that rule 2 marked, the pass reads the app's spec and
+unit states again, and applies rule 2 to that instance afresh: the app must
+still have more than `R` counted instances, counting this one, with `R` as
+it is now, and the instance must still be one that may go. Otherwise it
+withdraws the mark instead. So a mark made under an older `R`, or one a
+scale-up has since made unneeded, is never acted on. That narrows the window to the moment between the check and the
 stop. An instance that fails after an old one has stopped is a failure like
 any other, not a deploy. Instances marked because their app is being deleted
 are stopped regardless.
