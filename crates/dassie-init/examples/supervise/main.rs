@@ -31,6 +31,7 @@ use std::{env, fs, thread};
 
 use dassie_init::config;
 use dassie_init::control::ControlListener;
+use dassie_init::reporter::Conn;
 use dassie_init::supervisor::{self, Control, Deps};
 use dassie_proto::{CONTROL_PORT, EVENTS_PORT, GuestConfig};
 use nix::sys::signal::{SigSet, Signal};
@@ -89,7 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let reaper_tx = control_tx.clone();
     let deps = Deps {
         connect: Box::new(move || {
-            UnixStream::connect(&events_path).map(|s| Box::new(s) as Box<dyn Write + Send>)
+            UnixStream::connect(&events_path).map(|s| Box::new(s) as Box<dyn Conn>)
         }),
         control_listener: Box::new(control_listener),
         control: (control_tx, control_rx),

@@ -60,7 +60,9 @@ already knows which VM a connection belongs to.
 {"v":1,"type":"exited","signal":9}
 ```
 
-The guest never reads from the events connection.
+The guest never reads from the events connection. _(Superseded by
+[ADR 0018](0018-host-closes-events-after-exited.md): after `exited`, the
+guest reads until the host closes the connection.)_
 
 **Control.** The host sends one request line and the guest answers with
 exactly one response line, in order. A connection can carry several
@@ -93,7 +95,10 @@ reconnects, retrying every 500 ms. On a Unix socket or vsock, a write to a
 closed peer fails outright, so the retry does not duplicate anything a host
 read. An event written into a connection the host then drops without reading
 it is lost. On entrypoint exit the guest tries to deliver `exited` for up to
-2 s, then reboots regardless. Lost events are tolerated: a `health` request is
+2 s, then reboots regardless. _(Superseded by
+[ADR 0018](0018-host-closes-events-after-exited.md): delivery means the host
+has closed the connection after reading `exited`, not that the write
+returned.)_ Lost events are tolerated: a `health` request is
 the source of truth.
 
 **Reserved for later**, named here so additions stay additive:

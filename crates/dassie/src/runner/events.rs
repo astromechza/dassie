@@ -14,6 +14,10 @@ use super::Msg;
 /// receiver is gone. The guest holds one connection at a time, reconnecting
 /// only after a failed write. `tx` is bounded: while the main loop is behind,
 /// this thread stops reading, and the guest's writes wait.
+///
+/// `exited` is the last event of a boot. Once it is forwarded, the
+/// connection is closed: that close tells the guest it may reboot
+/// (ADR 0018).
 pub(crate) fn spawn(listener: UnixListener, tx: SyncSender<Msg>) {
     thread::spawn(move || {
         for conn in listener.incoming() {
@@ -31,8 +35,12 @@ pub(crate) fn spawn(listener: UnixListener, tx: SyncSender<Msg>) {
             loop {
                 match reader.recv::<Event>() {
                     Ok(Some(event)) => {
+                        let exited = matches!(event, Event::Exited { .. });
                         if tx.send(Msg::Event(event)).is_err() {
                             return;
+                        }
+                        if exited {
+                            break;
                         }
                     }
                     Ok(None) => break,
@@ -48,6 +56,8 @@ pub(crate) fn spawn(listener: UnixListener, tx: SyncSender<Msg>) {
                     }
                 }
             }
+            // Close before reporting, which can wait behind a full queue.
+            drop(reader);
             if tx.send(Msg::Disconnected).is_err() {
                 return;
             }

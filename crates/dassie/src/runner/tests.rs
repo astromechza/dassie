@@ -3,7 +3,7 @@
 //! sockets of its own.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -177,6 +177,36 @@ fn reports_events_and_exits_with_the_apps_code() {
 
     // The guest reboots: its connection closes and Firecracker exits 0.
     drop(guest);
+    vm.exit(0);
+    assert_eq!(h.finish(), 3);
+}
+
+#[test]
+fn closes_the_events_connection_once_it_has_read_exited() {
+    // The close is the guest's proof that `exited` arrived, so it may reboot
+    // (ADR 0018). Until then the connection stays open.
+    let vm = FakeVm::default();
+    let h = Harness::start(vm.clone());
+    let mut guest = h.guest();
+    guest.send(&Event::Started { pid: 42 }).unwrap();
+    h.journal_entry();
+    let mut conn = guest.into_inner();
+    conn.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let err = conn.read(&mut [0; 1]).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
+
+    let mut guest = FrameWriter::new(conn);
+    guest
+        .send(&Event::Exited {
+            status: ExitStatus::Code(3),
+        })
+        .unwrap();
+    let mut conn = guest.into_inner();
+    conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+    assert_eq!(conn.read(&mut [0; 1]).unwrap(), 0);
+    assert!(h.journal_entry().contains("DASSIE_CODE=3\n"));
+
     vm.exit(0);
     assert_eq!(h.finish(), 3);
 }

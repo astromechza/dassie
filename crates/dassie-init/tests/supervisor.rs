@@ -18,6 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use dassie_init::config::RunSpec;
+use dassie_init::reporter::Conn;
 use dassie_init::supervisor::{self, Control, Deps};
 use dassie_proto::{
     ErrorCode, Event, ExitStatus, FrameReader, FrameWriter, GuestState, HealthStatus, Request,
@@ -30,35 +31,49 @@ use nix::unistd::Pid;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A host events listener that can be killed (listener and connections
-/// closed) to simulate a host restart.
+/// closed) to simulate a host restart. Like vm-run, it closes a connection
+/// once it has read `exited`, unless held.
 struct EventsListener {
     events: mpsc::Receiver<Event>,
     stop: Arc<AtomicBool>,
+    hold: Arc<AtomicBool>,
     conns: Arc<Mutex<Vec<UnixStream>>>,
     path: PathBuf,
 }
 
 impl EventsListener {
-    fn bind(path: &Path) -> Self {
+    fn bind(path: &Path, hold: bool) -> Self {
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let (tx, events) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let hold = Arc::new(AtomicBool::new(hold));
         let conns = Arc::new(Mutex::new(Vec::<UnixStream>::new()));
         {
-            let (stop, conns) = (Arc::clone(&stop), Arc::clone(&conns));
+            let (stop, hold, conns) = (Arc::clone(&stop), Arc::clone(&hold), Arc::clone(&conns));
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((conn, _)) => {
                             conn.set_nonblocking(false).unwrap();
                             conns.lock().unwrap().push(conn.try_clone().unwrap());
-                            let tx = tx.clone();
+                            let (tx, hold) = (tx.clone(), Arc::clone(&hold));
                             thread::spawn(move || {
                                 let mut reader = FrameReader::new(BufReader::new(conn));
                                 while let Ok(Some(event)) = reader.recv::<Event>() {
+                                    let exited = matches!(event, Event::Exited { .. });
                                     let _ = tx.send(event);
+                                    if exited {
+                                        while hold.load(Ordering::SeqCst) {
+                                            thread::sleep(Duration::from_millis(1));
+                                        }
+                                        // `conns` holds a clone, so dropping
+                                        // this one would not close it.
+                                        let conn = reader.get_ref().get_ref();
+                                        let _ = conn.shutdown(std::net::Shutdown::Both);
+                                        return;
+                                    }
                                 }
                             });
                         }
@@ -73,9 +88,15 @@ impl EventsListener {
         Self {
             events,
             stop,
+            hold,
             conns,
             path: path.to_owned(),
         }
+    }
+
+    /// Lets held connections close.
+    fn release(&self) {
+        self.hold.store(false, Ordering::SeqCst);
     }
 
     fn next(&self) -> Event {
@@ -126,7 +147,7 @@ impl Guest {
         let reaper_tx = control_tx.clone();
         let deps = Deps {
             connect: Box::new(move || {
-                UnixStream::connect(&events_path).map(|s| Box::new(s) as Box<dyn Write + Send>)
+                UnixStream::connect(&events_path).map(|s| Box::new(s) as Box<dyn Conn>)
             }),
             control_listener: Box::new(control_listener),
             control: (control_tx, control_rx),
@@ -157,7 +178,13 @@ impl Guest {
     }
 
     fn listen(&self) -> EventsListener {
-        EventsListener::bind(&self.events_path())
+        EventsListener::bind(&self.events_path(), false)
+    }
+
+    /// Listens, but holds each connection open after `exited` until
+    /// released.
+    fn listen_holding(&self) -> EventsListener {
+        EventsListener::bind(&self.events_path(), true)
     }
 
     fn control(&self) -> ControlClient {
@@ -211,6 +238,30 @@ fn reports_started_ready_and_exit_code() {
             status: ExitStatus::Code(3)
         }
     );
+    assert_eq!(guest.wait(), ExitStatus::Code(3));
+}
+
+#[test]
+fn returns_only_once_the_host_has_closed_after_exited() {
+    // A written `exited` may still be in the guest kernel or in Firecracker,
+    // and PID 1 reboots as soon as `run` returns. So `run` must wait for the
+    // host to close the connection, which shows it read `exited`.
+    let guest = Guest::start(&["sh", "-c", "exit 3"], None);
+    let host = guest.listen_holding();
+    assert!(matches!(host.next(), Event::Started { .. }));
+    assert_eq!(host.next(), Event::Ready);
+    assert_eq!(
+        host.next(),
+        Event::Exited {
+            status: ExitStatus::Code(3)
+        }
+    );
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        !guest.result.is_finished(),
+        "returned before the host closed"
+    );
+    host.release();
     assert_eq!(guest.wait(), ExitStatus::Code(3));
 }
 

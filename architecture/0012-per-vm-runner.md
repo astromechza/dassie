@@ -36,7 +36,10 @@ dassie vm-run --config <firecracker config.json> [--firecracker <bin>]
   `<uds>_1024`, then spawn `firecracker --no-api --config-file <config>`.
   Binding first means the guest's first connect already finds a listener.
 - **Events.** One thread accepts on `<uds>_1024` and reads frames until EOF,
-  then accepts again. The guest holds one connection at a time.
+  then accepts again. The guest holds one connection at a time. _(Amended by
+  [ADR 0018](0018-host-closes-events-after-exited.md): the thread also
+  closes the connection once it has read `exited`, and the guest waits for
+  that close before it reboots.)_
   - `started`, `ready` and `exited` each become a journald entry, sent over
     the native protocol, with these fields: `MESSAGE`, `PRIORITY` (6, or 4
     for a non-zero code or a signal), `SYSLOG_IDENTIFIER=dassie-vm-run`,
