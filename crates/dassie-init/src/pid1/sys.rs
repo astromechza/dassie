@@ -6,7 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem;
 use std::net::Ipv4Addr;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::thread;
@@ -434,11 +434,8 @@ impl VsockListener {
 }
 
 impl ControlListener for VsockListener {
-    #[allow(unsafe_code)]
     fn accept(&self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
-        let raw = accept4(self.0.as_raw_fd(), SockFlag::SOCK_CLOEXEC)?;
-        // SAFETY: accept4 just returned this fd, and nothing else owns it.
-        let conn = File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+        let conn = File::from(accept4(&self.0, SockFlag::SOCK_CLOEXEC)?);
         Ok((Box::new(conn.try_clone()?), Box::new(conn)))
     }
 }

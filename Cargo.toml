@@ -16,7 +16,7 @@ dassie-image = { path = "crates/dassie-image" }
 dassie-proto = { path = "crates/dassie-proto" }
 dassie-vm = { path = "crates/dassie-vm" }
 flate2 = "1"
-nix = { version = "0.31", default-features = false }
+nix = { version = "0.32", default-features = false }
 # The daemon's store (ADR 0016). Pure Rust, so the musl lint aliases need no C
 # toolchain.
 redb = "4.6"
