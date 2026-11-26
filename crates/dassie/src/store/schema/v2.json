@@ -17,12 +17,12 @@
     },
     {
       "key": "&str",
-      "name": "revision",
+      "name": "release",
       "value": "(u64, &[u8])"
     },
     {
       "key": "&str",
-      "name": "revision_status",
+      "name": "release_status",
       "value": "(u64, &[u8])"
     },
     {
@@ -54,21 +54,21 @@
           "kind": {
             "$ref": "#/$defs/AppKind"
           },
+          "release": {
+            "description": "The hash of the release the app should run.",
+            "type": "string"
+          },
           "replicas": {
             "description": "How many instances should be ready.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
-          },
-          "revision": {
-            "description": "The hash of the revision the app should run.",
-            "type": "string"
           }
         },
         "required": [
           "kind",
           "replicas",
-          "revision"
+          "release"
         ],
         "title": "AppSpec",
         "type": "object"
@@ -106,7 +106,7 @@
             "type": "integer"
           },
           "rolling_since": {
-            "description": "Unix milliseconds; set while instances of an older revision remain.",
+            "description": "Unix milliseconds; set while instances of an older release remain.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -134,8 +134,8 @@
             "description": "The guest assets present at creation. They record drift; they do not\npin the files.",
             "type": "string"
           },
-          "revision": {
-            "description": "The hash of the revision this instance runs, for its whole life.",
+          "release": {
+            "description": "The hash of the release this instance runs, for its whole life.",
             "type": "string"
           },
           "slot": {
@@ -148,7 +148,7 @@
         },
         "required": [
           "app",
-          "revision",
+          "release",
           "slot",
           "kernel_digest",
           "initrd_digest"
@@ -174,11 +174,11 @@
         "type": "object"
       }
     },
-    "revision": {
+    "release": {
       "spec": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "Everything rendered into an instance's files. A change to any field is a\nnew revision. Fields at their default are left out when stored, so a new\nfield with a default changes no existing hash. Defaults are frozen once\nreleased.",
+        "description": "Everything rendered into an instance's files. A change to any field is a\nnew release. Fields at their default are left out when stored, so a new\nfield with a default changes no existing hash. Defaults are frozen once\nreleased.",
         "properties": {
           "cmd": {
             "items": {
@@ -246,7 +246,7 @@
       "status": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "When the revision was first applied.",
+        "description": "When the release was first applied.",
         "properties": {
           "created_at": {
             "description": "Unix milliseconds.",
@@ -258,7 +258,7 @@
         "required": [
           "created_at"
         ],
-        "title": "RevisionStatus",
+        "title": "ReleaseStatus",
         "type": "object"
       }
     }

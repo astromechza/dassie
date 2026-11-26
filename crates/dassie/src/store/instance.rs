@@ -25,8 +25,8 @@ pub(crate) const MAX_SLOT: u16 = 32767;
 #[serde(deny_unknown_fields)]
 pub(crate) struct InstanceSpec {
     pub(crate) app: String,
-    /// The hash of the revision this instance runs, for its whole life.
-    pub(crate) revision: String,
+    /// The hash of the release this instance runs, for its whole life.
+    pub(crate) release: String,
     /// The TAP, /31 and MAC (ADR 0008) and the jail uid, 0x70000000 + slot
     /// (ADR 0013).
     pub(crate) slot: u16,
@@ -135,7 +135,7 @@ fn not_found(id: &str) -> Error {
 }
 
 impl WriteTxn {
-    /// Creates an instance of the app's current revision, on the lowest slot
+    /// Creates an instance of the app's current release, on the lowest slot
     /// that no instance row holds and that `in_use_on_host` does not list.
     /// `app_pre` is the app's spec as the pass read it. Returns the slot.
     pub(crate) fn create_instance(
@@ -178,7 +178,7 @@ impl WriteTxn {
                 .ok_or(Error::Exhausted { what: "slot" })?;
             let spec = InstanceSpec {
                 app: app.into(),
-                revision: a.spec.value.revision,
+                release: a.spec.value.release,
                 slot,
                 kernel_digest: kernel_digest.into(),
                 initrd_digest: initrd_digest.into(),
@@ -190,7 +190,7 @@ impl WriteTxn {
     }
 
     /// Marks an instance for deletion, if it and its app's spec are still at
-    /// the revisions the pass read (`app_pre` is `Any` when the app itself is
+    /// the releases the pass read (`app_pre` is `Any` when the app itself is
     /// being deleted).
     pub(crate) fn mark_instance_deleting(
         &mut self,
@@ -223,7 +223,7 @@ impl WriteTxn {
     }
 
     /// Deletes an instance's rows once its teardown is confirmed, which frees
-    /// its slot, and prunes its revision if nothing else uses it.
+    /// its slot, and prunes its release if nothing else uses it.
     pub(crate) fn delete_instance(&mut self, id: &str, pre: Precondition) -> Result<()> {
         self.op(|w| {
             let i = w.instance(id)?.ok_or_else(|| not_found(id))?;
@@ -236,7 +236,7 @@ impl WriteTxn {
             }
             w.remove(SPEC, id)?;
             w.remove(STATUS, id)?;
-            w.prune_revision(&i.spec.value.app, &i.spec.value.revision)
+            w.prune_release(&i.spec.value.app, &i.spec.value.release)
         })
     }
 }

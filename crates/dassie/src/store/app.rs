@@ -1,5 +1,5 @@
 //! Apps (ADR 0014): what the operator asks for, keyed by the app's name. An
-//! app names its current revision and how many instances it should run.
+//! app names its current release and how many instances it should run.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::check::{decode_all, problem};
 use super::instance::{self, InstanceReads};
-use super::revision::{self, RevisionReads, Template};
+use super::release::{self, ReleaseReads, Template};
 use super::{
     Error, Inconsistency, Precondition, ReadTxn, Reads, Result, Revision, Rows, Versioned,
     WriteTxn, get, scan, table_name,
@@ -34,8 +34,8 @@ pub(crate) struct AppSpec {
     pub(crate) kind: AppKind,
     /// How many instances should be ready.
     pub(crate) replicas: u32,
-    /// The hash of the revision the app should run.
-    pub(crate) revision: String,
+    /// The hash of the release the app should run.
+    pub(crate) release: String,
 }
 
 /// What reconcile has recorded about an app. Counts are as of the last pass
@@ -47,7 +47,7 @@ pub(crate) struct AppStatus {
     /// Unix milliseconds; set when the operator deleted the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) deleting_since: Option<u64>,
-    /// Unix milliseconds; set while instances of an older revision remain.
+    /// Unix milliseconds; set while instances of an older release remain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) rolling_since: Option<u64>,
     #[serde(default)]
@@ -65,12 +65,12 @@ pub(crate) struct App {
     pub(crate) status: Versioned<AppStatus>,
 }
 
-/// The revisions an apply produced.
+/// What an apply produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Applied {
-    /// The revision's hash: the app's `revision` now.
+    /// The release's hash: the app's `release` now.
     pub(crate) hash: String,
-    /// The app spec row's new revision, for a later precondition.
+    /// The app spec row's new store revision, for a later precondition.
     pub(crate) spec: Revision,
 }
 
@@ -132,7 +132,7 @@ pub(super) fn not_found(name: &str) -> Error {
 }
 
 impl WriteTxn {
-    /// Applies an app: creates its revision unless one with the template's
+    /// Applies an app: creates its release unless one with the template's
     /// hash exists, and writes the app's spec. `pre` is the app's spec as
     /// read before the image was pulled, or `Absent` for a new app. An app
     /// being deleted is refused.
@@ -168,13 +168,13 @@ impl WriteTxn {
                     key: name.into(),
                 });
             }
-            let hash = w.ensure_revision(name, template, now)?;
+            let hash = w.ensure_release(name, template, now)?;
             let spec = AppSpec {
                 kind: AppKind::Service,
                 replicas,
-                revision: hash.clone(),
+                release: hash.clone(),
             };
-            // The same spec again changes nothing, not even a revision.
+            // The same spec again changes nothing, not even the store revision.
             if let Some(old) = &existing
                 && old.spec.value == spec
             {
@@ -188,8 +188,8 @@ impl WriteTxn {
                 None => {
                     w.put(STATUS, name, &AppStatus::default())?;
                 }
-                Some(old) if old.spec.value.revision != hash => {
-                    w.prune_revision(name, &old.spec.value.revision)?;
+                Some(old) if old.spec.value.release != hash => {
+                    w.prune_release(name, &old.spec.value.release)?;
                 }
                 Some(_) => {}
             }
@@ -198,7 +198,7 @@ impl WriteTxn {
     }
 
     /// Records what reconcile found, if the status and the spec are still
-    /// at the revisions the pass read.
+    /// at the releases the pass read.
     pub(crate) fn set_app_status(
         &mut self,
         name: &str,
@@ -232,7 +232,7 @@ impl WriteTxn {
         })
     }
 
-    /// Removes an app being deleted, and its revisions, once it has no
+    /// Removes an app being deleted, and its releases, once it has no
     /// instance rows left.
     pub(crate) fn remove_app(&mut self, name: &str) -> Result<()> {
         self.op(|w| {
@@ -249,8 +249,8 @@ impl WriteTxn {
                     key: name.into(),
                 });
             }
-            for (hash, _) in w.app_revisions(name)? {
-                w.remove_revision(name, &hash)?;
+            for (hash, _) in w.releases_of(name)? {
+                w.remove_release(name, &hash)?;
             }
             w.remove(SPEC, name)?;
             w.remove(STATUS, name)?;
@@ -258,16 +258,16 @@ impl WriteTxn {
         })
     }
 
-    /// Removes a revision once neither its app nor any instance uses it.
+    /// Removes a release once neither its app nor any instance uses it.
     /// Within `op`.
-    pub(super) fn prune_revision(&mut self, app: &str, hash: &str) -> Result<()> {
-        let current = get::<AppSpec>(self, SPEC, app)?.is_some_and(|a| a.value.revision == hash);
+    pub(super) fn prune_release(&mut self, app: &str, hash: &str) -> Result<()> {
+        let current = get::<AppSpec>(self, SPEC, app)?.is_some_and(|a| a.value.release == hash);
         let used = self
             .instances_of(app)?
             .iter()
-            .any(|(_, i)| i.spec.value.revision == hash);
+            .any(|(_, i)| i.spec.value.release == hash);
         if !current && !used {
-            self.remove_revision(app, hash)?;
+            self.remove_release(app, hash)?;
         }
         Ok(())
     }
@@ -278,7 +278,7 @@ pub(super) fn check(r: &ReadTxn, found: &mut Vec<Inconsistency>) -> Result<()> {
     let apps = decode_all::<AppSpec>(r, SPEC, found)?;
     decode_all::<AppStatus>(r, STATUS, found)?;
     let names: BTreeSet<String> = apps.iter().map(|(n, _)| n.clone()).collect();
-    let revisions: BTreeSet<String> = decode_all::<Template>(r, revision::SPEC, &mut Vec::new())?
+    let releases: BTreeSet<String> = decode_all::<Template>(r, release::SPEC, &mut Vec::new())?
         .into_iter()
         .map(|(k, _)| k)
         .collect();
@@ -286,14 +286,14 @@ pub(super) fn check(r: &ReadTxn, found: &mut Vec<Inconsistency>) -> Result<()> {
         if !valid_name(name) {
             found.push(problem(SPEC, name, "the name is not a valid app name"));
         }
-        if !revisions.contains(&revision::key(name, &spec.value.revision)) {
-            found.push(problem(SPEC, name, "its revision does not exist"));
+        if !releases.contains(&release::key(name, &spec.value.release)) {
+            found.push(problem(SPEC, name, "its release does not exist"));
         }
     }
-    for key in &revisions {
+    for key in &releases {
         let app = key.split_once('/').map_or(key.as_str(), |(a, _)| a);
         if !names.contains(app) {
-            found.push(problem(revision::SPEC, key, "its app does not exist"));
+            found.push(problem(release::SPEC, key, "its app does not exist"));
         }
     }
     let instances = decode_all::<instance::InstanceSpec>(r, instance::SPEC, &mut Vec::new())?;
@@ -302,8 +302,8 @@ pub(super) fn check(r: &ReadTxn, found: &mut Vec<Inconsistency>) -> Result<()> {
         if !names.contains(&i.app) {
             found.push(problem(instance::SPEC, &id, "its app does not exist"));
         }
-        if !revisions.contains(&revision::key(&i.app, &i.revision)) {
-            found.push(problem(instance::SPEC, &id, "its revision does not exist"));
+        if !releases.contains(&release::key(&i.app, &i.release)) {
+            found.push(problem(instance::SPEC, &id, "its release does not exist"));
         }
     }
     Ok(())

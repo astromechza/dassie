@@ -1,10 +1,10 @@
-//! Tests of the apps, revisions and instances kinds (ADR 0014).
+//! Tests of the apps, releases and instances kinds (ADR 0014).
 
 use std::collections::BTreeSet;
 
 use super::app::{AppReads, AppStatus, MAX_REPLICAS};
 use super::instance::{InstanceReads, MAX_SLOT, new_id};
-use super::revision::{RevisionReads, Template};
+use super::release::{ReleaseReads, Template};
 use super::{Error, Precondition, Reads, Store, raw_put_for_tests};
 
 const IMAGE: &str = "docker.io/library/nginx:1.27@sha256:4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c4f1c";
@@ -57,17 +57,14 @@ fn assert_consistent(store: &Store) {
 }
 
 #[test]
-fn applying_creates_the_revision_and_points_the_app_at_it() {
+fn applying_creates_the_release_and_points_the_app_at_it() {
     let store = Store::in_memory().unwrap();
     let hash = apply(&store, "web", 2, &template("hi")).unwrap();
     let app = store.read(|r| r.app("web")).unwrap().unwrap();
-    assert_eq!(app.spec.value.revision, hash);
+    assert_eq!(app.spec.value.release, hash);
     assert_eq!(app.spec.value.replicas, 2);
     assert_eq!(app.status.value, AppStatus::default());
-    let rev = store
-        .read(|r| r.app_revision("web", &hash))
-        .unwrap()
-        .unwrap();
+    let rev = store.read(|r| r.release("web", &hash)).unwrap().unwrap();
     assert_eq!(rev.template.value, template("hi"));
     assert_eq!(rev.status.value.created_at, NOW);
     assert_consistent(&store);
@@ -83,23 +80,23 @@ fn the_same_spec_again_changes_nothing() {
 }
 
 #[test]
-fn replicas_alone_reuse_the_revision() {
+fn replicas_alone_reuse_the_release() {
     let store = Store::in_memory().unwrap();
     let hash = apply(&store, "web", 2, &template("hi")).unwrap();
     assert_eq!(apply(&store, "web", 5, &template("hi")).unwrap(), hash);
-    assert_eq!(store.read(|r| r.app_revisions("web")).unwrap().len(), 1);
+    assert_eq!(store.read(|r| r.releases_of("web")).unwrap().len(), 1);
     let app = store.read(|r| r.app("web")).unwrap().unwrap();
     assert_eq!(app.spec.value.replicas, 5);
 }
 
 #[test]
-fn a_new_template_prunes_the_old_revision_unless_an_instance_runs_it() {
+fn a_new_template_prunes_the_old_release_unless_an_instance_runs_it() {
     let store = Store::in_memory().unwrap();
     let first = apply(&store, "web", 1, &template("one")).unwrap();
     let second = apply(&store, "web", 1, &template("two")).unwrap();
     assert_ne!(first, second);
     let hashes = |s: &Store| -> Vec<String> {
-        s.read(|r| r.app_revisions("web"))
+        s.read(|r| r.releases_of("web"))
             .unwrap()
             .into_iter()
             .map(|(h, _)| h)
@@ -264,7 +261,7 @@ fn an_app_being_deleted_creates_nothing_and_goes_once_empty() {
     mark_and_delete(&store, &id);
     store.write(|w| w.remove_app("web")).unwrap();
     assert_eq!(store.read(|r| r.app("web")).unwrap(), None);
-    assert_eq!(store.read(|r| r.app_revisions("web")).unwrap(), Vec::new());
+    assert_eq!(store.read(|r| r.releases_of("web")).unwrap(), Vec::new());
     assert_consistent(&store);
 }
 
@@ -308,7 +305,7 @@ fn check_finds_broken_references() {
         super::instance::SPEC,
         "01HZZZZZZZZZZZZZZZZZZZZZZZ",
         1,
-        br#"{"app":"ghost","revision":"abc","slot":0,"kernel_digest":"k","initrd_digest":"i"}"#,
+        br#"{"app":"ghost","release":"abc","slot":0,"kernel_digest":"k","initrd_digest":"i"}"#,
     );
     raw_put_for_tests(
         &store,
@@ -328,7 +325,7 @@ fn check_finds_broken_references() {
     assert!(
         problems
             .iter()
-            .any(|p| p.contains("its revision does not exist")),
+            .any(|p| p.contains("its release does not exist")),
         "{found:?}"
     );
     assert!(

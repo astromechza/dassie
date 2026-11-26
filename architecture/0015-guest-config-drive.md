@@ -15,7 +15,7 @@ for M2:
   included, so a handful of env vars fills it;
 - it has no escapes: a value can never contain `"`, and whitespace needs the
   kernel's quotes;
-- the M2 store (ADR 0014) lets each revision override the image's
+- the M2 store (ADR 0014) lets each release override the image's
   entrypoint and cmd, k8s-style, with lists of arbitrary strings, which the
   cmdline cannot carry faithfully;
 - every process in the guest can read it through `/proc/cmdline`.
@@ -294,7 +294,7 @@ image config, merge, readiness, supervision and exit rules stand.
 - Adding a config field needs a new init before any host may send it.
 - The drive is written before the VM starts and never changes underneath
   it: changing config means a new drive and a restart, which M2's
-  revisions already imply.
+  releases already imply.
 - A bad config is a boot error with no event of its own. vm-run exits 196,
   as for a lost `exited` event (ADR 0012), and `Restart=always` retries
   until systemd's start limit fails the unit. The cause is only in the

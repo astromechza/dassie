@@ -1,4 +1,4 @@
-//! Revisions (ADR 0014): one immutable template of an app, keyed by
+//! Releases (ADR 0014): one immutable template of an app, keyed by
 //! `<app>/<hash>`, where the hash is the sha256 of the template's canonical
 //! JSON.
 
@@ -12,11 +12,11 @@ use super::{
     Error, Inconsistency, ReadTxn, Reads, Result, Rows, Versioned, WriteTxn, get, scan, table_name,
 };
 
-pub(super) const SPEC: Rows = Rows::new("revision");
-pub(super) const STATUS: Rows = Rows::new("revision_status");
+pub(super) const SPEC: Rows = Rows::new("release");
+pub(super) const STATUS: Rows = Rows::new("release_status");
 
 /// Everything rendered into an instance's files. A change to any field is a
-/// new revision. Fields at their default are left out when stored, so a new
+/// new release. Fields at their default are left out when stored, so a new
 /// field with a default changes no existing hash. Defaults are frozen once
 /// released.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +178,7 @@ impl Template {
         serde_json::to_vec(&value).expect("a JSON value always serialises")
     }
 
-    /// The revision's hash: the sha256 of the canonical JSON, in hex.
+    /// The release's hash: the sha256 of the canonical JSON, in hex.
     pub(crate) fn hash(&self) -> String {
         Digest::of(&self.canonical()).hex().to_owned()
     }
@@ -192,45 +192,45 @@ fn env_name_ok(name: &str) -> bool {
     first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.starts_with("DASSIE_")
 }
 
-/// When the revision was first applied.
+/// When the release was first applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RevisionStatus {
+pub(crate) struct ReleaseStatus {
     /// Unix milliseconds.
     pub(crate) created_at: u64,
 }
 
-/// A revision's key: `<app>/<hash>`.
+/// A release's key: `<app>/<hash>`.
 pub(crate) fn key(app: &str, hash: &str) -> String {
     format!("{app}/{hash}")
 }
 
-/// A revision's template and status.
+/// A release's template and status.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RevisionRow {
+pub(crate) struct ReleaseRow {
     pub(crate) template: Versioned<Template>,
-    pub(crate) status: Versioned<RevisionStatus>,
+    pub(crate) status: Versioned<ReleaseStatus>,
 }
 
-/// Reads of revisions, for any transaction.
-pub(crate) trait RevisionReads: Reads + Sized {
-    fn app_revision(&self, app: &str, hash: &str) -> Result<Option<RevisionRow>> {
+/// Reads of releases, for any transaction.
+pub(crate) trait ReleaseReads: Reads + Sized {
+    fn release(&self, app: &str, hash: &str) -> Result<Option<ReleaseRow>> {
         self.guarded(|| {
             let key = key(app, hash);
             let Some(template) = get(self, SPEC, &key)? else {
                 return Ok(None);
             };
             let status = get(self, STATUS, &key)?.ok_or_else(|| missing_status(&key))?;
-            Ok(Some(RevisionRow { template, status }))
+            Ok(Some(ReleaseRow { template, status }))
         })
     }
 
-    /// One app's revisions, by hash.
-    fn app_revisions(&self, app: &str) -> Result<Vec<(String, RevisionRow)>> {
+    /// One app's releases, by hash.
+    fn releases_of(&self, app: &str) -> Result<Vec<(String, ReleaseRow)>> {
         self.guarded(|| {
             let prefix = format!("{app}/");
-            let mut statuses: BTreeMap<String, Versioned<RevisionStatus>> =
+            let mut statuses: BTreeMap<String, Versioned<ReleaseStatus>> =
                 scan(self, STATUS)?.into_iter().collect();
             let mut out = Vec::new();
             for (key, template) in scan::<Template>(self, SPEC)? {
@@ -238,14 +238,14 @@ pub(crate) trait RevisionReads: Reads + Sized {
                     continue;
                 };
                 let status = statuses.remove(&key).ok_or_else(|| missing_status(&key))?;
-                out.push((hash.to_owned(), RevisionRow { template, status }));
+                out.push((hash.to_owned(), ReleaseRow { template, status }));
             }
             Ok(out)
         })
     }
 }
 
-impl<R: Reads> RevisionReads for R {}
+impl<R: Reads> ReleaseReads for R {}
 
 fn missing_status(key: &str) -> Error {
     Error::Corrupt {
@@ -256,9 +256,9 @@ fn missing_status(key: &str) -> Error {
 }
 
 impl WriteTxn {
-    /// Creates the revision unless one with its hash exists, and returns the
+    /// Creates the release unless one with its hash exists, and returns the
     /// hash. Within `op`.
-    pub(super) fn ensure_revision(
+    pub(super) fn ensure_release(
         &mut self,
         app: &str,
         template: &Template,
@@ -269,14 +269,14 @@ impl WriteTxn {
         let key = key(app, &hash);
         if super::row_revision(self, SPEC, &key)?.is_none() {
             self.put(SPEC, &key, template)?;
-            self.put(STATUS, &key, &RevisionStatus { created_at: now })?;
+            self.put(STATUS, &key, &ReleaseStatus { created_at: now })?;
         }
         Ok(hash)
     }
 
-    /// Removes a revision's rows. Within `op`; the caller checks it is
+    /// Removes a release's rows. Within `op`; the caller checks it is
     /// unused.
-    pub(super) fn remove_revision(&mut self, app: &str, hash: &str) -> Result<()> {
+    pub(super) fn remove_release(&mut self, app: &str, hash: &str) -> Result<()> {
         let key = key(app, hash);
         self.remove(SPEC, &key)?;
         self.remove(STATUS, &key)?;
@@ -297,7 +297,7 @@ pub(super) fn check(r: &ReadTxn, found: &mut Vec<Inconsistency>) -> Result<()> {
             found.push(problem(SPEC, &key, &e.to_string()));
         }
     }
-    decode_all::<RevisionStatus>(r, STATUS, found)?;
+    decode_all::<ReleaseStatus>(r, STATUS, found)?;
     Ok(())
 }
 

@@ -26,7 +26,7 @@ pub(crate) mod instance;
 mod kinds_tests;
 #[cfg(test)]
 mod model;
-pub(crate) mod revision;
+pub(crate) mod release;
 #[cfg(test)]
 mod test_kind;
 #[cfg(test)]
@@ -63,14 +63,14 @@ const KINDS: &[KindDef] = &[
         },
     },
     KindDef {
-        spec: revision::SPEC,
-        status: revision::STATUS,
-        check: revision::check,
+        spec: release::SPEC,
+        status: release::STATUS,
+        check: release::check,
         #[cfg(test)]
         schemas: || {
             serde_json::json!({
-                "spec": schemars::schema_for!(revision::Template),
-                "status": schemars::schema_for!(revision::RevisionStatus),
+                "spec": schemars::schema_for!(release::Template),
+                "status": schemars::schema_for!(release::ReleaseStatus),
             })
         },
     },
@@ -144,8 +144,8 @@ fn v2_apps_revisions_instances(tx: &redb::WriteTransaction) -> Result<()> {
     for name in [
         "app",
         "app_status",
-        "revision",
-        "revision_status",
+        "release",
+        "release_status",
         "instance",
         "instance_status",
     ] {

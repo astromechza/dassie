@@ -1,4 +1,4 @@
-# 0014. Apps, revisions and instances
+# 0014. Apps, releases and instances
 
 Status: Proposed
 Date: 2026-11-24
@@ -32,10 +32,11 @@ shape and leave out the rest.
 
 ## Decision
 
-**Three kinds: apps own revisions, and revisions own instances.** An app is
-like a Deployment, a revision like a ReplicaSet, an instance like a Pod. Each
+**Three kinds: apps own releases, and releases own instances.** An app is
+like a Deployment, a release like a ReplicaSet, an instance like a Pod. Each
 is a spec table and a status table in the store (ADR 0016), created by schema
-migration 2.
+migration 2. They are releases, not revisions, because ADR 0016's revisions
+are the store's own write counter, and the two meet in every precondition.
 
 ### App
 
@@ -45,15 +46,15 @@ fixed for the app's life.
 - **Spec:**
   - `kind`: `service`, the only kind for now. Jobs (#27) add another.
   - `replicas`: how many instances should be ready, 0 to 64.
-  - `revision`: the hash of the revision the app should run.
+  - `release`: the hash of the release the app should run.
 - **Status:**
   - `deleting_since`: set when the operator deletes the app.
-  - `rolling_since`: set while the app has instances of an older revision,
+  - `rolling_since`: set while the app has instances of an older release,
     cleared once it has none. A long-standing value is a stuck rollout.
   - `current_instances`: how many counted instances (below) run the app's
-    revision.
-  - `old_instances`: how many counted instances run an older revision.
-  - `deleting_instances`: how many are being torn down, of any revision. They
+    release.
+  - `old_instances`: how many counted instances run an older release.
+  - `deleting_instances`: how many are being torn down, of any release. They
     still hold their slots and memory until teardown is confirmed, so a count
     that stays up is a stuck teardown.
   - Each pass writes these from the rows it read, so they are as of the last
@@ -64,30 +65,30 @@ fixed for the app's life.
 **Applying an app** that is being deleted is refused, with a typed error,
 until the deletion finishes; a delete cannot be undone. Otherwise it builds
 the template from the operator's spec, pulls its
-image outside any store write (ADR 0016), creates the revision if no
-revision has that hash, and writes the app's spec: its `revision` and its
+image outside any store write (ADR 0016), creates the release if no
+release has that hash, and writes the app's spec: its `release` and its
 `replicas`. That write requires the app's spec at the revision read before
 the pull (or no app, for a new one), so an app deleted and recreated under
 the same name meanwhile makes it `Stale`. It also reads the app's status in
 the same transaction, and is refused, writing nothing, if a delete began
-during the pull. An identical template reuses the existing revision, so applying
+during the pull. An identical template reuses the existing release, so applying
 the same spec again changes nothing, while a change of `replicas` alone takes
-effect without a new revision.
+effect without a new release.
 
-### Revision
+### Release
 
 Keyed by `<app>/<hash>`. App names cannot contain `/`, so the key is
-unambiguous, and a scan of the prefix `<app>/` lists one app's revisions.
+unambiguous, and a scan of the prefix `<app>/` lists one app's releases.
 
-- **Spec:** the template, and nothing else. A revision never changes.
+- **Spec:** the template, and nothing else. A release never changes.
 - **Status:** `created_at`.
-- **Pruned** in the same write that leaves it neither the app's `revision` nor
-  the revision of any instance. Rolling back means applying the old spec
-  again, which gives the same hash. A history of past revisions comes with
+- **Pruned** in the same write that leaves it neither the app's `release` nor
+  the release of any instance. Rolling back means applying the old spec
+  again, which gives the same hash. A history of past releases comes with
   rollback in M4.
 
 **The template is everything rendered into an instance's files.** A change to
-any field is a new revision:
+any field is a new release:
 
 | Field | Type, bounds | Default | Lands in |
 | --- | --- | --- | --- |
@@ -104,9 +105,9 @@ any field is a new revision:
 - **`image`** is pinned when the app is applied: the operator's reference is
   pulled (ADR 0007, ADR 0011) and written in `Reference`'s normalised form
   with the platform manifest's digest, so `nginx:1.27` becomes
-  `docker.io/library/nginx:1.27@sha256:…`. The tag stays, so a revision can
+  `docker.io/library/nginx:1.27@sha256:…`. The tag stays, so a release can
   always be pulled again. Retagging the same digest is therefore a new
-  revision.
+  release.
 - **`env`** names match `[A-Za-z_][A-Za-z0-9_]*` and do not start with
   `DASSIE_`, which init reserves. Values contain no NUL. Env holds no
   secrets: ADR 0015 delivers those differently.
@@ -115,7 +116,7 @@ any field is a new revision:
 - Unit tuning (start timeouts, restart delays, start limits) and other fields
   come later, each with a default.
 
-**A revision's hash is the sha256, in hex, of its template's canonical JSON.**
+**A release's hash is the sha256, in hex, of its template's canonical JSON.**
 Every field equal to its default is left out, then the template is
 serialised through `serde_json::Value`, which sorts object keys (its
 `preserve_order` feature stays off), with no whitespace.
@@ -136,7 +137,7 @@ form. It is also the unit name (`fc@<id>`), the jailer `--id` and the guest's
 stale.
 
 - **Spec, set at creation and never changed:**
-  - `app` and `revision`;
+  - `app` and `release`;
   - `slot`: 0 to 32767, below;
   - `kernel_digest` and `initrd_digest`: the host-wide guest assets present
     at creation. They record drift after an asset changes; they do not pin
@@ -166,18 +167,18 @@ means not being deleted.
 
 **Replicas and rollouts: two rules per app**, with `R` its `replicas`:
 
-1. **Create.** While the app's revision has fewer than `R` counted instances
+1. **Create.** While the app's release has fewer than `R` counted instances
    and the app has fewer than `R + 1` counted instances in all, create one
-   instance of the app's revision. An instance being torn down is not
+   instance of the app's release. An instance being torn down is not
    counted, so a slow teardown never blocks a rollout. It does mean an app
    can briefly hold more than `R + 1` VMs' memory.
 2. **Remove.** While the app has more than `R` counted instances, mark for
-   deletion the first of them, in this order, that may go: older revisions
-   before the app's revision, then not ready before ready, then oldest
+   deletion the first of them, in this order, that may go: older releases
+   before the app's release, then not ready before ready, then oldest
    first. Stop when none may go.
    - An instance **may go** if it is not ready, or if more than `R` are
      ready.
-   - An instance of the app's revision may go only while that revision has
+   - An instance of the app's release may go only while that release has
      more than `R` counted instances, so rule 2 never undoes rule 1.
 
    Not ready first matters: without it, a crash-looping old instance, or a
@@ -186,7 +187,7 @@ means not being deleted.
    too: with `R = 1`, one ready old instance and two failed new ones, the
    surplus failed one goes while the old one keeps serving.
 
-- **A change of revision rolls one instance at a time.** One new instance
+- **A change of release rolls one instance at a time.** One new instance
   starts, and a ready old one goes only once the new one is ready. An old
   instance that is not ready may go sooner, since stopping it lowers no ready
   count. The daemon never stops a ready instance that would leave fewer than
@@ -196,16 +197,16 @@ means not being deleted.
   unavailability of 0 are constants here; M4 makes them settings.
 - **Scaling up** starts every missing instance at once. **Scaling down** is
   rule 2.
-- **A revision that never becomes ready** holds one extra instance while the
+- **A release that never becomes ready** holds one extra instance while the
   old ones keep serving. `rolling_since` shows it.
 - **Deleting an app** marks every instance for deletion at once, then removes
-  the app and its revisions once the last instance row has gone.
+  the app and its releases once the last instance row has gone.
 
 **A failed instance stays failed.** When systemd gives up on a unit (its
 start limit, ADR 0012), the daemon does not reset or restart it, and does not
 replace it. It still counts towards `R` and is not ready, so the app runs
 short until the operator acts: deleting the instance lets rule 1 create a
-fresh one, and applying a fixed spec rolls past it. An old revision's failed
+fresh one, and applying a fixed spec rolls past it. An old release's failed
 instance is still removed by rule 2, as it is not ready.
 
 **Instances.** A counted instance's directory, holding its files (ADR 0013,
@@ -281,12 +282,12 @@ acts, then records the result, with preconditions:
   pure function of its row.
 - A deploy takes about `R` times an instance's time to boot and become ready.
 - A failed instance needs an operator. The daemon never loops on a broken
-  revision, but an app can run short of replicas until someone deletes the
+  release, but an app can run short of replicas until someone deletes the
   instance or applies a fix.
 - A rollout always moves to new addresses, since new instances get new
   slots. Routes, when they arrive, must follow instances, not apps.
-- Revisions do not outlive their use, so there is no rollback history yet.
-  M6's image GC can keep every digest of a revision that still exists.
+- Releases do not outlive their use, so there is no rollback history yet.
+  M6's image GC can keep every digest of a release that still exists.
 - The rendered files depend on the daemon's code as well as the row. Whether
   a daemon upgrade re-renders existing instances, or only new ones, is left
   to the reconcile ADR.
