@@ -24,6 +24,14 @@ pub(crate) enum Error {
         value: String,
         holder: String,
     },
+    /// A value is outside its bounds, such as a template field.
+    Invalid { what: String, reason: String },
+    /// Other rows still refer to this one.
+    StillReferenced { table: String, key: String },
+    /// The row is being deleted, which refuses this change.
+    Deleting { table: String, key: String },
+    /// No value of a host-wide allocation is free.
+    Exhausted { what: &'static str },
     /// A precondition did not match the row.
     Stale {
         table: String,
@@ -70,6 +78,12 @@ impl fmt::Display for Error {
         match self {
             Error::NotFound { table, key } => write!(f, "{table} {key:?} not found"),
             Error::AlreadyExists { table, key } => write!(f, "{table} {key:?} already exists"),
+            Error::Invalid { what, reason } => write!(f, "invalid {what}: {reason}"),
+            Error::Deleting { table, key } => write!(f, "{table} {key:?} is being deleted"),
+            Error::StillReferenced { table, key } => {
+                write!(f, "{table} {key:?} is still referenced")
+            }
+            Error::Exhausted { what } => write!(f, "no free {what}"),
             Error::Conflict {
                 table,
                 field,
