@@ -20,6 +20,7 @@ same change that makes the decision. Start new ones from
 | [0011](0011-registry-pull-retries.md) | Registry pull retries | Accepted |
 | [0012](0012-per-vm-runner.md) | Per-VM runner | Accepted |
 | [0013](0013-jailed-firecracker.md) | Firecracker runs in the jailer | Accepted |
+| [0014](0014-apps-releases-instances.md) | Apps, releases and instances | Proposed |
 | [0015](0015-guest-config-drive.md) | Guest config drive | Accepted |
 | [0016](0016-store-data-access-layer.md) | Store data access layer | Accepted |
 | [0017](0017-flattener-writes-fresh-tar-headers.md) | The flattener writes fresh tar headers | Accepted |

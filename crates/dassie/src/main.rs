@@ -19,6 +19,9 @@ mod runner;
 // daemon does.
 #[cfg_attr(not(test), allow(dead_code))]
 mod store;
+// ADR 0014's reconcile rules, which the daemon's pass will call.
+#[cfg_attr(not(test), allow(dead_code))]
+mod rollout;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "dassie: micro-VM app host")]

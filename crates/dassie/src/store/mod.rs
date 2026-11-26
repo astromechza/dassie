@@ -18,10 +18,15 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+pub(crate) mod app;
 mod check;
 mod error;
+pub(crate) mod instance;
+#[cfg(test)]
+mod kinds_tests;
 #[cfg(test)]
 mod model;
+pub(crate) mod release;
 #[cfg(test)]
 mod test_kind;
 #[cfg(test)]
@@ -41,9 +46,47 @@ const META_VERSION: &str = "schema_version";
 const META_REVISION: &str = "revision";
 const META_EPOCH: &str = "epoch";
 
-/// The production resource kinds. Tests add theirs through
-/// [`build_kinds`], never here.
-const KINDS: &[KindDef] = &[];
+/// The production resource kinds (ADR 0014). Tests add theirs through
+/// [`build_kinds`], never here. `app`'s check also covers references across
+/// the three.
+const KINDS: &[KindDef] = &[
+    KindDef {
+        spec: app::SPEC,
+        status: app::STATUS,
+        check: app::check,
+        #[cfg(test)]
+        schemas: || {
+            serde_json::json!({
+                "spec": schemars::schema_for!(app::AppSpec),
+                "status": schemars::schema_for!(app::AppStatus),
+            })
+        },
+    },
+    KindDef {
+        spec: release::SPEC,
+        status: release::STATUS,
+        check: release::check,
+        #[cfg(test)]
+        schemas: || {
+            serde_json::json!({
+                "spec": schemars::schema_for!(release::Template),
+                "status": schemars::schema_for!(release::ReleaseStatus),
+            })
+        },
+    },
+    KindDef {
+        spec: instance::SPEC,
+        status: instance::STATUS,
+        check: instance::check,
+        #[cfg(test)]
+        schemas: || {
+            serde_json::json!({
+                "spec": schemars::schema_for!(instance::InstanceSpec),
+                "status": schemars::schema_for!(instance::InstanceStatus),
+            })
+        },
+    },
+];
 
 /// The store's schema, as the steps that build it. Migration N takes the
 /// store from version N - 1 to N, in one write transaction with its version
@@ -57,7 +100,7 @@ const KINDS: &[KindDef] = &[];
 /// created on first use. A test-only kind's tables come from a test-only
 /// migration after the real ones (see [`build_migrations`]).
 type Migration = fn(&redb::WriteTransaction) -> Result<()>;
-const MIGRATIONS: &[Migration] = &[v1_meta];
+const MIGRATIONS: &[Migration] = &[v1_meta, v2_apps_revisions_instances];
 
 /// The production schema version, which the schema snapshot is named for.
 pub(crate) const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
@@ -92,6 +135,22 @@ fn v1_meta(tx: &redb::WriteTransaction) -> Result<()> {
     let mut meta = tx.open_table(META)?;
     meta.insert(META_REVISION, 0)?;
     meta.insert(META_EPOCH, fresh_epoch())?;
+    Ok(())
+}
+
+/// Version 2: apps, revisions and instances (ADR 0014), each a spec and a
+/// status table. The definitions are this migration's own, frozen with it.
+fn v2_apps_revisions_instances(tx: &redb::WriteTransaction) -> Result<()> {
+    for name in [
+        "app",
+        "app_status",
+        "release",
+        "release_status",
+        "instance",
+        "instance_status",
+    ] {
+        tx.open_table(Rows::new(name))?;
+    }
     Ok(())
 }
 
@@ -673,4 +732,16 @@ pub(crate) fn scan<T: DeserializeOwned>(
             })
             .collect()
     })
+}
+
+/// Writes a raw row behind the store's back, to give `check` something to
+/// find.
+#[cfg(test)]
+pub(crate) fn raw_put_for_tests(store: &Store, table: Rows, key: &str, n: u64, json: &[u8]) {
+    let tx = store.db.begin_write().unwrap();
+    tx.open_table(table)
+        .unwrap()
+        .insert(key, (n, json))
+        .unwrap();
+    tx.commit().unwrap();
 }

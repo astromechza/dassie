@@ -1,0 +1,266 @@
+{
+  "tables": [
+    {
+      "key": "&str",
+      "name": "meta",
+      "value": "u64"
+    },
+    {
+      "key": "&str",
+      "name": "app",
+      "value": "(u64, &[u8])"
+    },
+    {
+      "key": "&str",
+      "name": "app_status",
+      "value": "(u64, &[u8])"
+    },
+    {
+      "key": "&str",
+      "name": "release",
+      "value": "(u64, &[u8])"
+    },
+    {
+      "key": "&str",
+      "name": "release_status",
+      "value": "(u64, &[u8])"
+    },
+    {
+      "key": "&str",
+      "name": "instance",
+      "value": "(u64, &[u8])"
+    },
+    {
+      "key": "&str",
+      "name": "instance_status",
+      "value": "(u64, &[u8])"
+    }
+  ],
+  "values": {
+    "app": {
+      "spec": {
+        "$defs": {
+          "AppKind": {
+            "description": "The kind of workload. Jobs (#27) add another.",
+            "enum": [
+              "service"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/AppKind"
+          },
+          "release": {
+            "description": "The hash of the release the app should run.",
+            "type": "string"
+          },
+          "replicas": {
+            "description": "How many instances should be ready.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "replicas",
+          "release"
+        ],
+        "title": "AppSpec",
+        "type": "object"
+      },
+      "status": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "What reconcile has recorded about an app. Counts are as of the last pass\nthat wrote them.",
+        "properties": {
+          "current_instances": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deleting_instances": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deleting_since": {
+            "description": "Unix milliseconds; set when the operator deleted the app.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "old_instances": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rolling_since": {
+            "description": "Unix milliseconds; set while instances of an older release remain.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "AppStatus",
+        "type": "object"
+      }
+    },
+    "instance": {
+      "spec": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "initrd_digest": {
+            "type": "string"
+          },
+          "kernel_digest": {
+            "description": "The guest assets present at creation. They record drift; they do not\npin the files.",
+            "type": "string"
+          },
+          "release": {
+            "description": "The hash of the release this instance runs, for its whole life.",
+            "type": "string"
+          },
+          "slot": {
+            "description": "The TAP, /31 and MAC (ADR 0008) and the jail uid, 0x70000000 + slot\n(ADR 0013).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "app",
+          "release",
+          "slot",
+          "kernel_digest",
+          "initrd_digest"
+        ],
+        "title": "InstanceSpec",
+        "type": "object"
+      },
+      "status": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deleting_since": {
+            "description": "Unix milliseconds; set when the instance is to go.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "InstanceStatus",
+        "type": "object"
+      }
+    },
+    "release": {
+      "spec": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "Everything rendered into an instance's files. A change to any field is a\nnew release. Fields at their default are left out when stored, so a new\nfield with a default changes no existing hash. Defaults are frozen once\nreleased.",
+        "properties": {
+          "cmd": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "entrypoint": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "image": {
+            "description": "`registry/repository[:tag]@sha256:…`, normalised, with the platform\nmanifest's digest.",
+            "type": "string"
+          },
+          "memory_mib": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "network": {
+            "type": "boolean"
+          },
+          "readiness_port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sigterm_timeout_seconds": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "vcpus": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "image"
+        ],
+        "title": "Template",
+        "type": "object"
+      },
+      "status": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "When the release was first applied.",
+        "properties": {
+          "created_at": {
+            "description": "Unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at"
+        ],
+        "title": "ReleaseStatus",
+        "type": "object"
+      }
+    }
+  }
+}
