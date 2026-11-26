@@ -19,7 +19,7 @@ flate2 = "1"
 nix = { version = "0.32", default-features = false }
 # The daemon's store (ADR 0016). Pure Rust, so the musl lint aliases need no C
 # toolchain.
-redb = "4.6"
+redb = "5.0"
 # rustls's crypto provider. Pure Rust (and asm) for x86_64 and aarch64, so the
 # musl clippy aliases need no C cross toolchain; ring and aws-lc-rs both
 # compile C in their build scripts.
