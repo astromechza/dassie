@@ -57,7 +57,7 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install
 
-      - uses: taiki-e/install-action@v2.90.3
+      - uses: taiki-e/install-action@v2.90.6
         with:
           tool: cargo-deny@0.20.2,cargo-shear@1.14.0
 
@@ -153,7 +153,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: taiki-e/install-action@v2.90.3
+      - uses: taiki-e/install-action@v2.90.6
         with:
           tool: zizmor@1.32.0
 
