@@ -50,6 +50,13 @@ fixed for the app's life.
   - `deleting_since`: set when the operator deletes the app.
   - `rolling_since`: set while the app has instances of an older revision,
     cleared once it has none. A long-standing value is a stuck rollout.
+  - `current_instances`: how many counted instances (below) run the app's
+    revision.
+  - `old_instances`: how many counted instances run an older revision.
+  - Each pass writes these from the rows it read, so they are as of the last
+    pass. Instances being deleted are in neither. How many are ready is
+    systemd's to say (ADR 0016), so the CLI reads that from systemd rather
+    than from status.
 
 **Applying an app** that is being deleted is refused, with a typed error,
 until the deletion finishes; a delete cannot be undone. Otherwise it builds
