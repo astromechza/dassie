@@ -274,12 +274,14 @@ the daemon refused. One tool covers four needs:
 While the daemon runs, it writes the same export from a read transaction on
 request, since copying the live file is not safe.
 
-The dependency is `redb = "4.6"`: any 4.x from 4.6 on, the release that
-stops a damaged file from being opened as an empty one. A major bump is a
-deliberate change, and comes with a test that loads a dump made by the
-previous version. redb 5.0 came out on 2026-11-19. The store moves to it once
-it clears the dependency cooldown, before the store holds real data, so that
-move needs no dump and load.
+The dependency is `redb = "5.0"`. The store started on 4.6, the release
+that stops a damaged file from being opened as an empty one, and moved to
+5.0 once it cleared the dependency cooldown, before the store held real
+data, so that move needed no dump and load. 5.0's one format change, to
+`Option<&str>`, `Option<String>`, `Option<bool>` and `Option<char>`, does
+not touch the store's tables, which hold only `&str`, `u64` and
+`(u64, &[u8])`. A later major bump is a deliberate change, and comes with a
+test that loads a dump made by the previous version.
 
 ### Testing
 

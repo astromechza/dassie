@@ -4,8 +4,8 @@ use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use redb::StorageBackend;
 use redb::backends::InMemoryBackend;
+use redb::{BackendError, StorageBackend};
 
 use super::test_kind::{Colour, Phase, SPEC, STATUS, WidgetReads, WidgetSpec, WidgetStatus};
 use super::*;
@@ -562,20 +562,20 @@ impl Failing {
 }
 
 impl StorageBackend for Failing {
-    fn len(&self) -> std::io::Result<u64> {
+    fn len(&self) -> Result<u64, BackendError> {
         self.inner.len()
     }
-    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), BackendError> {
         self.inner.read(offset, out)
     }
-    fn set_len(&self, len: u64) -> std::io::Result<()> {
+    fn set_len(&self, len: u64) -> Result<(), BackendError> {
         self.inner.set_len(len)
     }
-    fn sync_data(&self) -> std::io::Result<()> {
+    fn sync_data(&self) -> Result<(), BackendError> {
         self.tick()?;
         self.inner.sync_data()
     }
-    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), BackendError> {
         self.tick()?;
         self.inner.write(offset, data)
     }
