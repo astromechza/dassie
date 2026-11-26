@@ -53,8 +53,11 @@ fixed for the app's life.
   - `current_instances`: how many counted instances (below) run the app's
     revision.
   - `old_instances`: how many counted instances run an older revision.
+  - `deleting_instances`: how many are being torn down, of any revision. They
+    still hold their slots and memory until teardown is confirmed, so a count
+    that stays up is a stuck teardown.
   - Each pass writes these from the rows it read, so they are as of the last
-    pass. Instances being deleted are in neither. How many are ready is
+    pass. Together they cover every instance row the app has. How many are ready is
     systemd's to say (ADR 0016), so the CLI reads that from systemd rather
     than from status.
 
